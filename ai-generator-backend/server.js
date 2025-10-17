@@ -13,7 +13,7 @@ app.use(
   cors({
     origin: ["https://just-anotherday.github.io", "http://localhost:3000"],
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"],
+    allowedHeaders: ["Content-Type","Authorization"],
   })
 );
 
@@ -23,6 +23,7 @@ app.options('/ai', cors());
 // Middleware
 app.use(express.json());
 
+// Route to check backend
 app.get('/', (req, res) => {
   res.send('AI Generator Backend is Running');
 });
