@@ -23,6 +23,10 @@ app.options('/ai', cors());
 // Middleware
 app.use(express.json());
 
+app.get('/', (req, res) => {
+  res.send('AI Generator Backend is Running');
+});
+
 // Ensure images folder exists
 const imagesDir = path.join(process.cwd(), 'images');
 if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir);
