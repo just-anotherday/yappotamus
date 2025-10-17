@@ -4,7 +4,7 @@ import { initNuclearEgg } from './nuclearEgg.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   // Use your deployed AI backend URL here
-  const aiServerUrl = 'https://my-ai-generator.onrender.com/ai';
+  const aiServerUrl = 'https://yappotamus.onrender.com/ai';
 
   initAIGenerator(aiServerUrl);
   initNuclearEgg();
