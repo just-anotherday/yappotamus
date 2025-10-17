@@ -17,8 +17,8 @@ const imagesDir = path.join(process.cwd(), 'images');
 if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir);
 app.use('/images', express.static(imagesDir));
 
-const MAX_PROMPT_LENGTH = 200;      // Limit prompt size
-const MAX_REQUESTS_PER_MIN = 20;    // Simple rate limit
+const MAX_PROMPT_LENGTH = 200;
+const MAX_REQUESTS_PER_MIN = 20;
 let requestCount = 0;
 setInterval(() => { requestCount = 0; }, 60_000);
 
@@ -36,12 +36,7 @@ app.post('/ai', async (req, res) => {
   try {
     let result;
 
-    // Mock mode for testing
-    if (process.env.MOCK_API === "true") {
-      result = type === "image"
-        ? "https://via.placeholder.com/512"
-        : `Mock response for: "${prompt}"`;
-    } else if (type === "image") {
+    if (type === "image") {
       // OpenAI image generation
       const response = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
