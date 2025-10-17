@@ -27,7 +27,7 @@ export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com/ai'
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, type }),
-        mode: "cors" // ensures GitHub Pages can fetch
+        mode: "cors"
       });
 
       let data;
@@ -47,8 +47,12 @@ export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com/ai'
         return;
       }
 
+      // Display image or text
       if (type === "image") {
-        const imageUrl = data.result.startsWith('http') ? data.result : `${serverUrl.replace('/ai','')}${data.result}`;
+        // Check if result is already a full URL
+        const imageUrl = data.result.startsWith('http')
+          ? data.result
+          : `${serverUrl.replace('/ai','')}${data.result}`;
         resultDiv.innerHTML = `<img src="${imageUrl}" alt="AI result" style="max-width:90vw; border-radius:8px;" />`;
       } else {
         resultDiv.innerHTML = `<pre style="white-space:pre-wrap; font-family:monospace;">${data.result}</pre>`;
