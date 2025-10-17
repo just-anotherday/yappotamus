@@ -1,4 +1,3 @@
-// server.js
 import express from 'express';
 import fetch from 'node-fetch';
 import cors from 'cors';
@@ -9,9 +8,18 @@ import path from 'path';
 dotenv.config();
 
 const app = express();
+
+// CORS setup with options for preflight requests
 app.use(cors({
-    origin: 'https://just-anotherday.github.io',
+    origin: 'https://just-anotherday.github.io', // Frontend URL
+    methods: ['GET', 'POST', 'OPTIONS'],        // Allow common methods
+    allowedHeaders: ['Content-Type', 'Authorization'], // Allow necessary headers
 }));
+
+// Handling preflight (OPTIONS) requests
+app.options('/ai', cors());
+
+// Middleware
 app.use(express.json());
 
 // Ensure images folder exists
