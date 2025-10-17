@@ -35,7 +35,7 @@ app.post('/ai', async (req, res) => {
   try {
     let result;
 
-    if (process.env.MOCK_API === "false") {
+    if (process.env.MOCK_API === "true") {
       if (type === "image") {
         result = "https://via.placeholder.com/512";
       } else {
