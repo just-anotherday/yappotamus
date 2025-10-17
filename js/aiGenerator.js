@@ -1,5 +1,5 @@
 // AI Generator
-export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com') {
+export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com/ai') {
   const loadBtn = document.getElementById('load-ai-generator');
   const generateBtn = document.getElementById('generate-ai');
   const panel = document.getElementById('ai-generator-panel');
@@ -31,7 +31,7 @@ export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com') {
       });
 
       let data;
-      try { data = await res.json(); } 
+      try { data = await res.json(); }
       catch { data = null; }
 
       console.log("Response status:", res.status, "Data:", data);
