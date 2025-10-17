@@ -53,7 +53,6 @@ setInterval(() => {
   }
 }, 60000);
 
-// FIXED CORS configuration - remove the problematic line
 app.use(cors({
   origin: ["https://just-anotherday.github.io", "http://localhost:3000"],
   methods: ["GET", "POST", "OPTIONS"],
