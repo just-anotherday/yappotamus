@@ -64,7 +64,7 @@ app.use(express.json());
 
 // Route to check backend
 app.get('/', (req, res) => {
-  res.send('AI Generator Backend is Running - Multi-Model Support');
+  res.send('AI Generator Backend is Running - OpenAI Only');
 });
 
 const MAX_PROMPT_LENGTH = 200;
@@ -186,81 +186,6 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
   }
 });
 
-// DeepSeek endpoint (optional - you can remove this if you don't want to use DeepSeek)
-app.post('/api/deepseek', rateLimit(60000, 5), async (req, res) => {
-  // Global rate limit as backup
-  if (requestCount >= 100) {
-    return res.status(429).json({ error: "Service temporarily overloaded. Try again later." });
-  }
-  requestCount++;
-
-  const { message, context = [] } = req.body;
-  
-  // Input validation
-  const validationError = validatePrompt(message);
-  if (validationError) {
-    return res.status(400).json({ error: validationError });
-  }
-
-  // Check if DeepSeek API key is available
-  if (!process.env.DEEPSEEK_API_KEY) {
-    return res.status(503).json({ 
-      error: "DeepSeek service temporarily unavailable. Please use OpenAI model." 
-    });
-  }
-
-  try {
-    // Build messages array with context
-    const messages = [
-      ...context,
-      { role: "user", content: message }
-    ];
-
-    // DeepSeek API call
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: messages,
-        max_tokens: 150,
-        temperature: 0.7,
-        stream: false
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('DeepSeek API error:', errorData);
-      
-      // Handle DeepSeek specific errors
-      if (response.status === 401) {
-        throw new Error('DeepSeek API key invalid or expired');
-      } else if (response.status === 429) {
-        throw new Error('DeepSeek rate limit exceeded');
-      } else {
-        throw new Error(errorData.error?.message || `DeepSeek API error: ${response.status}`);
-      }
-    }
-
-    const data = await response.json();
-    console.log("DeepSeek response received for message:", message.substring(0, 50) + '...');
-    
-    const reply = data.choices?.[0]?.message?.content || "No response generated.";
-
-    // Log successful usage
-    console.log(`DeepSeek used by ${req.ip}: ${message.substring(0, 50)}...`);
-
-    res.json({ reply });
-
-  } catch (err) {
-    handleAPIError(err, res);
-  }
-});
-
 // Keep your existing /ai endpoint for backward compatibility
 app.post('/ai', rateLimit(60000, 5), async (req, res) => {
   // Global rate limit as backup
@@ -314,14 +239,13 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => {
   }
 });
 
-// Health check endpoint to verify all services
+// Health check endpoint to verify services
 app.get('/health', async (req, res) => {
   const health = {
     status: 'ok',
     timestamp: new Date().toISOString(),
     services: {
-      openai: 'unknown',
-      deepseek: process.env.DEEPSEEK_API_KEY ? 'unknown' : 'not_configured'
+      openai: 'unknown'
     }
   };
 
@@ -337,29 +261,14 @@ app.get('/health', async (req, res) => {
     health.services.openai = 'unreachable';
   }
 
-  // Check DeepSeek only if API key is configured
-  if (process.env.DEEPSEEK_API_KEY) {
-    try {
-      const testResponse = await fetch('https://api.deepseek.com/v1/models', {
-        headers: {
-          'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`
-        }
-      });
-      health.services.deepseek = testResponse.ok ? 'healthy' : 'unhealthy';
-    } catch {
-      health.services.deepseek = 'unreachable';
-    }
-  }
-
   res.json(health);
 });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Multi-model AI backend running on port ${PORT}`);
+  console.log(`AI backend running on port ${PORT}`);
   console.log('Available endpoints:');
   console.log('  POST /api/openai - OpenAI GPT-3.5');
-  console.log('  POST /api/deepseek - DeepSeek Chat');
   console.log('  POST /ai - Legacy endpoint (OpenAI)');
   console.log('  GET /health - Service status');
 });
