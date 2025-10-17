@@ -53,16 +53,12 @@ setInterval(() => {
   }
 }, 60000);
 
-app.use(
-  cors({
-    origin: ["https://just-anotherday.github.io", "http://localhost:3000"],
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type","Authorization"],
-  })
-);
-
-// Handling preflight (OPTIONS) requests
-app.options('*', cors());
+// FIXED CORS configuration - remove the problematic line
+app.use(cors({
+  origin: ["https://just-anotherday.github.io", "http://localhost:3000"],
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"],
+}));
 
 // Middleware
 app.use(express.json());
@@ -73,7 +69,7 @@ app.get('/', (req, res) => {
 });
 
 const MAX_PROMPT_LENGTH = 200;
-const BAD_WORDS = ['spam', 'hack', 'attack', 'malicious', 'virus', 'exploit']; // Add more as needed
+const BAD_WORDS = ['spam', 'hack', 'attack', 'malicious', 'virus', 'exploit'];
 
 // Global request counter (as backup)
 let requestCount = 0;
@@ -191,7 +187,7 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
   }
 });
 
-// DeepSeek endpoint
+// DeepSeek endpoint (optional - you can remove this if you don't want to use DeepSeek)
 app.post('/api/deepseek', rateLimit(60000, 5), async (req, res) => {
   // Global rate limit as backup
   if (requestCount >= 100) {
@@ -326,7 +322,7 @@ app.get('/health', async (req, res) => {
     timestamp: new Date().toISOString(),
     services: {
       openai: 'unknown',
-      deepseek: 'unknown'
+      deepseek: process.env.DEEPSEEK_API_KEY ? 'unknown' : 'not_configured'
     }
   };
 
@@ -342,16 +338,18 @@ app.get('/health', async (req, res) => {
     health.services.openai = 'unreachable';
   }
 
-  // Check DeepSeek
-  try {
-    const testResponse = await fetch('https://api.deepseek.com/v1/models', {
-      headers: {
-        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`
-      }
-    });
-    health.services.deepseek = testResponse.ok ? 'healthy' : 'unhealthy';
-  } catch {
-    health.services.deepseek = 'unreachable';
+  // Check DeepSeek only if API key is configured
+  if (process.env.DEEPSEEK_API_KEY) {
+    try {
+      const testResponse = await fetch('https://api.deepseek.com/v1/models', {
+        headers: {
+          'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`
+        }
+      });
+      health.services.deepseek = testResponse.ok ? 'healthy' : 'unhealthy';
+    } catch {
+      health.services.deepseek = 'unreachable';
+    }
   }
 
   res.json(health);
