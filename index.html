@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jason Yap | Portfolio</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+
+<body>
+  <div class="content">
+    <header>
+      <nav class="main-nav">
+        <a href="index.html">Home</a>
+        <a href="html/resume.html">Resume</a>
+        <a href="projects/projects.html">Projects</a>
+        <a href="recipes/recipes.html">Recipes</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="about" class="about-card">
+        <div class="about-container">
+          <img src="assets/tempProfilePhoto.jpg" alt="Jason Yap Photo" class="about-photo" />
+          
+          <div class="about-text">
+            <h2>About Me</h2>
+            <p>
+              I'm a senior at the <strong>University of Central Florida</strong> studying <strong>Computer Science</strong>. 
+              Born and raised in <strong>New York City</strong>, I now call <strong>Oviedo, Florida</strong> home, where I've cultivated a strong work ethic and curiosity for problem-solving.
+            </p>
+            <p>
+              After high school at <strong>Francis Lewis High School</strong>, where I was part of the <em>ROTC program</em>, 
+              I worked at <strong>T-Mobile</strong> while starting studies in accounting at <em>Baruch College</em>. 
+              Early on, I realized I needed a more purposeful path and decided to redirect my focus toward a field I was truly passionate about.
+            </p>
+            <p>
+              I enlisted in the <strong>U.S. Army</strong> and was stationed at <em>Fort Bragg, North Carolina</em>, 
+              where I pushed myself to grow under pressure, mastering discipline, leadership, and resilience. 
+              After my service, I set my sights on <strong>Orlando, Florida</strong> to tackle new challenges 
+              in technology and education, determined to turn curiosity into real-world impact.
+            </p>
+            <p>
+              Today, I'm passionate about <strong>AI</strong>, <strong>backend development</strong>, 
+              and <strong>building software that solves real-world problems</strong>. 
+              Every step of my journey has shaped how I approach challenges with focus, curiosity, and the drive to build something meaningful.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="resume">
+        <h2>Resume</h2>
+        <p>You can view or download my resume below:</p>
+        <a href="assets/yapResume.pdf" target="_blank" class="button">View Resume</a>
+      </section>
+    </main>
+
+
+  </div>
+</body>
+
+<script>
+let saluteCount = 0;
+const profilePhoto = document.querySelector('.about-photo');
+
+// Preload bugle sound
+const bugle = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-military-bugle-call-491.mp3');
+bugle.volume = 0.3;
+
+profilePhoto.addEventListener('click', () => {
+  saluteCount++;
+  if (saluteCount === 3) {
+    bugle.currentTime = 0;
+    bugle.play().catch(() => {});
+
+    profilePhoto.style.animation = 'militarySalute 2s ease-in-out';
+
+    // Replace profile photo with flag
+    showFlagOverPhoto(profilePhoto);
+
+    setTimeout(() => {
+      profilePhoto.style.animation = '';
+      saluteCount = 0;
+    }, 2000);
+  }
+});
+
+/* Flag Easter Egg */
+function showFlagOverPhoto(photo) {
+  const rect = photo.getBoundingClientRect();
+  
+  // Hide photo temporarily
+  photo.style.visibility = 'hidden';
+
+  const flag = document.createElement('div');
+  flag.className = 'photo-flag';
+  flag.style.width = rect.width * 1.3 + 'px';
+  flag.style.height = rect.height * 1.3 + 'px';
+  flag.style.top = rect.top + window.scrollY + rect.height/2 - (rect.height*1.5)/2 + 'px';
+  flag.style.left = rect.left + window.scrollX + rect.width/2 - (rect.width*1.5)/2 + 'px';
+
+  // Build canton and stars
+  const canton = document.createElement('div');
+  canton.className = 'flag-canton';
+  for (let row = 0; row < 9; row++) {
+    const rowDiv = document.createElement('div');
+    rowDiv.className = 'star-row';
+    const starCount = row % 2 === 0 ? 6 : 5;
+    for (let i = 0; i < starCount; i++) {
+      const star = document.createElement('span');
+      star.className = 'flag-star';
+      star.textContent = '★';
+      rowDiv.appendChild(star);
+    }
+    canton.appendChild(rowDiv);
+  }
+  flag.appendChild(canton);
+  document.body.appendChild(flag);
+
+  setTimeout(() => {
+    flag.remove();
+    photo.style.visibility = 'visible';
+  }, 6000);
+}
+</script>
+
+<style>
+.photo-flag {
+  position: absolute;
+  z-index: 10000;
+  animation: wave 4.9s ease-in-out alternate;
+  background: repeating-linear-gradient(
+    to bottom,
+    #b31942 0 7.7%,
+    white 7.7% 15.4%
+  );
+  border: 2px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.flag-canton {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 53%;
+  background: #0a3161;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  padding: 2px 4px;
+}
+
+.star-row {
+  display: flex;
+  justify-content: space-evenly;
+}
+
+.flag-star {
+  color: white;
+  font-size: 10px;
+  line-height: 1;
+}
+
+@keyframes wave {
+  0% { transform: rotate(-2deg) skewY(0deg); }
+  50% { transform: rotate(2deg) skewY(2deg); }
+  100% { transform: rotate(-2deg) skewY(0deg); }
+}
+</style>
+
+</html>

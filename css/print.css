@@ -1,0 +1,153 @@
+/* ==========================================================================
+   Print Styles for Recipe
+   ========================================================================== */
+
+@media print {
+    /* Hide elements not needed for printing */
+    .main-nav,
+    .quick-nav,
+    .serving-selector,
+    .print-btn,
+    .image-gallery,
+    .modal,
+    footer {
+        display: none !important;
+    }
+    
+    /* Base print styles */
+    body {
+        background: white !important;
+        color: black !important;
+        font-size: 12pt;
+        line-height: 1.4;
+        margin: 0 !important;
+        padding: 0.5in !important;
+    }
+    
+    .content {
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-shadow: none !important;
+        background: white !important;
+    }
+    
+    /* Typography for print */
+    h1, h2, h3, h4, h5, h6 {
+        color: black !important;
+        page-break-after: avoid;
+    }
+    
+    .section-title {
+        border: 2px solid black !important;
+        color: black !important;
+        margin: 20pt 0 10pt 0 !important;
+    }
+    
+    .section-title h1,
+    .section-title h2 {
+        color: black !important;
+    }
+    
+    /* Ingredients formatting */
+    .ingredient-list {
+        margin: 15pt 0 !important;
+    }
+    
+    .ingredient-category {
+        margin-bottom: 15pt !important;
+        page-break-inside: avoid;
+    }
+    
+    .ingredient-category h4 {
+        color: black !important;
+        border-bottom: 1px solid #ccc !important;
+    }
+    
+    .ingredient-item {
+        margin: 5pt 0 !important;
+    }
+    
+    .ingredient-quantity {
+        color: black !important;
+        font-weight: bold;
+    }
+    
+    /* Steps formatting */
+    .step {
+        border-left: 2px solid #666 !important;
+        margin: 15pt 0 !important;
+        page-break-inside: avoid;
+    }
+    
+    .step h3 {
+        color: black !important;
+    }
+    
+    /* Links in print */
+    a {
+        color: black !important;
+        text-decoration: underline;
+    }
+    
+    /* Recipe metadata */
+    .recipe-author,
+    .cook-time {
+        text-align: center;
+        margin: 10pt 0;
+        color: black !important;
+    }
+    
+    .cook-time {
+        font-size: 14pt;
+    }
+    
+    /* Page breaks */
+    .section-title,
+    .ingredient-category,
+    .step {
+        page-break-inside: avoid;
+    }
+    
+    /* Thank you message */
+    .thank-you {
+        font-size: 36pt;
+        margin-top: 30pt;
+        text-align: center;
+        color: black !important;
+    }
+    
+    /* Ensure good margins */
+    @page {
+        margin: 0.5in;
+    }
+    
+    /* Avoid breaking in the middle of important content */
+    h1, h2, h3, h4 {
+        page-break-after: avoid;
+    }
+    
+    /* Table of contents for print */
+    .recipe-toc {
+        background: white !important;
+        border: 1px solid #ccc;
+        margin: 15pt 0;
+    }
+    
+    .recipe-toc a {
+        color: black !important;
+    }
+    
+    /* Print URL after links */
+    a[href]:after {
+        content: " (" attr(href) ")";
+        font-size: 10pt;
+        color: #666;
+    }
+    
+    /* Don't print URLs for these */
+    .recipe-toc a:after,
+    .nav-link:after {
+        content: "" !important;
+    }
+}

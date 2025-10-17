@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jason Yap | Projects</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <style>
+    /* Game/Easter Egg / AI Generator Styles */
+    .project-image { cursor: pointer; transition: transform 0.1s ease; }
+    .generator-container { margin-top: 1rem; }
+    #ai-prompt { width: 70%; padding: 0.5rem; margin-right: 0.5rem; }
+    #ai-type, #generate-ai { padding: 0.5rem; }
+
+    @keyframes nuclearExplodePhase1 { 0% { transform: scale(1); opacity: 1; filter: blur(0); } 25% { transform: scale(1.5) rotate(45deg); opacity: 0.8; filter: blur(2px); } 50% { transform: scale(2) rotate(90deg); opacity: 0.5; filter: blur(5px); } 75% { transform: scale(2.5) rotate(135deg); opacity: 0.2; filter: blur(10px); } 100% { transform: scale(3) rotate(180deg); opacity: 0; filter: blur(20px); } }
+    @keyframes explosionPulse { 0% { transform: translate(-50%, -50%) scale(0); opacity: 1; } 50% { transform: translate(-50%, -50%) scale(1.5); opacity: 0.7; } 100% { transform: translate(-50%, -50%) scale(2); opacity: 0; } }
+    @keyframes screenShake { 0%,100%{transform:translateX(0) translateY(0);} 10%,30%,50%,70%,90%{transform:translateX(-10px) translateY(-5px);} 20%,40%,60%,80%{transform:translateX(10px) translateY(5px);} }
+    @keyframes matrixFall { 0% { transform: translateY(-20px) rotate(0deg); opacity: 1; } 100% { transform: translateY(100vh) rotate(360deg); opacity: 0; } }
+    @keyframes emergencyFlash { 0%,100%{opacity:0;} 50%{opacity:1;} }
+    @keyframes pageSpin { 0%{transform:rotate(0deg) scale(1);}50%{transform:rotate(180deg) scale(1.1);}100%{transform:rotate(360deg) scale(1);} }
+    @keyframes emojiFloat { 0%{transform:translate(-50%,-50%) scale(0) rotate(0deg);opacity:1;}50%{transform:translate(-50%,-50%) scale(1.5) rotate(180deg);opacity:0.7;}100%{transform:translate(-50%,-50%) scale(2) rotate(360deg);opacity:0;} }
+  </style>
+</head>
+<body>
+  <div id="particles-js"></div>
+
+  <div class="content">
+    <header>
+      <nav class="main-nav">
+        <a href="../index.html">Home</a>
+        <a href="resume.html">Resume</a>
+        <a href="../projects/projects.html">Projects</a>
+        <a href="../recipes/recipes.html">Recipes</a>
+      </nav>
+    </header>
+
+    <main>
+      <!-- slimeScraper Project -->
+      <section id="projects">
+        <h2>Projects</h2>
+        <div class="project about-card">
+          <h3>slimeScraper – Procedural FPS</h3>
+          <img src="../assets/slimeScraper.jpg" alt="slimeScraper Screenshot" class="project-image" />
+          <p>A Unity-built roguelike FPS Prototype that generates random office floors each run. Built with C# and Unity in 4 weeks.</p>
+
+          <div class="game-container">
+            <h3>🎮 Play slimeScraper in Browser</h3>
+            <div class="game-preview" id="game-preview">
+              <div class="game-warning">
+                <p>⚠️ <strong>Large File Warning</strong></p>
+                <p>This WebGL game is ~25MB and may take time to load.</p>
+                <p>Only load if you have a stable internet connection.</p>
+                <p>Game has bugs, Sorry in advance if you almost beat the game!</p>
+              </div>
+              <button class="load-game-btn" onclick="loadGame()">🎮 Click to Load Game</button>
+              <p><small>WebGL Game - Click to load when ready</small></p>
+            </div>
+            <div class="game-embed" id="game-embed" style="display:none;">
+              <iframe frameborder="0" src="about:blank" width="1000" height="800" id="game-iframe" allowfullscreen></iframe>
+              <br>
+              <button class="unload-game-btn" onclick="unloadGame()">❌ Unload Game</button>
+            </div>
+          </div>
+
+          <div style="margin-top:2rem;">
+            <a href="https://drive.google.com/file/d/1kTFxKTB3IJgjsaHWvTi8OBCw61ecxvPT/view?usp=sharing" target="_blank" class="button">⬇️ Download Game (.zip)</a>
+            <p class="instructions">After downloading, open the .exe file, extract the ZIP and double-click the `.exe` to play the game. Enjoy the Prototype!</p>
+          </div>
+        </div>
+      </section>
+
+      <hr class="projects-separator">
+
+      <!-- AI Generator -->
+      <section id="ai-generator" class="project about-card">
+        <h2>🤖 AI Generator</h2>
+        <p>Try generating images or text with AI! Enter a prompt and see the results below.</p>
+        <div class="generator-container">
+          <button id="load-ai-generator" class="button">🖱️ Load AI Generator</button>
+          <div id="ai-generator-panel" style="display:none; margin-top:1rem;">
+            <input type="text" id="ai-prompt" placeholder="Enter a prompt..." />
+            <select id="ai-type">
+              <option value="image">Image</option>
+              <option value="text">Text</option>
+            </select>
+            <button id="generate-ai" class="button">Generate</button>
+            <div id="ai-result" style="margin-top:1rem;"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer id="footcolor">
+    <p>© 2025 Jason Yap — This website is my personal project.</p>
+    <p>
+      <a href="mailto:jason-yap@outlook.com">Email</a> | 
+      <a href="https://instagram.com/yappotamus" target="_blank">Instagram</a> | 
+      <a href="https://github.com/just-anotherday" target="_blank">GitHub</a>
+    </p>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <script type="module" src="../js/main.js"></script>
+
+</body>
+</html>

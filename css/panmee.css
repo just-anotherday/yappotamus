@@ -1,0 +1,358 @@
+/* ==========================================================================
+   Pan Mee Recipe Styles
+   ========================================================================== */
+
+/* Recipe Layout */
+#recipe {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+/* Recipe Header */
+.recipe-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.recipe-author {
+  text-align: center;
+  margin: 1rem 0 2rem 0;
+  color: #2c3e50;
+}
+
+.cook-time {
+  color: #C00000;
+  font-size: 1.1rem;
+  text-align: center;
+  margin: 1rem 0 2rem 0;
+}
+
+/* Quick Navigation */
+.quick-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 2rem;
+  gap: 1rem;
+}
+
+.jump-to-recipe {
+  background: #3498db;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background-color 0.3s ease;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.jump-to-recipe:hover {
+  background: #2980b9;
+}
+
+/* Back to Top Button */
+.back-to-top {
+  background: #BA9B37;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background-color 0.3s ease;
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+}
+
+.back-to-top:hover {
+  background: #a88c2f;
+}
+
+/* Back to top visibility classes */
+.back-to-top.hidden {
+  display: none;
+}
+
+.back-to-top.visible {
+  display: block;
+}
+
+/* Table of Contents */
+.recipe-toc {
+  background-color: #f8f8f8;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 2rem 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.recipe-toc ul {
+  list-style-type: none;
+  padding: 0;
+}
+
+.recipe-toc li {
+  margin: 0.5rem 0;
+}
+
+.recipe-toc a {
+  text-decoration: none;
+  color: #3498db;
+  font-weight: bold;
+  transition: color 0.3s ease;
+}
+
+.recipe-toc a:hover {
+  color: #2980b9;
+  text-decoration: underline;
+}
+
+/* Serving Size Selector */
+.serving-selector {
+  background-color: #f8f8f8;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 2rem 0;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.serving-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.serving-btn {
+  background: #3498db;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.serving-btn:hover {
+  background: #2980b9;
+}
+
+.serving-display {
+  font-size: 1.5rem;
+  font-weight: bold;
+  min-width: 60px;
+  text-align: center;
+  padding: 0.5rem 1rem;
+  background-color: white;
+  border: 2px solid #3498db;
+  border-radius: 5px;
+}
+
+/* Ingredients List */
+.ingredient-list {
+  margin: 2rem 0;
+}
+
+.ingredient-category {
+  margin-bottom: 2rem;
+  background-color: #f8f8f8;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.ingredient-category h4 {
+  color: #2c3e50;
+  border-bottom: 2px solid #2c3e50;
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.ingredient-item {
+  margin: 0.5rem 0;
+  padding: 0.25rem 0;
+  line-height: 1.6;
+}
+
+.ingredient-quantity {
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+/* Steps */
+.step {
+  margin: 2rem 0;
+  padding: 1.5rem;
+  background-color: #f8f8f8;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.step h3 {
+  color: #2c3e50;
+  border-bottom: 2px solid #2c3e50;
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.step-content {
+  line-height: 1.6;
+}
+
+/* Image Gallery */
+.image-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 1rem 0;
+  justify-content: center;
+}
+
+.image-gallery img {
+  max-width: 200px;
+  height: auto;
+  cursor: pointer;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: transform 0.3s ease;
+}
+
+.image-gallery img:hover {
+  transform: scale(1.05);
+}
+
+/* Modal for images */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0,0,0,0.9);
+}
+
+.modal-content {
+  margin: auto;
+  display: block;
+  max-width: 90%;
+  max-height: 90%;
+  margin-top: 2%;
+}
+
+.close {
+  position: absolute;
+  top: 15px;
+  right: 35px;
+  color: #f1f1f1;
+  font-size: 40px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+/* Print Button */
+.print-btn {
+  display: block;
+  margin: 2rem auto;
+  background: #3498db;
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 5px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.print-btn:hover {
+  background: #2980b9;
+}
+
+/* Thank You */
+.thank-you {
+  font-size: 2rem;
+  text-align: center;
+  margin: 3rem 0;
+  color: #2c3e50;
+  font-weight: bold;
+}
+
+/* ==========================================================================
+   Responsive Design
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  .quick-nav {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .serving-controls {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .image-gallery img {
+    max-width: 150px;
+  }
+  
+  .ingredient-category,
+  .step {
+    padding: 1rem;
+  }
+  
+  .back-to-top {
+    bottom: 10px;
+    right: 10px;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.9rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .image-gallery img {
+    max-width: 100%;
+  }
+  
+  .quick-nav {
+    text-align: center;
+  }
+  
+  .jump-to-recipe {
+    width: 100%;
+  }
+}
+
+/* ==========================================================================
+   Print Styles
+   ========================================================================== */
+
+@media print {
+  .quick-nav,
+  .serving-selector,
+  .print-btn,
+  .back-to-top {
+    display: none;
+  }
+  
+  .image-gallery {
+    display: none;
+  }
+  
+  .modal {
+    display: none !important;
+  }
+}

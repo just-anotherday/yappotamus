@@ -1,0 +1,74 @@
+/* ==========================================================================
+   Recipe Collection Layout Styles
+   ========================================================================== */
+
+.recipe-hero {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  margin: 2rem 0;
+  padding: 2rem;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border-radius: 16px;
+  border-left: 5px solid #BA9B37;
+}
+
+.recipe-hero img {
+  width: 180px;
+  height: 180px;
+  object-fit: cover;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.recipe-hero-content h3 {
+  font-size: 1.75rem;
+  color: #2c3e50;
+  margin-bottom: 0.5rem;
+}
+
+.recipe-hero-content p {
+  color: #666;
+  line-height: 1.6;
+  margin-bottom: 1rem;
+}
+
+.recipe-link {
+  display: inline-block;
+  background: #BA9B37;
+  color: white;
+  padding: 0.75rem 1.5rem;
+  text-decoration: none;
+  border-radius: 8px;
+  font-weight: bold;
+  transition: all 0.3s ease;
+}
+
+.recipe-link:hover {
+  background: #a08530;
+  transform: translateY(-2px);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .recipe-hero {
+    flex-direction: column;
+    text-align: center;
+    padding: 1.5rem;
+  }
+  
+  .recipe-hero img {
+    width: 150px;
+    height: 150px;
+  }
+}
+
+.coming-soon {
+  text-align: center;
+  margin-top: 2rem;
+}
+
+.coming-soon p {
+  color: #666;
+  font-style: italic;
+}

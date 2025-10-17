@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jason Yap | Pan Mee Recipe</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <link rel="stylesheet" href="../css/panmee.css" />
+  <link rel="stylesheet" href="../css/print.css" media="print" />
+</head>
+<body>
+  <div class="content">
+    <header>
+      <nav class="main-nav">
+        <a href="../index.html">Home</a>
+        <a href="resume.html">Resume</a>
+        <a href="../projects/projects.html">Projects</a>
+        <a href="../recipes/recipes.html">../recipes/Recipes</a>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Quick Navigation -->
+      <div class="quick-nav">
+        <button class="jump-to-recipe" onclick="scrollToSection('ingredients')">Jump to Recipe</button>
+        <button class="back-to-top" onclick="scrollToTop()">↑ Back to Top</button>
+      </div>
+
+      <section id="recipe">
+        <h1>HOW TO MAKE PAN MEE</h1>
+        <p class="recipe-author"><b>JASON YAP</b></p>
+        
+        <div class="image-gallery">
+          <img src="../assets/panmee_photo/image002.jpg" alt="Pan Mee - Finished dish showing noodles in anchovy broth with toppings" loading="lazy" onclick="openModal(this.src)" />
+        </div>
+
+        <!-- Table of Contents -->
+        <div class="recipe-toc">
+          <h3>Jump to Section:</h3>
+          <ul>
+            <li><a href="#introduction">Introduction</a></li>
+            <li><a href="#ingredients">Ingredients</a></li>
+            <li><a href="#preparation">Preparation</a></li>
+            <li><a href="#instructions">Instructions</a></li>
+            <li><a href="#assembly">Assembly</a></li>
+          </ul>
+        </div>
+
+        <!-- Introduction -->
+        <section id="introduction">
+          <h2>INTRODUCTION</h2>
+          <p>Greetings everyone! This recipe provides detailed steps to making Pan Mee which is a Malaysian Chinese recipe that includes anchovy rich broth paired with hand-torn noodles made from scratch and topped with stir fried pork and shiitake mushrooms. It does require more time compared to your everyday meal. However, if you are an anchovy fan, this homemade recipe is mouthwatering.</p>
+          <p class="cook-time"><b>COOK TIME 2 HOURS</b></p>
+
+          <!-- Serving Size Selector -->
+          <div class="serving-selector">
+            <h3>Adjust Serving Size:</h3>
+            <div class="serving-controls">
+              <button class="serving-btn" id="decreaseServing">-</button>
+              <div class="serving-display" id="servingSize">3</div>
+              <button class="serving-btn" id="increaseServing">+</button>
+            </div>
+            <p>Base recipe is for <span id="baseServings">3</span> servings</p>
+          </div>
+        </section>
+
+        <!-- Ingredients -->
+        <section id="ingredients">
+          <h2>INGREDIENTS</h2>
+          
+          <div class="ingredient-list">
+            <div class="ingredient-category">
+              <h4>MAIN INGREDIENTS</h4>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> bunch of Yu Choy, <i>cleaned and prewashed</i>
+              </div>
+              <div class="ingredient-item">
+                Vegetable oil, <i>for frying</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="150">150</span> grams (g) dried anchovy, <i>heads removed</i>
+              </div>
+            </div>
+            
+            <div class="ingredient-category">
+              <h4>ANCHOVY SOUP BASE</h4>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="24">24</span> cups (<span class="ingredient-quantity" data-base="6">6</span> quarts) water
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="2">2</span> pounds (lbs.) pork bones
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="0.5">0.5</span> lb. dried anchovy
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> large yellow onion, <i>halves</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> teaspoon (tsp) fish sauce, <i>to taste</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> tsp white peppercorn, <i>crushed</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> thumb-size ginger, <i>quartered</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> honey date
+              </div>
+            </div>
+            
+            <div class="ingredient-category">
+              <h4>NOODLES/DOUGH</h4>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="6">6</span> cups all-purpose flour
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="2">2</span> tablespoon (tbsp) vegetable oil
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> cup water + <span class="ingredient-quantity" data-base="1">1</span> cup water
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> tsp salt
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> tsp sugar
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> tbsp cornstarch
+              </div>
+            </div>
+            
+            <div class="ingredient-category">
+              <h4>GROUND PORK AND SHIITAKE TOPPING</h4>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> lb. ground pork
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="10">10</span> pieces dried shiitake mushroom <i>soaked + stems removed, <b>keep mushroom juices</b>!</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="5">5</span> cloves garlic, <i>minced</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> shallot, <i>minced</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> thumb-size ginger, <i>minced</i>
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> tsp chicken bouillon powder
+              </div>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="1">1</span> tbsp fish sauce
+              </div>
+            </div>
+            
+            <div class="ingredient-category">
+              <h4>DIPPING SAUCE (SPICY)</h4>
+              <div class="ingredient-item">
+                <span class="ingredient-quantity" data-base="10">10</span> Thai chili-peppers, <i>cut to small pieces</i>
+              </div>
+              <div class="ingredient-item">
+                soy sauce, <i>to taste</i>
+              </div>
+            </div>
+          </div>
+
+          <div class="image-gallery">
+            <img src="../assets/panmee_photo/image004.jpg" alt="All ingredients laid out for Pan Mee preparation" loading="lazy" onclick="openModal(this.src)" />
+          </div>
+        </section>
+
+        <!-- Preparation -->
+        <section id="preparation">
+          <h2>PREPARATION</h2>
+          <p>Neck pork bones are my soup bone of choice, but any meat bones would do. Chicken bones are another popular choice. You can also omit the meat if you are in the umami mood.</p>
+          
+          <div class="image-gallery">
+            <img src="../assets/panmee_photo/image006.jpg" alt="Pork bones and soup ingredients prepared" loading="lazy" onclick="openModal(this.src)" />
+          </div>
+          
+          <p>Generally, you want to mince your topping ingredients, so they are subtle in your dish. However, I like to see what I am eating, and you can cut them to small pieces as well.</p>
+          <p>It is also a good time to dice Thai chili peppers and set them aside or in the fridge for more exciting taste.</p>
+          
+          <div class="image-gallery">
+            <img src="../assets/panmee_photo/image008.jpg" alt="Minced garlic, ginger and shallots" loading="lazy" onclick="openModal(this.src)" />
+            <img src="../assets/panmee_photo/image010.jpg" alt="Soaked shiitake mushrooms" loading="lazy" onclick="openModal(this.src)" />
+            <img src="../assets/panmee_photo/image012.jpg" alt="Diced Thai chili peppers" loading="lazy" onclick="openModal(this.src)" />
+          </div>
+        </section>
+
+        <!-- Instructions -->
+        <section id="instructions">
+          <h2>INSTRUCTIONS</h2>
+          
+          <div class="step">
+            <h3>STEP 1: Preparing the Soup Base</h3>
+            <div class="step-content">
+              <p>Cooking the soup begins with rinsing pork bones under cold water while removing impurities. Soak and discard cloudy water. Repeat this step until water is clear as the goal is to make the soup clearer and see through.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image014.jpg" alt="Rinsing pork bones in clear water" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image016.jpg" alt="Cleaned pork bones ready for soup" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 2: Cooking the Soup</h3>
+            <div class="step-content">
+              <p>Bring <span class="ingredient-quantity" data-base="6">6</span> quarts of water to a boil while adding all the soup ingredients. Reduce heat to low and gently give a couple stirs. Close the lid and simmer for 2 hours or until the soup has its sweetness from the pork. Keeping the contents in the pot at a light simmer to reduce evaporation and ensuring flavor consistency. You can add more fish sauce or salt to taste.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image018.jpg" alt="Soup ingredients in boiling water" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image020.jpg" alt="Simmering soup with lid closed" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image022.jpg" alt="Close-up of soup ingredients" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 3: Preparing the Dough</h3>
+            <div class="step-content">
+              <p>While this soup is in the work, prepare the dough by putting <span class="ingredient-quantity" data-base="6">6</span> cups of all-purpose flour into a bowl mixer or hand mixer. Add <span class="ingredient-quantity" data-base="1">1</span> cup of water along with the oil, salt, sugar and cornstarch and mix. Carefully add water or flour as needed and knead the dough until it is no longer sticky. Cover your bowl and let the dough rest for at least an hour.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image024.jpg" alt="Mixing dough ingredients" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image026.jpg" alt="Kneading the dough" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image028.jpg" alt="Dough ingredients close-up" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image030.jpg" alt="Resting dough covered" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 4: Preparing the Pork and Mushroom Topping</h3>
+            <div class="step-content">
+              <p>Next, we prepare the ground pork and shiitake mushroom topping. Bring a non-stick pan or wok to a medium heat. Stir fry <span class="ingredient-quantity" data-base="1">1</span> lb. ground pork until all its liquids have evaporated. Once the pork begins to release its oils, add in the minced garlic, ginger, and shallots and mix. When the garlic is fragrant, add in the shiitake mushrooms, chicken bouillon, and fish sauce. Reduce to low heat and let simmer until its water has evaporated to your preference. Add water for a waterier consistency or combine hot water with cornstarch to create a more gravy like finish. Dish in a bowl and set aside for later.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image032.jpg" alt="Stir-frying ground pork" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image034.jpg" alt="Adding mushrooms to pork" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 5: Frying the Anchovies</h3>
+            <div class="step-content">
+              <p>In a frying pan, heat oil in medium heat. Once the oil is at least 350 degrees Fahrenheit. Put remaining <span class="ingredient-quantity" data-base="150">150</span>g dried anchovies in and constantly stir. Note this will take about 10-15 minutes. Fry until anchovies are golden light brown and crispy. Strain the anchovies and place on top of a napkin on a plate to cool down.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image036.jpg" alt="Frying dried anchovies in oil" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image038.jpg" alt="Crispy fried anchovies" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 6: Preparing the Noodles</h3>
+            <div class="step-content">
+              <p>In a large pot of water, put <span class="ingredient-quantity" data-base="1">1</span> tbsp vegetable oil, <span class="ingredient-quantity" data-base="1">1</span> tbsp salt and bring water to boil. Knead and tear the dough to smaller parts which can be held by both hands. There are many ways to prepare hand tear noodles. One way is to stretch the dough, flatten your dough to approximately those below. You can use a roller to flatten to your preference. Place the dough as you tear them into the heating water.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image040.jpg" alt="Tearing dough into noodles" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image042.jpg" alt="Hand-torn noodle pieces" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image044.jpg" alt="Noodles cooking in boiling water" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 7: Cooking the Noodles and Vegetables</h3>
+            <div class="step-content">
+              <p>When all the dough is in the pot. Stir a couple of times to ensure none are sticking together. Once water is boiling and all the noodles have raised to the top, strain them and dish in a serving bowl. In the same water, boil leafy greens for 3-5 minutes or soft to your preference.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image046.jpg" alt="Straining cooked noodles" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image048.jpg" alt="Boiling Yu Choy vegetables" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Assembly -->
+        <section id="assembly">
+          <h2>ASSEMBLY</h2>
+          
+          <div class="step">
+            <h3>STEP 1: Final Preparation</h3>
+            <div class="step-content">
+              <p>Heat the soup to a rolling boil and strain any of the impurities on top as shown in the photo.</p>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 2: Plating</h3>
+            <div class="step-content">
+              <p>In a bowl, place a portion of noodles, followed by topping and vegetables. Garnish with white pepper, sesame oil, and scallions to your preference.</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image050.jpg" alt="Plating noodles in bowl" loading="lazy" onclick="openModal(this.src)" />
+                <img src="../assets/panmee_photo/image052.jpg" alt="Adding toppings to noodles" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="step">
+            <h3>STEP 3: Serving</h3>
+            <div class="step-content">
+              <p>Pour the hot soup over and garnish with crispy anchovies!</p>
+              <p>Serve immediately and top with more ingredients as everyone please!</p>
+              <div class="image-gallery">
+                <img src="../assets/panmee_photo/image054.jpg" alt="Finished Pan Mee dish ready to serve" loading="lazy" onclick="openModal(this.src)" />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Notes and Print -->
+        <section>
+          <h2>Notes</h2>
+          <ul>
+            <li>Break the chilis to smaller pieces for a spicier taste.</li>
+            <li>Use plain soy sauce if you aren't a fan of spicy.</li>
+            <li>Recipe quantities automatically adjust based on your selected serving size.</li>
+          </ul>
+          
+          <button class="print-btn" onclick="window.print()">Print Recipe</button>
+          
+          <p class="thank-you">THANK YOU!</p>
+        </section>
+      </section>
+    </main>
+
+    <footer id="footcolor">
+      <p>© 2025 Jason Yap — This website is my personal project.</p>
+      <p>
+        <a href="mailto:jason-yap@outlook.com">Email</a> | 
+        <a href="https://instagram.com/yappotamus" target="_blank">Instagram</a> | 
+        <a href="https://github.com/just-anotherday" target="_blank">GitHub</a>
+      </p>
+    </footer>
+  </div>
+
+  <!-- Modal for image viewing -->
+  <div id="imageModal" class="modal">
+    <span class="close" onclick="closeModal()">&times;</span>
+    <img class="modal-content" id="modalImage">
+  </div>
+
+  <script src="../js/panmee.js"></script>
+</body>
+</html>
