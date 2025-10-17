@@ -1,5 +1,5 @@
 // AI Generator
-export function initAIGenerator(serverUrl = 'http://localhost:5000/ai') {
+export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com') {
   const loadBtn = document.getElementById('load-ai-generator');
   const generateBtn = document.getElementById('generate-ai');
   const panel = document.getElementById('ai-generator-panel');
