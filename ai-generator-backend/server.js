@@ -9,7 +9,10 @@ import path from 'path';
 dotenv.config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+    origin: 'https://just-anotherday.github.io/yappotamus',
+    credentials: true
+}));
 app.use(express.json());
 
 // Ensure images folder exists
