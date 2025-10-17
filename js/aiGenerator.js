@@ -1,56 +1,37 @@
-// Simplified Multi-Model AI Generator (works with your current HTML)
+// Multi-Model AI Generator with Chat Interface
 export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com') {
   const loadBtn = document.getElementById('load-ai-generator');
   const generateBtn = document.getElementById('generate-ai');
   const panel = document.getElementById('ai-generator-panel');
-  const promptInput = document.getElementById('ai-prompt');
-  const resultDiv = document.getElementById('ai-result');
+  const userInput = document.getElementById('user-input');
+  const chatMessages = document.getElementById('chat-messages');
+  const modelSelect = document.getElementById('model-select');
+  const modelBadge = document.getElementById('current-model-badge');
 
-  if (!loadBtn || !generateBtn || !panel || !promptInput || !resultDiv) {
-    console.error("Missing one or more AI generator elements in HTML.");
+  if (!loadBtn || !generateBtn || !panel || !userInput || !chatMessages) {
+    console.error("Missing AI generator elements");
     return;
   }
 
-  // Add model selection HTML dynamically
-  if (!document.getElementById('model-select')) {
-    const modelSelectorHTML = `
-      <div style="margin-bottom: 1rem; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0;">
-        <label for="model-select" style="display: block; margin-bottom: 0.5rem; font-weight: bold; color: #333;">
-          Choose AI Model:
-        </label>
-        <div style="display: flex; align-items: center; gap: 15px;">
-          <select id="model-select" style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 5px; background: white; flex: 1;">
-            <option value="openai">OpenAI GPT-3.5</option>
-            <option value="deepseek">DeepSeek Chat</option>
-          </select>
-          <span id="current-model-badge" style="padding: 5px 12px; border-radius: 15px; font-size: 0.8rem; font-weight: bold; color: white; background: #10a37f;">
-            OpenAI GPT-3.5
-          </span>
-        </div>
-      </div>
-    `;
-    panel.insertAdjacentHTML('afterbegin', modelSelectorHTML);
-  }
-
-  const modelSelect = document.getElementById('model-select');
-  const modelBadge = document.getElementById('current-model-badge');
   let currentModel = 'openai';
+  let chatHistory = [];
+  let isLoading = false;
 
   // Event listeners
   loadBtn.addEventListener('click', () => {
-    const isVisible = panel.style.display === 'block';
-    panel.style.display = isVisible ? 'none' : 'block';
-    loadBtn.textContent = isVisible ? 'Open Generator' : 'Close Generator';
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    loadBtn.textContent = panel.style.display === 'block' ? 'Close Generator' : 'Open Generator';
   });
 
   modelSelect.addEventListener('change', (e) => {
     currentModel = e.target.value;
     updateModelBadge();
+    addSystemMessage(`Switched to ${getModelName()} model`);
   });
 
   generateBtn.addEventListener('click', handleGenerate);
   
-  promptInput.addEventListener('keypress', (e) => {
+  userInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleGenerate();
@@ -58,78 +39,104 @@ export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com') {
   });
 
   function updateModelBadge() {
-    const modelName = currentModel === 'openai' ? 'OpenAI GPT-3.5' : 'DeepSeek Chat';
+    const modelName = getModelName();
     modelBadge.textContent = modelName;
     modelBadge.style.background = currentModel === 'openai' ? '#10a37f' : '#3b82f6';
   }
 
-  async function handleGenerate() {
-    const prompt = promptInput.value.trim();
-    if (!prompt) {
-      alert("Please enter a prompt.");
-      return;
-    }
+  function getModelName() {
+    return currentModel === 'openai' ? 'OpenAI GPT-3.5' : 'DeepSeek Chat';
+  }
 
-    // Show loading state
-    generateBtn.disabled = true;
-    generateBtn.textContent = 'Generating...';
-    resultDiv.innerHTML = "<p>🔄 Generating AI response...</p>";
+  async function handleGenerate() {
+    const message = userInput.value.trim();
+    if (!message || isLoading) return;
+
+    addMessage(message, 'user');
+    userInput.value = '';
+    setLoading(true);
 
     try {
-      // Choose the correct endpoint based on selected model
       const endpoint = `${serverUrl}/api/${currentModel}`;
-
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ 
-          message: prompt,
-          context: [] // Empty context for single generation
-        })
-      });
-
-      let data;
-      try { 
-        data = await res.json(); 
-      } catch { 
-        data = null; 
-      }
-
-      console.log("Response status:", res.status, "Data:", data);
-
-      if (!res.ok) {
-        const msg = data?.error || `Server returned status ${res.status}`;
-        resultDiv.innerHTML = `<p style="color:red;">Error: ${msg}</p>`;
-        return;
-      }
-
-      if (!data?.reply) {
-        resultDiv.innerHTML = `<p style="color:red;">No result returned from AI.</p>`;
-        return;
-      }
-
-      // Display the result with model badge
-      resultDiv.innerHTML = `
-        <div style="background: #f8f9fa; padding: 1rem; border-radius: 8px; border-left: 4px solid ${currentModel === 'openai' ? '#10a37f' : '#3b82f6'};">
-          <div style="font-size: 0.8rem; color: #666; margin-bottom: 0.5rem; font-weight: bold;">
-            ${currentModel === 'openai' ? 'OpenAI GPT-3.5' : 'DeepSeek Chat'}
-          </div>
-          <div style="white-space: pre-wrap; font-family: inherit; margin: 0; line-height: 1.5;">
-            ${data.reply}
-          </div>
-        </div>
-      `;
-
+      const response = await callAIAPI(message, endpoint);
+      addMessage(response, 'ai', getModelName());
     } catch (err) {
-      console.error('Generation error:', err);
-      resultDiv.innerHTML = `<p style="color:red;">Error: ${err.message}</p>`;
-    } finally {
-      // Reset button state
-      generateBtn.disabled = false;
-      generateBtn.textContent = 'Generate Text';
+      console.error('AI API Error:', err);
+      addMessage('Sorry, I encountered an error. Please try again.', 'ai', 'System');
     }
+
+    setLoading(false);
+  }
+
+  async function callAIAPI(message, endpoint) {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        message: message,
+        context: chatHistory.slice(-6)
+      })
+    });
+
+    const data = await res.json();
+    
+    if (!res.ok) {
+      throw new Error(data?.error || `Request failed: ${res.status}`);
+    }
+
+    if (!data?.reply) {
+      throw new Error('No result returned from AI');
+    }
+
+    // Update chat history
+    chatHistory.push(
+      { role: 'user', content: message },
+      { role: 'assistant', content: data.reply }
+    );
+
+    return data.reply;
+  }
+
+  function addMessage(content, sender, modelName = null) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${sender}-message`;
+    
+    const modelDisplay = sender === 'ai' && modelName 
+      ? `<div class="model-indicator">${modelName}</div>` 
+      : '';
+
+    messageDiv.innerHTML = `
+      <div class="message-content">
+        ${modelDisplay}
+        ${escapeHtml(content)}
+      </div>
+    `;
+
+    chatMessages.appendChild(messageDiv);
+    scrollToBottom();
+  }
+
+  function addSystemMessage(content) {
+    addMessage(content, 'ai', 'System');
+  }
+
+  function setLoading(loading) {
+    isLoading = loading;
+    generateBtn.disabled = loading;
+    generateBtn.textContent = loading ? 'Generating...' : 'Generate Text';
+  }
+
+  function scrollToBottom() {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function escapeHtml(unsafe) {
+    return unsafe
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   // Initialize
