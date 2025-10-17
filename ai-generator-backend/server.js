@@ -11,7 +11,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: ["https://just-anotherday.github.io", "http://localhost:3000"],
+    origin: ["https://just-anotherday.github.io","https://just-anotherday.github.io/yappotamus", "http://localhost:3000"],
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type","Authorization"],
   })
