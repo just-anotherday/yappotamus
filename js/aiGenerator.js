@@ -46,18 +46,7 @@ export function initAIGenerator(serverUrl = 'https://yappotamus.onrender.com/ai'
         resultDiv.innerHTML = `<p style="color:red;">No result returned.</p>`;
         return;
       }
-
-      // Display image or text
-      if (type === "image") {
-        // Check if result is already a full URL
-        const imageUrl = data.result.startsWith('http')
-          ? data.result
-          : `${serverUrl.replace('/ai','')}${data.result}`;
-        resultDiv.innerHTML = `<img src="${imageUrl}" alt="AI result" style="max-width:90vw; border-radius:8px;" />`;
-      } else {
-       console.log("AI Results:", data.result);
-        resultDiv.innerHTML = `<pre style="white-space:pre-wrap; font-family:monospace;">${data.result}</pre>`;
-      }
+      resultDiv.innerHTML = `<pre style="white-space:pre-wrap; font-family:monospace;">${data.result}</pre>`;
 
     } catch (err) {
       console.error(err);

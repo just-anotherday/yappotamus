@@ -107,7 +107,7 @@ h2 {
 }
 
 /* Buttons - Using UCF Black */
-a.button {
+a.button, .button {
   display: inline-block;
   background: #000000;
   color: #FFFFFF;
@@ -117,12 +117,38 @@ a.button {
   transition: all 0.3s ease;
   font-weight: bold;
   border: 2px solid #000000;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 1rem;
 }
 
-a.button:hover {
+a.button:hover, .button:hover {
   background: #B89D29;
   color: #000000;
   transform: translateY(-2px);
+}
+
+.button.accent {
+  background: #FFC904;
+  color: #000000;
+  border: 2px solid #FFC904;
+}
+
+.button.accent:hover {
+  background: #000000;
+  color: #FFC904;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.button:disabled:hover {
+  background: #000000;
+  color: #FFFFFF;
+  transform: none;
 }
 
 .project-image {
@@ -306,6 +332,93 @@ a.button:hover {
 }
 
 /* ==========================================================================
+   AI Generator Styles
+   ========================================================================== */
+
+.generator-container { 
+  margin-top: 1rem; 
+}
+
+#load-ai-generator {
+  margin-bottom: 1rem;
+}
+
+.input-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  align-items: center;
+}
+
+.input-field {
+  flex: 1;
+  padding: 0.75rem;
+  border: 2px solid #000000;
+  border-radius: 4px;
+  font-size: 1rem;
+  font-family: inherit;
+  background: #FFFFFF;
+  transition: border-color 0.3s ease;
+}
+
+.input-field:focus {
+  outline: none;
+  border-color: #FFC904;
+  box-shadow: 0 0 0 3px rgba(255, 201, 4, 0.1);
+}
+
+.ai-result-box { 
+  margin-top: 1rem; 
+  padding: 1.5rem; 
+  background: #F5F5F5; 
+  border-radius: 8px; 
+  min-height: 100px;
+  border: 2px solid #000000;
+  transition: all 0.3s ease;
+  color: #333;
+}
+
+.ai-result-box.error {
+  background: #FFE6E6;
+  border-color: #DC3545;
+  color: #721C24;
+}
+
+.ai-result-box.warning {
+  background: #FFF3E0;
+  border-color: #FF9800;
+  color: #856404;
+}
+
+.ai-result-box.success {
+  background: #F6FFED;
+  border-color: #52C41A;
+  color: #155724;
+}
+
+.ai-result-box.loading {
+  background: #E6F7FF;
+  border-color: #1890FF;
+  color: #004085;
+}
+
+.char-counter {
+  font-size: 0.8rem;
+  color: #666;
+  text-align: right;
+  margin-top: 0.25rem;
+}
+
+/* Game/Easter Egg Animations */
+@keyframes nuclearExplodePhase1 { 0% { transform: scale(1); opacity: 1; filter: blur(0); } 25% { transform: scale(1.5) rotate(45deg); opacity: 0.8; filter: blur(2px); } 50% { transform: scale(2) rotate(90deg); opacity: 0.5; filter: blur(5px); } 75% { transform: scale(2.5) rotate(135deg); opacity: 0.2; filter: blur(10px); } 100% { transform: scale(3) rotate(180deg); opacity: 0; filter: blur(20px); } }
+@keyframes explosionPulse { 0% { transform: translate(-50%, -50%) scale(0); opacity: 1; } 50% { transform: translate(-50%, -50%) scale(1.5); opacity: 0.7; } 100% { transform: translate(-50%, -50%) scale(2); opacity: 0; } }
+@keyframes screenShake { 0%,100%{transform:translateX(0) translateY(0);} 10%,30%,50%,70%,90%{transform:translateX(-10px) translateY(-5px);} 20%,40%,60%,80%{transform:translateX(10px) translateY(5px);} }
+@keyframes matrixFall { 0% { transform: translateY(-20px) rotate(0deg); opacity: 1; } 100% { transform: translateY(100vh) rotate(360deg); opacity: 0; } }
+@keyframes emergencyFlash { 0%,100%{opacity:0;} 50%{opacity:1;} }
+@keyframes pageSpin { 0%{transform:rotate(0deg) scale(1);}50%{transform:rotate(180deg) scale(1.1);}100%{transform:rotate(360deg) scale(1);} }
+@keyframes emojiFloat { 0%{transform:translate(-50%,-50%) scale(0) rotate(0deg);opacity:1;}50%{transform:translate(-50%,-50%) scale(1.5) rotate(180deg);opacity:0.7;}100%{transform:translate(-50%,-50%) scale(2) rotate(360deg);opacity:0;} }
+
+/* ==========================================================================
    Responsive Design
    ========================================================================== */
 
@@ -345,6 +458,22 @@ a.button:hover {
   footer {
     padding: 1rem;
   }
+
+  /* AI Generator Responsive */
+  .input-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .input-field {
+    width: 100%;
+    margin-right: 0;
+    margin-bottom: 0.5rem;
+  }
+
+  #ai-generator input, #ai-generator select, #ai-generator button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 480px) {
@@ -372,6 +501,11 @@ a.button:hover {
 
   footer p {
     font-size: 0.9rem;
+  }
+
+  .ai-result-box {
+    padding: 1rem;
+    min-height: 80px;
   }
 }
 
@@ -404,21 +538,10 @@ a.button:hover {
     color: black !important;
     border-top: 1px solid #ccc;
   }
-}
 
-#ai-generator input, #ai-generator select, #ai-generator button {
-  margin: 0.3rem 0;
-  padding: 0.5rem;
-  font-size: 1rem;
-}
-
-#ai-generator img {
-  display: block;
-  margin-top: 1rem;
-}
-
-@media (max-width: 768px) {
-  #ai-generator input, #ai-generator select, #ai-generator button {
-    width: 90vw;
+  .ai-result-box {
+    background: white !important;
+    border: 1px solid #ccc !important;
+    color: black !important;
   }
 }
