@@ -71,35 +71,56 @@
 
       <hr class="projects-separator">
 
-      <section id="ai-generator" class="project about-card">
-        <h2>AI Text Generator</h2>
-        <p>Generate AI-powered text responses using your prompts.</p>
+    <section id="ai-generator" class="project about-card">
+        <h2>Multi-Model AI Text Generator</h2>
+        <p>Generate AI-powered text responses using OpenAI or DeepSeek models.</p>
 
         <div class="generator-container">
-          <button id="load-ai-generator" class="button">Open Generator</button>
+            <button id="load-ai-generator" class="button">Open Generator</button>
 
-          <div id="ai-generator-panel" style="display:none; margin-top:1.5rem;">
-            <div class="input-group">
-              <input
-                type="text"
-                id="ai-prompt"
-                placeholder="Ask me anything or give me a creative prompt..."
-                class="input-field"
-              />
-              <button id="generate-ai" class="button accent">Generate Text</button>
+            <div id="ai-generator-panel" style="display:none; margin-top:1.5rem;">
+                
+                <!-- Model Selection -->
+                <div class="model-selector-group">
+                    <label for="model-select" style="display: block; margin-bottom: 0.5rem; font-weight: bold; color: #333;">
+                        Choose AI Model:
+                    </label>
+                    <select id="model-select" class="model-select">
+                        <option value="openai">OpenAI GPT-3.5</option>
+                        <option value="deepseek">DeepSeek Chat</option>
+                    </select>
+                    <span id="current-model-badge" class="model-badge openai"></span>
+                </div>
+
+                <!-- Chat Interface -->
+                <div class="ai-chat-container" style="margin-top: 1rem;">
+                    <div id="chat-messages" class="chat-messages">
+                        <div class="message ai-message">
+                            <div class="message-content">
+                                <div class="model-indicator"></div>
+                                Hello! I'm your AI assistant. Choose a model above and start chatting!
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="input-area">
+                        <textarea 
+                            id="user-input" 
+                            placeholder="Ask me anything or give me a creative prompt..." 
+                            rows="3" 
+                            class="input-field"
+                            style="width: 100%; margin-bottom: 0.5rem;"
+                        ></textarea>
+                        <button id="generate-ai" class="button accent">Generate Text</button>
+                    </div>
+                </div>
+
+                <p style="text-align: center; font-size: 0.7rem; color: #999; margin-top: 0.5rem;">
+                    Powered by OpenAI & DeepSeek • No data retention • Rate limited for fair usage
+                </p>
             </div>
-
-            <div id="ai-result" class="ai-result-box">
-              <p style="color:#666;">Your AI-generated text will appear here.</p>
-            </div>
-
-          <p style="text-align: center; font-size: 0.7rem; color: #999; margin-top: 0.5rem;">
-            Powered by OpenAI  • No data retention • Rate limited to 100 tokens to ensure fair usage
-          </p>
-
-          </div>
         </div>
-      </section>
+    </section>
 
     </main>
 

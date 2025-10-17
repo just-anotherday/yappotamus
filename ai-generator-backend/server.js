@@ -62,14 +62,14 @@ app.use(
 );
 
 // Handling preflight (OPTIONS) requests
-app.options('/ai', cors());
+app.options('*', cors());
 
 // Middleware
 app.use(express.json());
 
 // Route to check backend
 app.get('/', (req, res) => {
-  res.send('AI Generator Backend is Running');
+  res.send('AI Generator Backend is Running - Multi-Model Support');
 });
 
 const MAX_PROMPT_LENGTH = 200;
@@ -79,9 +79,197 @@ const BAD_WORDS = ['spam', 'hack', 'attack', 'malicious', 'virus', 'exploit']; /
 let requestCount = 0;
 setInterval(() => { requestCount = 0; }, 60_000);
 
-app.post('/ai', rateLimit(60000, 5), async (req, res) => { // 5 requests per minute per IP
+// Common validation function
+const validatePrompt = (prompt) => {
+  if (!prompt || typeof prompt !== 'string') {
+    return "Invalid prompt.";
+  }
+  
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    return `Prompt too long. Max ${MAX_PROMPT_LENGTH} characters.`;
+  }
+
+  if (prompt.length < 3) {
+    return "Prompt must be at least 3 characters long.";
+  }
+  
+  // Basic content filtering
+  const lowerPrompt = prompt.toLowerCase();
+  if (BAD_WORDS.some(word => lowerPrompt.includes(word))) {
+    return "Prompt contains blocked content.";
+  }
+  
+  // Check for excessive repetition
+  if (/(.)\1{10,}/.test(prompt)) {
+    return "Prompt contains excessive repetition.";
+  }
+  
+  // Check for URL spam
+  const urlRegex = /(http|https):\/\/[^\s]+/g;
+  if ((prompt.match(urlRegex) || []).length > 2) {
+    return "Too many URLs in prompt.";
+  }
+
+  return null;
+};
+
+// Common error handling
+const handleAPIError = (err, res) => {
+  console.error('AI API error:', err);
+  
+  let safeError = "AI request failed. Please try again.";
+  
+  if (err.message.includes('rate limit') || err.message.includes('rate_limit')) {
+    safeError = "Service temporarily unavailable. Please try again later.";
+  } else if (err.message.includes('insufficient_quota') || err.message.includes('quota')) {
+    safeError = "Service quota exceeded. Please try again later.";
+  } else if (err.message.includes('API key') || err.message.includes('auth')) {
+    safeError = "Service configuration error. Please contact administrator.";
+  } else if (err.message.includes('model')) {
+    safeError = "AI model temporarily unavailable. Please try another model.";
+  }
+  
+  res.status(500).json({ error: safeError });
+};
+
+// OpenAI endpoint
+app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
   // Global rate limit as backup
-  if (requestCount >= 100) { // Global limit of 100 requests per minute
+  if (requestCount >= 100) {
+    return res.status(429).json({ error: "Service temporarily overloaded. Try again later." });
+  }
+  requestCount++;
+
+  const { message, context = [] } = req.body;
+  
+  // Input validation
+  const validationError = validatePrompt(message);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  try {
+    // Build messages array with context
+    const messages = [
+      ...context,
+      { role: "user", content: message }
+    ];
+
+    // OpenAI text completion
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: "gpt-3.5-turbo",
+        messages: messages,
+        max_tokens: 150,
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('OpenAI API error:', errorData);
+      throw new Error(errorData.error?.message || 'OpenAI API error');
+    }
+
+    const data = await response.json();
+    console.log("OpenAI response received for message:", message.substring(0, 50) + '...');
+    
+    const reply = data.choices?.[0]?.message?.content || "No response generated.";
+
+    // Log successful usage
+    console.log(`OpenAI used by ${req.ip}: ${message.substring(0, 50)}...`);
+
+    res.json({ reply });
+
+  } catch (err) {
+    handleAPIError(err, res);
+  }
+});
+
+// DeepSeek endpoint
+app.post('/api/deepseek', rateLimit(60000, 5), async (req, res) => {
+  // Global rate limit as backup
+  if (requestCount >= 100) {
+    return res.status(429).json({ error: "Service temporarily overloaded. Try again later." });
+  }
+  requestCount++;
+
+  const { message, context = [] } = req.body;
+  
+  // Input validation
+  const validationError = validatePrompt(message);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  // Check if DeepSeek API key is available
+  if (!process.env.DEEPSEEK_API_KEY) {
+    return res.status(503).json({ 
+      error: "DeepSeek service temporarily unavailable. Please use OpenAI model." 
+    });
+  }
+
+  try {
+    // Build messages array with context
+    const messages = [
+      ...context,
+      { role: "user", content: message }
+    ];
+
+    // DeepSeek API call
+    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: messages,
+        max_tokens: 150,
+        temperature: 0.7,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('DeepSeek API error:', errorData);
+      
+      // Handle DeepSeek specific errors
+      if (response.status === 401) {
+        throw new Error('DeepSeek API key invalid or expired');
+      } else if (response.status === 429) {
+        throw new Error('DeepSeek rate limit exceeded');
+      } else {
+        throw new Error(errorData.error?.message || `DeepSeek API error: ${response.status}`);
+      }
+    }
+
+    const data = await response.json();
+    console.log("DeepSeek response received for message:", message.substring(0, 50) + '...');
+    
+    const reply = data.choices?.[0]?.message?.content || "No response generated.";
+
+    // Log successful usage
+    console.log(`DeepSeek used by ${req.ip}: ${message.substring(0, 50)}...`);
+
+    res.json({ reply });
+
+  } catch (err) {
+    handleAPIError(err, res);
+  }
+});
+
+// Keep your existing /ai endpoint for backward compatibility
+app.post('/ai', rateLimit(60000, 5), async (req, res) => {
+  // Global rate limit as backup
+  if (requestCount >= 100) {
     return res.status(429).json({ error: "Service temporarily overloaded. Try again later." });
   }
   requestCount++;
@@ -89,33 +277,9 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => { // 5 requests per min
   const { prompt } = req.body;
   
   // Input validation
-  if (!prompt || typeof prompt !== 'string') {
-    return res.status(400).json({ error: "Invalid prompt." });
-  }
-  
-  if (prompt.length > MAX_PROMPT_LENGTH) {
-    return res.status(400).json({ error: `Prompt too long. Max ${MAX_PROMPT_LENGTH} characters.` });
-  }
-
-  if (prompt.length < 3) {
-    return res.status(400).json({ error: "Prompt must be at least 3 characters long." });
-  }
-  
-  // Basic content filtering
-  const lowerPrompt = prompt.toLowerCase();
-  if (BAD_WORDS.some(word => lowerPrompt.includes(word))) {
-    return res.status(400).json({ error: "Prompt contains blocked content." });
-  }
-  
-  // Check for excessive repetition
-  if (/(.)\1{10,}/.test(prompt)) {
-    return res.status(400).json({ error: "Prompt contains excessive repetition." });
-  }
-  
-  // Check for URL spam
-  const urlRegex = /(http|https):\/\/[^\s]+/g;
-  if ((prompt.match(urlRegex) || []).length > 2) {
-    return res.status(400).json({ error: "Too many URLs in prompt." });
+  const validationError = validatePrompt(prompt);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
   }
 
   try {
@@ -129,7 +293,7 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => { // 5 requests per min
       body: JSON.stringify({
         model: "gpt-3.5-turbo",
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 100, // Reduced from 150 to control costs
+        max_tokens: 100,
         temperature: 0.7
       })
     });
@@ -151,21 +315,54 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => { // 5 requests per min
     res.json({ result });
 
   } catch (err) {
-    console.error('AI generation error:', err);
-    
-    let safeError = "AI request failed. Please try again.";
-    
-    if (err.message.includes('rate limit')) {
-      safeError = "Service temporarily unavailable. Please try again later.";
-    } else if (err.message.includes('insufficient_quota')) {
-      safeError = "Service quota exceeded. Please try again later.";
-    } else if (err.message.includes('API key')) {
-      safeError = "Service configuration error. Please contact administrator.";
-    }
-    
-    res.status(500).json({ error: safeError });
+    handleAPIError(err, res);
   }
 });
 
+// Health check endpoint to verify all services
+app.get('/health', async (req, res) => {
+  const health = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    services: {
+      openai: 'unknown',
+      deepseek: 'unknown'
+    }
+  };
+
+  // Check OpenAI
+  try {
+    const testResponse = await fetch('https://api.openai.com/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+      }
+    });
+    health.services.openai = testResponse.ok ? 'healthy' : 'unhealthy';
+  } catch {
+    health.services.openai = 'unreachable';
+  }
+
+  // Check DeepSeek
+  try {
+    const testResponse = await fetch('https://api.deepseek.com/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`
+      }
+    });
+    health.services.deepseek = testResponse.ok ? 'healthy' : 'unhealthy';
+  } catch {
+    health.services.deepseek = 'unreachable';
+  }
+
+  res.json(health);
+});
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`AI backend running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Multi-model AI backend running on port ${PORT}`);
+  console.log('Available endpoints:');
+  console.log('  POST /api/openai - OpenAI GPT-3.5');
+  console.log('  POST /api/deepseek - DeepSeek Chat');
+  console.log('  POST /ai - Legacy endpoint (OpenAI)');
+  console.log('  GET /health - Service status');
+});
