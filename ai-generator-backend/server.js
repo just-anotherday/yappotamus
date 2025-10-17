@@ -9,12 +9,13 @@ dotenv.config();
 
 const app = express();
 
-// CORS setup with options for preflight requests
-app.use(cors({
-    origin: 'https://just-anotherday.github.io', // Frontend URL
-    methods: ['GET', 'POST', 'OPTIONS'],        // Allow common methods
-    allowedHeaders: ['Content-Type', 'Authorization'], // Allow necessary headers
-}));
+app.use(
+  cors({
+    origin: ["https://just-anotherday.github.io", "http://localhost:3000"],
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"],
+  })
+);
 
 // Handling preflight (OPTIONS) requests
 app.options('/ai', cors());
