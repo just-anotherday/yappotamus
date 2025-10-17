@@ -83,7 +83,6 @@ app.post('/ai', async (req, res) => {
     res.json({ result });
 
   } catch (err) {
-    console.log("OpenAI response:", data);
     console.error(err);
     res.status(500).json({ error: "AI request failed", details: err.message });
   }
