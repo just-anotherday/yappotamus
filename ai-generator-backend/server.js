@@ -10,8 +10,9 @@ dotenv.config();
 
 const app = express();
 app.use(cors({
-    origin: 'https://just-anotherday.github.io/yappotamus',
-    credentials: true
+    origin: 'https://just-anotherday.github.io',
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 
