@@ -32,14 +32,6 @@
       0%,100%{opacity:0;} 
       50%{opacity:1;} 
     }
-    @keyframes glitch { 
-      0% { transform: translate(0); }
-      20% { transform: translate(-2px, 2px); }
-      40% { transform: translate(-2px, -2px); }
-      60% { transform: translate(2px, 2px); }
-      80% { transform: translate(2px, -2px); }
-      100% { transform: translate(0); }
-    }
     
     /* Enhanced project image for easter egg */
     .project-image {
@@ -76,57 +68,23 @@
       z-index: 9999;
     }
 
-    /* Emergency warning - FULL SCREEN */
+    /* Emergency warning */
     .emergency-warning {
       position: fixed;
       top: 0;
       left: 0;
-      width: 100vw;
-      height: 100vh;
-      background: linear-gradient(45deg, #ff0000, #cc0000, #990000);
+      width: 100%;
+      height: 100%;
+      background: #ff0000;
       color: white;
       display: none;
       justify-content: center;
       align-items: center;
-      font-size: 4em;
+      font-size: 3em;
       font-weight: bold;
       z-index: 10000;
       flex-direction: column;
       text-align: center;
-      animation: emergencyFlash 0.3s infinite, glitch 0.5s infinite;
-      font-family: 'Courier New', monospace;
-      text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #fff;
-      overflow: hidden;
-    }
-
-    .emergency-text {
-      background: rgba(0, 0, 0, 0.8);
-      padding: 40px;
-      border: 5px solid #fff;
-      border-radius: 20px;
-      box-shadow: 0 0 50px #ff0000;
-    }
-
-    .emergency-subtext {
-      font-size: 0.4em;
-      margin-top: 30px;
-      color: #00ff00;
-      font-family: 'Courier New', monospace;
-    }
-
-    .scan-line {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 4px;
-      background: linear-gradient(to bottom, transparent, #00ff00, transparent);
-      animation: scan 2s linear infinite;
-    }
-
-    @keyframes scan {
-      0% { top: 0; }
-      100% { top: 100%; }
     }
 
     /* Itch.io embed styling */
@@ -141,11 +99,6 @@
       border: 2px solid #333;
       border-radius: 8px;
     }
-
-    /* Hide main content during emergency */
-    .content.hidden {
-      display: none;
-    }
   </style>
 </head>
 <body>
@@ -154,19 +107,11 @@
   <!-- Easter Egg Elements -->
   <div class="click-counter" id="click-counter">Clicks: 0/11</div>
   <div class="emergency-warning" id="emergency-warning">
-    <div class="scan-line"></div>
-    <div class="emergency-text">
-      <div>🚨 CRITICAL ERROR 🚨</div>
-      <div class="emergency-subtext">
-        SYSTEM OVERLOAD DETECTED<br>
-        MEMORY CORRUPTION: 99%<br>
-        INITIATING EMERGENCY SHUTDOWN<br>
-        COUNTDOWN: <span id="countdown">10</span>
-      </div>
-    </div>
+    <div>🚨 CRITICAL ERROR 🚨</div>
+    <div style="font-size: 0.5em; margin-top: 20px;">SYSTEM OVERLOAD</div>
   </div>
 
-  <div class="content" id="main-content">
+  <div class="content">
     <header>
       <nav class="main-nav">
         <a href="../index.html">Home</a><a href="../html/resume.html">Resume</a><a href="../projects/projects.html">Projects</a><a href="../recipes/recipes.html">Recipes</a>
@@ -193,7 +138,7 @@
             </div>
             <div class="game-embed" id="game-embed" style="display:none;">
               <div class="itch-embed">
-                <iframe frameborder="0" src="https://itch.io/embed-upload/15262394?color=333333" allowfullscreen="" width="800" height="620"></iframe>
+                <iframe frameborder="0" src="https://itch.io/embed-upload/15262394?color=333333" allowfullscreen="" width="1000" height="800"></iframe>
                 <p style="margin-top: 10px; font-size: 0.9em;">
                   <a href="https://jasonzyap.itch.io/slimescraper" target="_blank">Play slimeScraper on itch.io</a>
                 </p>
@@ -257,7 +202,6 @@
     let clickCount = 0;
     const REQUIRED_CLICKS = 11;
     let easterEggActive = false;
-    let countdownInterval;
 
     // Game loading functions
     function loadGame() {
@@ -311,7 +255,7 @@
     // Matrix rain effect
     function createMatrixRain() {
       const chars = '01アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < 50; i++) {
         setTimeout(() => {
           const char = document.createElement('div');
           char.className = 'matrix-char';
@@ -319,8 +263,6 @@
           char.style.left = Math.random() * 100 + 'vw';
           char.style.top = '-20px';
           char.style.animation = `matrixFall ${2 + Math.random() * 3}s linear forwards`;
-          char.style.fontSize = (14 + Math.random() * 10) + 'px';
-          char.style.opacity = 0.7 + Math.random() * 0.3;
           document.body.appendChild(char);
           
           setTimeout(() => {
@@ -328,24 +270,8 @@
               char.parentNode.removeChild(char);
             }
           }, 5000);
-        }, i * 50);
+        }, i * 100);
       }
-    }
-
-    // Countdown timer
-    function startCountdown() {
-      let countdown = 10;
-      const countdownElement = document.getElementById('countdown');
-      countdownElement.textContent = countdown;
-      
-      countdownInterval = setInterval(() => {
-        countdown--;
-        countdownElement.textContent = countdown;
-        
-        if (countdown <= 0) {
-          clearInterval(countdownInterval);
-        }
-      }, 1000);
     }
 
     // Full easter egg activation
@@ -353,18 +279,13 @@
       console.log("💥 FULL EASTER EGG ACTIVATED!");
       easterEggActive = true;
       
-      // Hide main content
-      document.getElementById('main-content').classList.add('hidden');
-      
       // Hide counter
       document.getElementById('click-counter').style.display = 'none';
       
-      // Show full-screen emergency warning
+      // Show emergency warning
       const warning = document.getElementById('emergency-warning');
       warning.style.display = 'flex';
-      
-      // Start countdown
-      startCountdown();
+      warning.style.animation = 'emergencyFlash 0.5s infinite';
       
       // Nuclear explosion on image
       const projectImage = document.getElementById('slimescraper-image');
@@ -374,53 +295,49 @@
       document.body.style.animation = 'screenShake 1s infinite';
       
       // Create multiple explosion overlays
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 5; i++) {
         setTimeout(() => {
           const explosion = document.createElement('div');
           explosion.style.position = 'fixed';
           explosion.style.top = Math.random() * 100 + 'vh';
           explosion.style.left = Math.random() * 100 + 'vw';
-          explosion.style.width = (100 + Math.random() * 200) + 'px';
-          explosion.style.height = (100 + Math.random() * 200) + 'px';
+          explosion.style.width = '100px';
+          explosion.style.height = '100px';
           explosion.style.background = 'radial-gradient(circle, #ff0000, #ff8800, #ffff00)';
           explosion.style.borderRadius = '50%';
-          explosion.style.animation = 'explosionPulse 1.5s ease-out';
-          explosion.style.zIndex = '9998';
+          explosion.style.animation = 'explosionPulse 1s ease-out';
+          explosion.style.zIndex = '1000';
           explosion.style.pointerEvents = 'none';
-          explosion.style.opacity = '0.8';
           document.body.appendChild(explosion);
           
           setTimeout(() => {
             if (explosion.parentNode) {
               explosion.parentNode.removeChild(explosion);
             }
-          }, 1500);
-        }, i * 400);
+          }, 1000);
+        }, i * 500);
       }
       
       // Massive confetti explosion
       if (typeof confetti === 'function') {
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 10; i++) {
           setTimeout(() => {
             confetti({
-              particleCount: 300,
-              spread: 150,
+              particleCount: 200,
+              spread: 100,
               origin: { y: Math.random(), x: Math.random() },
-              colors: ['#ff0000', '#ff8800', '#ffff00', '#00ff00', '#0000ff', '#ffffff'],
-              startVelocity: 30 + Math.random() * 20
+              colors: ['#ff0000', '#ff8800', '#ffff00', '#00ff00', '#0000ff']
             });
-          }, i * 200);
+          }, i * 300);
         }
       }
       
-      // Matrix rain effect (more intense)
+      // Matrix rain effect
       createMatrixRain();
-      const matrixInterval = setInterval(createMatrixRain, 2000);
+      setInterval(createMatrixRain, 3000);
       
       // Reset after 10 seconds
       setTimeout(() => {
-        clearInterval(matrixInterval);
-        clearInterval(countdownInterval);
         resetEasterEgg();
       }, 10000);
     }
@@ -433,13 +350,11 @@
       const projectImage = document.getElementById('slimescraper-image');
       const warning = document.getElementById('emergency-warning');
       const counter = document.getElementById('click-counter');
-      const mainContent = document.getElementById('main-content');
       
       projectImage.style.animation = '';
       document.body.style.animation = '';
       warning.style.display = 'none';
       counter.style.display = 'none';
-      mainContent.classList.remove('hidden');
       
       // Remove all matrix characters
       document.querySelectorAll('.matrix-char').forEach(char => {
