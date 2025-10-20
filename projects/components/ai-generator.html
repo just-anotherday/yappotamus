@@ -1,0 +1,33 @@
+<section id="ai-generator" class="project about-card">
+  <h2>AI Text Generator</h2>
+  <p>Generate AI-powered text responses using OpenAI.</p>
+  <div class="generator-container">
+    <!-- REMOVED THE BUTTON -->
+    <div id="ai-generator-panel" style="margin-top:1.5rem;">
+      <div class="model-selector-group">
+        <label for="model-select" style="display: block; margin-bottom: 0.5rem; font-weight: bold; color: #333;">AI Model:</label>
+        <div style="display: flex; align-items: center; gap: 15px;">
+          <select id="model-select" class="model-select" style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 5px; background: white; flex: 1;">
+            <option value="openai">OpenAI GPT-3.5</option>
+          </select>
+          <span id="current-model-badge" style="padding: 5px 12px; border-radius: 15px; font-size: 0.8rem; font-weight: bold; color: white; background: #10a37f;">OpenAI GPT-3.5</span>
+        </div>
+      </div>
+      <div class="ai-chat-container" style="margin-top: 1rem;">
+        <div id="chat-messages" class="chat-messages">
+          <div class="message ai-message">
+            <div class="message-content">
+              <div class="model-indicator">🤖 AI Assistant</div>
+              Hello! I'm your AI assistant powered by OpenAI. Start chatting!
+            </div>
+          </div>
+        </div>
+        <div class="input-area">
+          <textarea id="user-input" placeholder="Ask me anything or give me a creative prompt..." rows="3" class="input-field" style="width: 100%; margin-bottom: 0.5rem;"></textarea>
+          <button id="generate-ai" class="button accent">Generate Text</button>
+        </div>
+      </div>
+      <p style="text-align: center; font-size: 0.7rem; color: #999; margin-top: 0.5rem;">Powered by OpenAI • No data retention • Rate limited for fair usage</p>
+    </div>
+  </div>
+</section>
