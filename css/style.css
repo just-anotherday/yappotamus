@@ -715,41 +715,46 @@ a.button:hover, .button:hover {
 /* Flag container */
 .photo-flag {
   position: absolute;
-  background: #b22234; /* USA red */
-  border: 3px solid black;
-  border-radius: 6px;
-  z-index: 9999;
-  display: flex;
+  z-index: 10000;
+  animation: wave 4.9s ease-in-out alternate;
+  background: repeating-linear-gradient(
+    to bottom,
+    #b31942 0 7.7%,
+    white 7.7% 15.4%
+  );
+  border: 2px solid #333;
+  border-radius: 4px;
   overflow: hidden;
-  animation: fadeIn 0.4s ease-out;
+  pointer-events: none;
 }
 
-/* Blue canton */
 .flag-canton {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 40%;
-  height: 50%;
-  background: #3c3b6e; /* USA blue */
+  height: 53%;
+  background: #0a3161;
   display: flex;
   flex-direction: column;
-  justify-content: space-evenly;
-  padding-left: 6px;
+  justify-content: space-around;
+  padding: 2px 4px;
 }
 
-/* Rows inside canton */
 .star-row {
   display: flex;
-  justify-content: space-between;
-  padding-right: 6px;
+  justify-content: space-evenly;
 }
 
-/* Stars */
 .flag-star {
   color: white;
-  font-size: 12px;
+  font-size: 10px;
+  line-height: 1;
 }
 
-/* Fade animation */
-@keyframes fadeIn {
-  from { opacity: 0; transform: scale(0.8); }
-  to { opacity: 1; transform: scale(1); }
+@keyframes wave {
+  0% { transform: rotate(-2deg) skewY(0deg); }
+  50% { transform: rotate(2deg) skewY(2deg); }
+  100% { transform: rotate(-2deg) skewY(0deg); }
 }
+
