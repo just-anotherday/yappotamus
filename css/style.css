@@ -711,3 +711,45 @@ a.button:hover, .button:hover {
   font-weight: bold;
   color: white;
 }
+
+/* Flag container */
+.photo-flag {
+  position: absolute;
+  background: #b22234; /* USA red */
+  border: 3px solid black;
+  border-radius: 6px;
+  z-index: 9999;
+  display: flex;
+  overflow: hidden;
+  animation: fadeIn 0.4s ease-out;
+}
+
+/* Blue canton */
+.flag-canton {
+  width: 40%;
+  height: 50%;
+  background: #3c3b6e; /* USA blue */
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  padding-left: 6px;
+}
+
+/* Rows inside canton */
+.star-row {
+  display: flex;
+  justify-content: space-between;
+  padding-right: 6px;
+}
+
+/* Stars */
+.flag-star {
+  color: white;
+  font-size: 12px;
+}
+
+/* Fade animation */
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
