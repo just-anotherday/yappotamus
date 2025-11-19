@@ -117,7 +117,7 @@ const handleAPIError = (err, res) => {
   if (err.message.includes('rate limit') || err.message.includes('rate_limit')) {
     safeError = "Service temporarily unavailable. Please try again later.";
   } else if (err.message.includes('insufficient_quota') || err.message.includes('quota')) {
-    safeError = "Service quota exceeded. Please try again later.";
+    safeError = "Service temporarily unavailable due to billing. Please contact administrator.";
   } else if (err.message.includes('API key') || err.message.includes('auth')) {
     safeError = "Service configuration error. Please contact administrator.";
   } else if (err.message.includes('model')) {
