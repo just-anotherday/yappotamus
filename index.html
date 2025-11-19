@@ -64,7 +64,9 @@
 let saluteCount = 0;
 const profilePhoto = document.querySelector('.about-photo');
 
+// Preload bugle sound
 const bugle = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-military-bugle-call-491.mp3');
+bugle.volume = 0.3;
 
 profilePhoto.addEventListener('click', () => {
   saluteCount++;
@@ -88,6 +90,7 @@ profilePhoto.addEventListener('click', () => {
 function showFlagOverPhoto(photo) {
   const rect = photo.getBoundingClientRect();
   
+  // Hide photo temporarily
   photo.style.visibility = 'hidden';
 
   const flag = document.createElement('div');
@@ -122,14 +125,51 @@ function showFlagOverPhoto(photo) {
 }
 </script>
 
-  <footer id="footcolor">
-    <p>© 2025 Jason Yap — This website is my personal project.</p>
-    <p>
-      <a href="mailto:jason-yap@outlook.com">Email </a> | 
-      <a href="https://instagram.com/yappotamus" target="_blank">Instagram</a> | 
-      <a href="https://github.com/just-anotherday" target="_blank">GitHub</a>
-    </p>
-  </footer>
+<style>
+.photo-flag {
+  position: absolute;
+  z-index: 10000;
+  animation: wave 4.9s ease-in-out alternate;
+  background: repeating-linear-gradient(
+    to bottom,
+    #b31942 0 7.7%,
+    white 7.7% 15.4%
+  );
+  border: 2px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+  pointer-events: none;
+}
 
+.flag-canton {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 53%;
+  background: #0a3161;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  padding: 2px 4px;
+}
+
+.star-row {
+  display: flex;
+  justify-content: space-evenly;
+}
+
+.flag-star {
+  color: white;
+  font-size: 10px;
+  line-height: 1;
+}
+
+@keyframes wave {
+  0% { transform: rotate(-2deg) skewY(0deg); }
+  50% { transform: rotate(2deg) skewY(2deg); }
+  100% { transform: rotate(-2deg) skewY(0deg); }
+}
+</style>
 
 </html>
