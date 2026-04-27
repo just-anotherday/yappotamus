@@ -3,28 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Jason Yap | Recipes</title>
+  <title>Jason Yap | Recipe</title>
   <link rel="stylesheet" href="../css/style.css" />
-  <link rel="stylesheet" href="../css/recipes.css" />
+  <link rel="stylesheet" href="../css/recipe.css" />
+  <link rel="stylesheet" href="../css/print.css" media="print" />
 </head>
-
 <body>
   <div class="content">
     <header>
       <nav class="main-nav">
         <a href="../index.html">Home</a>
-        <a href="../html/resume.html">Resume</a>
+        <a href="resume.html">Resume</a>
         <a href="../projects/projects.html">Projects</a>
         <a href="../recipes/recipes.html">Recipes</a>
       </nav>
     </header>
 
-    <main>
-      <section id="recipes">
-        <h2>Recipes Collection</h2>
-        <p class="instructions">Explore my favorite culinary creations</p>
+    <main id="recipe-main">
+      <p id="recipe-error" class="recipe-load-error" hidden></p>
 
-        <div id="recipe-catalog"></div>
+      <div id="recipe-quick-nav"></div>
+
+      <section id="recipe">
+        <div id="recipe-header"></div>
+        <div id="recipe-toc"></div>
+        <div id="recipe-introduction"></div>
+        <div id="recipe-ingredients"></div>
+        <div id="recipe-preparation"></div>
+        <div id="recipe-instructions"></div>
+        <div id="recipe-assembly"></div>
+        <div id="recipe-notes"></div>
       </section>
     </main>
 
@@ -38,6 +46,8 @@
     </footer>
   </div>
 
-  <script type="module" src="../js/recipes-index.js"></script>
+  <div id="recipe-modal"></div>
+
+  <script type="module" src="../js/recipe-main.js"></script>
 </body>
 </html>

@@ -1,0 +1,17 @@
+{
+  "id": "panmee",
+  "documentTitle": "Jason Yap | Pan Mee Recipe",
+  "features": ["servings", "modal", "nav", "print"],
+  "slots": [
+    ["recipe-quick-nav", "components/quick-nav.html"],
+    ["recipe-header", "components/recipe-header.html"],
+    ["recipe-toc", "components/toc.html"],
+    ["recipe-introduction", "components/introduction.html"],
+    ["recipe-ingredients", "components/ingredients.html"],
+    ["recipe-preparation", "components/preparation.html"],
+    ["recipe-instructions", "components/instructions.html"],
+    ["recipe-assembly", "components/assembly.html"],
+    ["recipe-notes", "components/notes.html"],
+    ["recipe-modal", "components/image-modal.html"]
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "recipes": [
+    {
+      "id": "panmee",
+      "title": "Pan Mee Noodle Soup",
+      "blurb": "A comforting Malaysian Chinese dish featuring hand-torn noodles in a rich, flavorful anchovy broth, topped with savory pork and earthy shiitake mushrooms. Perfect when you want authentic Asian comfort food.",
+      "image": "../assets/panmee_photo/image002.jpg",
+      "imageAlt": "Pan Mee noodle soup"
+    }
+  ]
+}
