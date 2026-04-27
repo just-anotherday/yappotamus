@@ -1,0 +1,41 @@
+#--- cursorignore file ---
+
+# --- Dependencies (never index, never useful) ---
+node_modules/
+venv/
+.venv/
+_pycahce_/
+vendor/
+
+# --- Build artifacts ---
+dist/
+build/
+target/
+*.pyc
+*.pyo
+*.class
+
+# --- Secrets - Never let these touch the index ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+credentials/
+
+# --- Binaries, media, data dumps ---
+*.zip
+*tar.gz
+*.jpg
+*.png
+*.pdf
+*.sqLite
+*.db
+
+# --- Auto-generated / lockfiles (noise) ---
+package-lock.json
+poetry.lock
+yarn.lock
+*.min.js
+*min.css
