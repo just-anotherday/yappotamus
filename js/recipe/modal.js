@@ -15,9 +15,6 @@ function closeModal() {
 }
 
 export function initModal() {
-  window.openModal = openModal;
-  window.closeModal = closeModal;
-
   document.addEventListener('click', (e) => {
     const img = e.target.closest?.('.image-gallery img');
     if (img && img.src) openModal(img.src);

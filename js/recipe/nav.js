@@ -21,9 +21,6 @@ function toggleBackToTopButton() {
 }
 
 export function initNav() {
-  window.scrollToSection = scrollToSection;
-  window.scrollToTop = scrollToTop;
-
   const jumpBtn = document.querySelector('.jump-to-recipe');
   jumpBtn?.addEventListener('click', () => {
     const target = jumpBtn.getAttribute('data-scroll-target') || 'ingredients';

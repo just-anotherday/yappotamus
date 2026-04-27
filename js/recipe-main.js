@@ -14,7 +14,9 @@ async function loadManifest(recipeId) {
   const base = recipeBaseUrl(recipeId);
   const res = await fetch(new URL('manifest.json', base));
   if (!res.ok) throw new Error(`Recipe "${recipeId}" not found (missing manifest).`);
-  const manifest = await res.json();
+  const manifest = await res.json().catch(() => {
+    throw new Error(`Recipe "${recipeId}" manifest is not valid JSON.`);
+  });
   if (manifest.id && manifest.id !== recipeId) {
     console.warn(`Recipe folder "${recipeId}" manifest id is "${manifest.id}"`);
   }
@@ -23,6 +25,10 @@ async function loadManifest(recipeId) {
 
 async function loadSlots(base, slots) {
   for (const entry of slots) {
+    if (!Array.isArray(entry) || entry.length < 2) {
+      console.warn('Invalid slot entry in manifest:', entry);
+      continue;
+    }
     const [elementId, relativePath] = entry;
     const el = document.getElementById(elementId);
     if (!el) {
@@ -43,36 +49,46 @@ function showError(message) {
   err.hidden = false;
 }
 
-async function runFeature(name) {
-  if (name === 'servings') {
+const FEATURE_RUNNERS = {
+  async servings() {
     const { initServings, getCurrentServings } = await import('./recipe/servings.js');
     initServings();
     return { getCurrentServings };
-  }
-  if (name === 'modal') {
+  },
+  async modal() {
     const { initModal } = await import('./recipe/modal.js');
     initModal();
     return {};
-  }
-  if (name === 'nav') {
+  },
+  async nav() {
     const { initNav } = await import('./recipe/nav.js');
     initNav();
     return {};
-  }
-  if (name === 'print') {
+  },
+  async print() {
+    return {};
+  },
+};
+
+async function runFeature(name) {
+  const runner = FEATURE_RUNNERS[name];
+  if (!runner) {
+    console.warn(`Unknown recipe feature "${name}"`);
     return {};
   }
-  return {};
+  return runner();
 }
 
 async function init() {
   const recipeId = getRecipeId();
   let manifest;
+  let base;
 
   try {
     const loaded = await loadManifest(recipeId);
     manifest = loaded.manifest;
-    await loadSlots(loaded.base, manifest.slots || []);
+    base = loaded.base;
+    await loadSlots(base, Array.isArray(manifest.slots) ? manifest.slots : []);
   } catch (e) {
     console.error(e);
     showError(e.message || 'Could not load this recipe.');
