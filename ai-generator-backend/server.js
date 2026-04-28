@@ -69,6 +69,83 @@ app.get('/', (req, res) => {
 
 const MAX_PROMPT_LENGTH = 200;
 const BAD_WORDS = ['spam', 'hack', 'attack', 'malicious', 'virus', 'exploit'];
+const DEFAULT_PROVIDER = 'openai';
+const DEFAULT_MODEL = 'gpt-3.5-turbo';
+// Use 127.0.0.1 for Ollama if your VPN routes local host traffic through the VPN tunnel.
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+
+const parseModelSelection = (selection = `${DEFAULT_PROVIDER}:${DEFAULT_MODEL}`) => {
+  if (typeof selection !== 'string' || !selection.trim()) {
+    return { provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL };
+  }
+
+  const [providerPart, ...modelParts] = selection.split(':');
+  const provider = providerPart.trim().toLowerCase();
+  const model = modelParts.join(':').trim() || DEFAULT_MODEL;
+  return { provider, model };
+};
+
+const fetchOpenAICompletion = async (messages, model) => {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: 150,
+      temperature: 0.7
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    console.error('OpenAI API error:', errorData);
+    throw new Error(errorData.error?.message || 'OpenAI API error');
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "No response generated.";
+};
+
+const fetchOllamaCompletion = async (messages, model) => {
+  const response = await fetch(`${OLLAMA_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.7
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    console.error('Ollama API error:', errorData);
+    throw new Error(errorData.error?.message || 'Ollama API error');
+  }
+
+  const data = await response.json();
+  const outputItem = Array.isArray(data.output) ? data.output[0] : data.output;
+
+  if (data.choices?.[0]?.message?.content) {
+    return data.choices[0].message.content;
+  }
+
+  if (typeof outputItem === 'string') {
+    return outputItem;
+  }
+
+  if (outputItem && typeof outputItem === 'object') {
+    return outputItem.content || outputItem.text || JSON.stringify(outputItem);
+  }
+
+  return "No response generated.";
+};
 
 // Global request counter (as backup)
 let requestCount = 0;
@@ -127,7 +204,7 @@ const handleAPIError = (err, res) => {
   res.status(500).json({ error: safeError });
 };
 
-// OpenAI endpoint
+// Provider-aware chat endpoint
 app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
   // Global rate limit as backup
   if (requestCount >= 100) {
@@ -135,7 +212,7 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
   }
   requestCount++;
 
-  const { message, context = [] } = req.body;
+  const { message, context = [], model = `${DEFAULT_PROVIDER}:${DEFAULT_MODEL}` } = req.body;
   
   // Input validation
   const validationError = validatePrompt(message);
@@ -143,41 +220,26 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
     return res.status(400).json({ error: validationError });
   }
 
+  const selected = parseModelSelection(model);
+  if (!['openai', 'ollama'].includes(selected.provider)) {
+    return res.status(400).json({ error: 'Unsupported model provider. Supported options: openai, ollama.' });
+  }
+
   try {
-    // Build messages array with context
     const messages = [
       ...context,
       { role: "user", content: message }
     ];
 
-    // OpenAI text completion
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: "gpt-3.5-turbo",
-        messages: messages,
-        max_tokens: 150,
-        temperature: 0.7
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('OpenAI API error:', errorData);
-      throw new Error(errorData.error?.message || 'OpenAI API error');
+    let reply;
+    if (selected.provider === 'openai') {
+      reply = await fetchOpenAICompletion(messages, selected.model);
+    } else {
+      reply = await fetchOllamaCompletion(messages, selected.model);
     }
 
-    const data = await response.json();
-    console.log("OpenAI response received for message:", message.substring(0, 50) + '...');
-    
-    const reply = data.choices?.[0]?.message?.content || "No response generated.";
-
-    // Log successful usage
-    console.log(`OpenAI used by ${req.ip}: ${message.substring(0, 50)}...`);
+    console.log(`${selected.provider.toUpperCase()} response received for message:`, message.substring(0, 50) + '...');
+    console.log(`${selected.provider.toUpperCase()} used by ${req.ip}: ${selected.model} - ${message.substring(0, 50)}...`);
 
     res.json({ reply });
 
