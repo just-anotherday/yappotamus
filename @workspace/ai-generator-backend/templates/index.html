@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chat Generator - Ollama</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+        
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            color: #4fc3f7;
+        }
+        
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(76, 175, 80, 0.2);
+            border-radius: 20px;
+            font-size: 0.9rem;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+        
+        .status-dot.online {
+            background: #4caf50;
+            box-shadow: 0 0 10px #4caf50;
+        }
+        
+        .status-dot.offline {
+            background: #f44336;
+            box-shadow: 0 0 10px #f44336;
+        }
+        
+        .models-section {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .models-section h2 {
+            font-size: 1.2rem;
+            margin-bottom: 15px;
+            color: #4fc3f7;
+        }
+        
+        .model-selector {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .model-select {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px 16px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        
+        .model-select option {
+            color: #333;
+        }
+        
+        .chat-list {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .chat-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 25px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .chat-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        .chat-btn.active {
+            background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
+        }
+        
+        .chat-box-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 400px;
+        }
+        
+        .chat-box {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            max-height: 450px;
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.user {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin-left: 20%;
+        }
+        
+        .message.assistant {
+            background: rgba(255, 255, 255, 0.1);
+            margin-right: 20%;
+            border-left: 3px solid #4fc3f7;
+        }
+        
+        .message-input-container {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .message-input {
+            flex: 1;
+            padding: 14px 18px;
+            border: none;
+            border-radius: 25px;
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            font-size: 1rem;
+            resize: none;
+            min-height: 50px;
+        }
+        
+        .message-input::placeholder {
+            color: rgba(255, 255, 255, 0.6);
+        }
+        
+        .message-input:focus {
+            outline: none;
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .send-btn {
+            width: 50px;
+            height: 50px;
+            border: none;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
+            color: #fff;
+            font-size: 1.5rem;
+            cursor: pointer;
+            transition: transform 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .send-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        .send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .action-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .action-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .action-btn.danger {
+            background: rgba(244, 67, 54, 0.3);
+        }
+        
+        .action-btn.danger:hover {
+            background: rgba(244, 67, 54, 0.5);
+        }
+        
+        .typing-indicator {
+            display: none;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            margin-bottom: 15px;
+            margin-right: 20%;
+        }
+        
+        .typing-indicator.show {
+            display: block;
+        }
+        
+        .typing-indicator span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #4fc3f7;
+            border-radius: 50%;
+            margin: 0 2px;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+        
+        .chat-id-display {
+            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.6);
+            margin-bottom: 10px;
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 AI Chat Generator</h1>
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Checking Ollama...</span>
+            </div>
+        </header>
+        
+        <div class="models-section">
+            <h2>📦 Available Models</h2>
+            <select class="model-select" id="modelSelect">
+                <option value="">Loading models...</option>
+            </select>
+        </div>
+        
+        <div class="chat-list" id="chatList">
+            <button class="chat-btn" onclick="createNewChat()">➕ New Chat</button>
+        </div>
+        
+        <div class="chat-box-container">
+            <div class="chat-id-display" id="chatIdDisplay">No chat selected</div>
+            <div class="chat-box" id="chatBox"></div>
+            <div class="typing-indicator" id="typingIndicator">
+                <span></span><span></span><span></span>
+            </div>
+            <div class="message-input-container">
+                <textarea 
+                    class="message-input" 
+                    id="messageInput" 
+                    placeholder="Type your message here..."
+                    rows="1"
+                    onkeydown="if(event.keyCode===13 && !event.shiftKey){event.preventDefault();sendMessage();}"
+                ></textarea>
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                    ↵
+                </button>
+            </div>
+            <div class="actions" id="actionButtons" style="display: none;">
+                <button class="action-btn" onclick="clearMessages()">🗑 Clear Messages</button>
+                <button class="action-btn danger" onclick="deleteChat()">🗑 Delete Chat</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = 'http://localhost:5000/api';
+        let currentChatId = null;
+        let availableModels = [];
+        let selectedModel = '';
+        
+        // Check Ollama status and load models
+        async function checkOllama() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+                
+                const statusDot = document.getElementById('statusDot');
+                const statusText = document.getElementById('statusText');
+                
+                if (data.status === 'ok') {
+                    statusDot.classList.add('online');
+                    statusText.textContent = '✓ Ollama is running';
+                    statusText.style.color = '#4caf50';
+                    loadModels(data.models);
+                } else {
+                    statusDot.classList.add('offline');
+                    statusText.textContent = '✗ Ollama is not running';
+                    statusText.style.color = '#f44336';
+                }
+            } catch (error) {
+                const statusDot = document.getElementById('statusDot');
+                const statusText = document.getElementById('statusText');
+                statusDot.classList.add('offline');
+                statusText.textContent = '✗ Connection failed';
+                statusText.style.color = '#f44336';
+            }
+        }
+        
+        function loadModels(models) {
+            const modelSelect = document.getElementById('modelSelect');
+            availableModels = models.map(m => m.name);
+            
+            modelSelect.innerHTML = '';
+            if (availableModels.length === 0) {
+                const option = document.createElement('option');
+                option.textContent = 'No models available';
+                modelSelect.appendChild(option);
+            } else {
+                // Add default option
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = 'Select a model...';
+                modelSelect.appendChild(defaultOption);
+                
+                availableModels.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    option.textContent = model;
+                    modelSelect.appendChild(option);
+                });
+            }
+        }
+        
+        // Create new chat
+        async function createNewChat() {
+            if (!currentChatId) {
+                const chatId = 'chat_' + Date.now();
+                const response = await fetch(`${API_BASE}/chat/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chatId: chatId, model: selectedModel })
+                });
+                
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    currentChatId = data.chatId;
+                    document.getElementById('chatIdDisplay').textContent = 
+                        `Chat ID: ${data.chatId} | Model: ${data.model}`;
+                    document.getElementById('chatList').innerHTML = `
+                        <button class="chat-btn active" onclick="createNewChat()">➕ New Chat</button>
+                    `;
+                    document.getElementById('actionButtons').style.display = 'flex';
+                    clearChatBox();
+                }
+            }
+        }
+        
+        function clearChatBox() {
+            document.getElementById('chatBox').innerHTML = '';
+            document.getElementById('typingIndicator').classList.remove('show');
+            document.getElementById('messageInput').value = '';
+        }
+        
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const sendBtn = document.getElementById('sendBtn');
+            const typingIndicator = document.getElementById('typingIndicator');
+            const chatBox = document.getElementById('chatBox');
+            
+            const message = input.value.trim();
+            if (!message || !currentChatId) return;
+            
+            // Add user message
+            chatBox.innerHTML += `
+                <div class="message user">
+                    ${escapeHtml(message)}
+                </div>
+            `;
+            
+            input.value = '';
+            sendBtn.disabled = true;
+            typingIndicator.classList.add('show');
+            
+            // Send to API
+            const response = await fetch(`${API_BASE}/chat/message`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chatId: currentChatId, message: message, model: selectedModel })
+            });
+            
+            const data = await response.json();
+            
+            typingIndicator.classList.remove('show');
+            sendBtn.disabled = false;
+            
+            if (data.status === 'ok') {
+                chatBox.innerHTML += `
+                    <div class="message assistant">
+                        ${escapeHtml(data.response)}
+                    </div>
+                `;
+                chatBox.scrollTop = chatBox.scrollHeight;
+            } else {
+                chatBox.innerHTML += `
+                    <div class="message assistant" style="color: #f44336;">
+                        Error: ${escapeHtml(data.error || 'Unknown error')}
+                    </div>
+                `;
+            }
+            
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        
+        async function clearMessages() {
+            if (!currentChatId) return;
+            
+            const response = await fetch(`${API_BASE}/chat/clear?chatId=${currentChatId}`, {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            if (data.status === 'ok') {
+                clearChatBox();
+            }
+        }
+        
+        async function deleteChat() {
+            if (!currentChatId) return;
+            
+            if (!confirm('Are you sure you want to delete this chat?')) return;
+            
+            const response = await fetch(`${API_BASE}/chat/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chatId: currentChatId })
+            });
+            
+            const data = await response.json();
+            if (data.status === 'deleted') {
+                currentChatId = null;
+                document.getElementById('chatIdDisplay').textContent = 'No chat selected';
+                document.getElementById('chatList').innerHTML = `
+                    <button class="chat-btn" onclick="createNewChat()">➕ New Chat</button>
+                `;
+                document.getElementById('actionButtons').style.display = 'none';
+                clearChatBox();
+            }
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Event listeners
+        document.getElementById('modelSelect').addEventListener('change', (e) => {
+            selectedModel = e.target.value;
+        });
+        
+        document.getElementById('messageInput').addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+        });
+        
+        // Initialize
+        checkOllama();
+    </script>
+</body>
+</html>
