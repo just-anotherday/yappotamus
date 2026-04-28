@@ -24,17 +24,13 @@ export function initAIGenerator() {
 
   let chatHistory = [];
   let isLoading = false;
-  const defaultModel = 'openai:gpt-3.5-turbo';
   
-  // Prefer local backend when running locally; otherwise use remote fallback.
-  const localBackendUrl = 'http://localhost:5000';
-  const remoteBackendUrl = 'https://yappotamus.onrender.com';
-  const useLocalBackend = ['localhost', '127.0.0.1'].includes(window.location.hostname);
-
-  const servers = useLocalBackend
-    ? [localBackendUrl, remoteBackendUrl]
-    : [remoteBackendUrl];
-
+  // Multiple server fallbacks
+  const servers = [
+    'https://yappotamus.onrender.com',
+    'https://api.openai.com/v1/chat/completions' // This would need your API key
+  ];
+  
   let currentServer = servers[0];
 
   // Ensure panel is always visible
@@ -59,24 +55,11 @@ export function initAIGenerator() {
     }
   });
 
-  function getSelectedModelValue() {
-    return modelSelect?.value || defaultModel;
-  }
-
-  function getModelDisplayName(selection) {
-    const names = {
-      'openai:gpt-3.5-turbo': 'OpenAI GPT-3.5',
-      'openai:gpt-4o-mini': 'OpenAI GPT-4o Mini',
-      'ollama:llama2': 'Ollama Llama 2'
-    };
-    return names[selection] || selection.replace(':', ' ');
-  }
-
   function updateModelBadge() {
-    const modelName = getModelDisplayName(getSelectedModelValue());
+    const modelName = 'OpenAI GPT-3.5';
     if (modelBadge) {
       modelBadge.textContent = modelName;
-      modelBadge.style.background = modelName.toLowerCase().includes('ollama') ? '#5d5bff' : '#10a37f';
+      modelBadge.style.background = '#10a37f';
     }
     console.log("📛 Model badge updated:", modelName);
   }
@@ -95,23 +78,20 @@ export function initAIGenerator() {
       return;
     }
 
-    const selectedModel = getSelectedModelValue();
-
     // Add user message to chat
     addMessage(message, 'user');
     userInput.value = '';
     setLoading(true);
 
     try {
-      console.log("📡 Attempting to call AI API...", { selectedModel });
+      console.log("📡 Attempting to call AI API...");
       
       // Try the external server first
-      const response = await callExternalAPI(message, selectedModel);
+      const response = await callExternalAPI(message);
       
       if (response.success) {
-        const modelName = getModelDisplayName(selectedModel);
-        console.log("✅ Successfully received AI response", { modelName });
-        addMessage(response.reply, 'ai', modelName);
+        console.log("✅ Successfully received AI response");
+        addMessage(response.reply, 'ai', 'OpenAI GPT-3.5');
         chatHistory.push(
           { role: 'user', content: message },
           { role: 'assistant', content: response.reply }
@@ -132,10 +112,10 @@ export function initAIGenerator() {
     }
   }
 
-  async function callExternalAPI(message, selectedModel) {
+  async function callExternalAPI(message) {
     const endpoint = `${currentServer}/api/openai`;
     
-    console.log("🌐 Calling endpoint:", endpoint, { selectedModel });
+    console.log("🌐 Calling endpoint:", endpoint);
     
     try {
       const controller = new AbortController();
@@ -148,7 +128,6 @@ export function initAIGenerator() {
         },
         body: JSON.stringify({ 
           message: message,
-          model: selectedModel,
           context: chatHistory.slice(-6)
         }),
         signal: controller.signal
@@ -176,7 +155,7 @@ export function initAIGenerator() {
       if (currentIndex < servers.length - 1) {
         currentServer = servers[currentIndex + 1];
         console.log(`🔄 Switching to server: ${currentServer}`);
-        return callExternalAPI(message, selectedModel); // Retry with next server
+        return callExternalAPI(message); // Retry with next server
       }
       
       return { success: false, error: error.message };
