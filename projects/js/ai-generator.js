@@ -26,12 +26,15 @@ export function initAIGenerator() {
   let isLoading = false;
   const defaultModel = 'openai:gpt-3.5-turbo';
   
-  // Multiple server fallbacks
-  const servers = [
-    'https://yappotamus.onrender.com',
-    'https://api.openai.com/v1/chat/completions' // This would need your API key
-  ];
-  
+  // Prefer local backend when running locally; otherwise use remote fallback.
+  const localBackendUrl = 'http://localhost:5000';
+  const remoteBackendUrl = 'https://yappotamus.onrender.com';
+  const useLocalBackend = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+
+  const servers = useLocalBackend
+    ? [localBackendUrl, remoteBackendUrl]
+    : [remoteBackendUrl];
+
   let currentServer = servers[0];
 
   // Ensure panel is always visible
