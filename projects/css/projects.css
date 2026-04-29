@@ -175,6 +175,51 @@
   margin-top: 1rem;
 }
 
+/* ===== PAN MEE RECIPE SECTION STYLES ===== */
+#panmee-recipe {
+  background: linear-gradient(135deg, #fff9e6 0%, #fff3cc 100%);
+  border: 2px solid #f0c040;
+  border-radius: 12px;
+  padding: 2rem;
+  margin: 2rem 0;
+  text-align: center;
+  box-shadow: 0 4px 12px rgba(240, 192, 64, 0.2);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+#panmee-recipe:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(240, 192, 64, 0.3);
+}
+
+#panmee-recipe h2 {
+  color: #8b6914;
+  margin-bottom: 1rem;
+}
+
+#panmee-recipe p {
+  color: #6b5210;
+  margin-bottom: 1.5rem;
+  font-size: 1.1rem;
+}
+
+#panmee-recipe .button {
+  display: inline-block;
+  background: linear-gradient(135deg, #f0c040 0%, #e0a020 100%);
+  color: #5a4510;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  text-decoration: none;
+  font-weight: bold;
+  transition: background 0.3s ease, transform 0.2s ease;
+  box-shadow: 0 2px 8px rgba(240, 192, 64, 0.3);
+}
+
+#panmee-recipe .button:hover {
+  background: linear-gradient(135deg, #e0a020 0%, #d09010 100%);
+  transform: scale(1.05);
+}
+
 /* ===== AI GENERATOR STYLES ===== */
 .model-selector-group {
   margin-bottom: 1rem;
