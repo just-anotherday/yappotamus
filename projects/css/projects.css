@@ -181,11 +181,16 @@
   border: 2px solid #f0c040;
   border-radius: 12px;
   padding: 2rem;
-  margin: 2rem auto;
+  margin: 2rem 0;
   text-align: center;
   box-shadow: 0 4px 12px rgba(240, 192, 64, 0.2);
   transition: transform 0.3s ease, box-shadow 0.3s ease;
-  max-width: 600px;
+  width: 100%;
+  min-height: 500px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 
 #panmee-recipe:hover {

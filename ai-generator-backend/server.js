@@ -54,7 +54,7 @@ setInterval(() => {
 }, 60000);
 
 app.use(cors({
-  origin: ["https://just-anotherday.github.io", "http://localhost:3000",],
+  origin: ["https://just-anotherday.github.io", "http://localhost:3000", "https://yappotamus.onrender.com", "https://www.yapvibes.com", "https://yapvibes.com"],
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"],
 }));
