@@ -33,6 +33,7 @@ class ProjectsMain {
     const components = [
       { id: 'header-container', url: 'components/header.html' },
       { id: 'game-section-container', url: 'components/game-section.html' },
+      { id: 'panmee-container', url: 'components/panmee-section.html' },
       { id: 'ai-generator-container', url: 'components/ai-generator.html' }
     ];
 
