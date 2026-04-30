@@ -54,17 +54,18 @@ setInterval(() => {
 }, 60000);
 
 app.use(cors({
-  origin: ["https://just-anotherday.github.io", "http://localhost:3000", "https://yappotamus.onrender.com", "https://www.yapvibes.com", "https://yapvibes.com"],
+  origin: ["https://just-anotherday.github.io", "http://localhost:3000", "https://yappotamus.onrender.com", "https://yapvibes.com"],
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"],
 }));
 
-// Middleware
-app.use(express.json());
+// Middleware - limit body size to prevent large payload attacks (1kb max)
+app.use(express.json({ limit: '1kb' }));
+app.use(express.urlencoded({ extended: false, limit: '1kb' }));
 
-// Route to check backend
+// Root endpoint - simplified, no tech stack disclosure
 app.get('/', (req, res) => {
-  res.send('AI Generator Backend is Running - OpenAI Only');
+  res.json({ status: 'ok' });
 });
 
 const MAX_PROMPT_LENGTH = 200;
@@ -108,20 +109,20 @@ const validatePrompt = (prompt) => {
   return null;
 };
 
-// Common error handling
+// Common error handling - don't expose sensitive details
 const handleAPIError = (err, res) => {
-  console.error('AI API error:', err);
+  console.error('AI API error:', err.message);
   
   let safeError = "AI request failed. Please try again.";
   
   if (err.message.includes('rate limit') || err.message.includes('rate_limit')) {
     safeError = "Service temporarily unavailable. Please try again later.";
   } else if (err.message.includes('insufficient_quota') || err.message.includes('quota')) {
-    safeError = "Service temporarily unavailable due to billing. Please contact administrator.";
+    safeError = "Service temporarily unavailable. Please try again later.";
   } else if (err.message.includes('API key') || err.message.includes('auth')) {
     safeError = "Service configuration error. Please contact administrator.";
   } else if (err.message.includes('model')) {
-    safeError = "AI model temporarily unavailable. Please try another model.";
+    safeError = "AI model temporarily unavailable. Please try again later.";
   }
   
   res.status(500).json({ error: safeError });
@@ -167,17 +168,12 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('OpenAI API error:', errorData);
-      throw new Error(errorData.error?.message || 'OpenAI API error');
+      console.error('OpenAI API error:', errorData?.error?.message);
+      throw new Error(errorData?.error?.message || 'OpenAI API error');
     }
 
     const data = await response.json();
-    console.log("OpenAI response received for message:", message.substring(0, 50) + '...');
-    
-    const reply = data.choices?.[0]?.message?.content || "No response generated.";
-
-    // Log successful usage
-    console.log(`OpenAI used by ${req.ip}: ${message.substring(0, 50)}...`);
+    const reply = data?.choices?.[0]?.message?.content || "No response generated.";
 
     res.json({ reply });
 
@@ -186,9 +182,8 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
   }
 });
 
-// Keep your existing /ai endpoint for backward compatibility
+// Legacy endpoint for backward compatibility
 app.post('/ai', rateLimit(60000, 5), async (req, res) => {
-  // Global rate limit as backup
   if (requestCount >= 100) {
     return res.status(429).json({ error: "Service temporarily overloaded. Try again later." });
   }
@@ -196,14 +191,12 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => {
 
   const { prompt } = req.body;
   
-  // Input validation
   const validationError = validatePrompt(prompt);
   if (validationError) {
     return res.status(400).json({ error: validationError });
   }
 
   try {
-    // OpenAI text completion with tighter limits
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -220,17 +213,12 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('OpenAI API error:', errorData);
-      throw new Error(errorData.error?.message || 'OpenAI API error');
+      console.error('OpenAI API error:', errorData?.error?.message);
+      throw new Error(errorData?.error?.message || 'OpenAI API error');
     }
 
     const data = await response.json();
-    console.log("OpenAI response received for prompt:", prompt.substring(0, 50) + '...');
-    
-    const result = data.choices?.[0]?.message?.content || "No text returned";
-
-    // Log successful usage
-    console.log(`AI used by ${req.ip}: ${prompt.substring(0, 50)}...`);
+    const result = data?.choices?.[0]?.message?.content || "No text returned";
 
     res.json({ result });
 
@@ -239,36 +227,27 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => {
   }
 });
 
-// Health check endpoint to verify services
-app.get('/health', async (req, res) => {
-  const health = {
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    services: {
-      openai: 'unknown'
-    }
-  };
+// Health check endpoint - protected with a secret key to prevent probing
+const HEALTH_SECRET = process.env.HEALTH_SECRET || '';
 
-  // Check OpenAI
-  try {
-    const testResponse = await fetch('https://api.openai.com/v1/models', {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-      }
-    });
-    health.services.openai = testResponse.ok ? 'healthy' : 'unhealthy';
-  } catch {
-    health.services.openai = 'unreachable';
+app.get('/health', async (req, res) => {
+  if (!HEALTH_SECRET) {
+    return res.status(501).json({ error: 'Health checks not configured' });
   }
 
-  res.json(health);
+  const key = req.query?.key || '';
+  if (key !== HEALTH_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Return minimal info only - no service status disclosure
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString()
+  });
 });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`AI backend running on port ${PORT}`);
-  console.log('Available endpoints:');
-  console.log('  POST /api/openai - OpenAI GPT-3.5');
-  console.log('  POST /ai - Legacy endpoint (OpenAI)');
-  console.log('  GET /health - Service status');
 });

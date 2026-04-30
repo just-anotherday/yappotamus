@@ -27,8 +27,7 @@ export function initAIGenerator() {
   
   // Multiple server fallbacks
   const servers = [
-    'https://yappotamus.onrender.com',
-    'https://api.openai.com/v1/chat/completions' // This would need your API key
+    'https://yappotamus.onrender.com'
   ];
   
   let currentServer = servers[0];
@@ -119,7 +118,7 @@ export function initAIGenerator() {
     
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout (Render free tier cold start)
 
       const response = await fetch(endpoint, {
         method: "POST",
