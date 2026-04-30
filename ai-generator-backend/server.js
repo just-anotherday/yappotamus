@@ -54,9 +54,11 @@ setInterval(() => {
 }, 60000);
 
 app.use(cors({
-  origin: ["https://just-anotherday.github.io", "http://localhost:3000", "https://yappotamus.onrender.com", "https://yapvibes.com"],
+  origin: ["https://just-anotherday.github.io", "https://www.just-anotherday.github.io", "http://localhost:3000", "https://yappotamus.onrender.com", "https://yapvibes.com", "https://www.yapvibes.com"],
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"],
+  credentials: true,
+  optionsSuccessStatus: 204
 }));
 
 // Middleware - limit body size to prevent large payload attacks (1kb max)
