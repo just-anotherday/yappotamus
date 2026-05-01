@@ -290,6 +290,27 @@
 }
 
 /* ===== AI GENERATOR STYLES ===== */
+.ai-generator-panel h2 {
+  font-family: 'Permanent Marker', cursive;
+  font-size: 2.5rem;
+  color: #ff6b35;
+  text-shadow: 
+    3px 3px 0px #1a1a2e,
+    -1px -1px 0px #0f3460,
+    0 0 20px rgba(255, 107, 53, 0.5),
+    0 0 40px rgba(255, 107, 53, 0.3);
+  margin: 1rem 0 0.5rem 0;
+  letter-spacing: 2px;
+}
+
+.ai-generator-panel .subtitle {
+  font-family: 'Permanent Marker', cursive;
+  font-size: 1.2rem;
+  color: #ff6b35;
+  margin: 0.5rem 0 1rem 0;
+  letter-spacing: 1px;
+}
+
 .model-selector-group {
   margin-bottom: 1rem;
   padding: 15px;

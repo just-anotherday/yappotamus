@@ -1,24 +1,13 @@
-<section id="ai-generator" class="project about-card">
-  <h2 style="font-family: 'Permanent Marker', cursive; font-size: 2rem; color: #333;">Chat Companion</h2>
-  <p>AI Generated text responses using OpenAI Models.</p>
-  <div class="generator-container">
-    <!-- REMOVED THE BUTTON -->
-    <div id="ai-generator-panel" style="margin-top:1.5rem;">
-      <div class="ai-chat-container" style="margin-top: 1rem;">
-        <div id="chat-messages" class="chat-messages">
-          <div class="message ai-message">
-            <div class="message-content">
-              <div class="model-indicator">🤖 AI Assistant</div>
-              Greetings! I'm your AI assistant. Let's chat.
-            </div>
-          </div>
-        </div>
-        <div class="input-area">
-          <textarea id="user-input" placeholder="Ask me anything or give me a creative prompt" rows="3" class="input-field" style="width: 100%; margin-bottom: 0.5rem;"></textarea>
-          <button id="generate-ai" class="button accent">Generate Text</button>
-        </div>
-      </div>
-      <p style="text-align: center; font-size: 0.7rem; color: #999; margin-top: 0.5rem;">Powered by OpenAI GPT-4o mini • No data retention • Rate limited for fair usage</p>
+<section id="ai-generator-panel" class="ai-generator-panel">
+  <h2>Chat Companion</h2>
+  <p class="subtitle">AI Generated text responses using OpenAI Models.</p>
+  
+  <div class="chat-container">
+    <div id="chat-messages" class="chat-messages"></div>
+    
+    <div class="input-area">
+      <textarea id="user-input" class="user-input" placeholder="Type your message here..."></textarea>
+      <button id="generate-ai" class="generate-btn">Generate Text</button>
     </div>
   </div>
 </section>
