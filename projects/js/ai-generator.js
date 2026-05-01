@@ -55,7 +55,7 @@ export function initAIGenerator() {
   });
 
   function updateModelBadge() {
-    const modelName = 'OpenAI GPT-3.5';
+    const modelName = 'OpenAI GPT-4o mini';
     if (modelBadge) {
       modelBadge.textContent = modelName;
       modelBadge.style.background = '#10a37f';
@@ -90,7 +90,7 @@ export function initAIGenerator() {
       
       if (response.success) {
         console.log("✅ Successfully received AI response");
-        addMessage(response.reply, 'ai', 'OpenAI GPT-3.5');
+        addMessage(response.reply, 'ai', 'OpenAI GPT-4o mini');
         chatHistory.push(
           { role: 'user', content: message },
           { role: 'assistant', content: response.reply }
