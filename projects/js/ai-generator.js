@@ -1,4 +1,3 @@
-// AI Generator with Chat Interface - Enhanced Error Handling
 export function initAIGenerator() {
   console.log("🚀 AI Generator Initializing...");
   
@@ -6,15 +5,11 @@ export function initAIGenerator() {
   const panel = document.getElementById('ai-generator-panel');
   const userInput = document.getElementById('user-input');
   const chatMessages = document.getElementById('chat-messages');
-  const modelSelect = document.getElementById('model-select');
-  const modelBadge = document.getElementById('current-model-badge');
 
   console.log("Elements found:", {
     generateBtn: !!generateBtn,
     userInput: !!userInput,
-    chatMessages: !!chatMessages,
-    modelSelect: !!modelSelect,
-    modelBadge: !!modelBadge
+    chatMessages: !!chatMessages
   });
 
   if (!generateBtn || !panel || !userInput || !chatMessages) {
@@ -35,12 +30,6 @@ export function initAIGenerator() {
   // Ensure panel is always visible
   panel.style.display = 'block';
 
-  // Model selection handler
-  modelSelect.addEventListener('change', (e) => {
-    console.log("🔄 Model changed to:", e.target.value);
-    updateModelBadge();
-  });
-
   generateBtn.addEventListener('click', () => {
     console.log("🎯 Generate button clicked!");
     handleGenerate();
@@ -53,15 +42,6 @@ export function initAIGenerator() {
       handleGenerate();
     }
   });
-
-  function updateModelBadge() {
-    const modelName = 'OpenAI GPT-4o mini';
-    if (modelBadge) {
-      modelBadge.textContent = modelName;
-      modelBadge.style.background = '#10a37f';
-    }
-    console.log("📛 Model badge updated:", modelName);
-  }
 
   async function handleGenerate() {
     const message = userInput.value.trim();
@@ -274,6 +254,5 @@ export function initAIGenerator() {
   }
 
   // Initialize
-  updateModelBadge();
   console.log("✅ AI Generator Ready - Enhanced Error Handling");
 }
