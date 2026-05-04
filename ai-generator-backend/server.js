@@ -161,7 +161,7 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_MODEL || "gpt-5-mini-2025-08-07",
         messages: messages,
         max_tokens: 150,
         temperature: 0.7
@@ -206,7 +206,7 @@ app.post('/ai', rateLimit(60000, 5), async (req, res) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_MODEL || "gpt-5-mini-2025-08-07",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 100,
         temperature: 0.7
