@@ -35,7 +35,7 @@ export function initAIGenerator() {
     handleGenerate();
   });
   
-  userInput.addEventListener('keypress', (e) => {
+  userInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       console.log("⌨️ Enter key pressed!");
