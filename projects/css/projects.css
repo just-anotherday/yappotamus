@@ -339,14 +339,14 @@
 .chat-subtitle {
   font-family: 'Permanent Marker', cursive;
   font-size: 1.3rem;
-  text-align: center;
+  text-align: left;
   color: #e0a020;
   margin: 0.2rem 0 1.5rem 0;
   margin-left: 40%;
   text-shadow: 
     1px 1px 0px rgba(0, 0, 0, 0.3);
   opacity: 0.9;
-  display: block;
+  display: inline-block;
 }
 
 .model-selector-group {
