@@ -116,11 +116,12 @@
 .game-subtitle {
   font-family: 'Bebas Neue', sans-serif;
   font-size: 1.6rem;
-  text-align: center;
+  text-align: left;
   color: #e0a020;
   text-transform: uppercase;
   letter-spacing: 4px;
   margin: 0.2rem 0 1.5rem 0;
+  margin-left: 40%;
   text-shadow: 
     1px 1px 0px rgba(0, 0, 0, 0.3);
   opacity: 0.9;
