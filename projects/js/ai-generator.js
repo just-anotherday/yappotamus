@@ -24,7 +24,7 @@ export function initAIGenerator() {
   let messageTimestamps = [];
   let statusTimerId = null;
   const COOLDOWN_MS = 4000;
-  const LIMIT_WINDOW_MS = 3 * 60 * 1000;
+  const LIMIT_WINDOW_MS = 60 * 1000;
   const MAX_MESSAGES_PER_WINDOW = 10;
   
   // Multiple server fallbacks
@@ -325,7 +325,7 @@ export function initAIGenerator() {
       ? LIMIT_WINDOW_MS - (now - messageTimestamps[0])
       : LIMIT_WINDOW_MS;
 
-    let statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Rate limit window: 3:00.000 • Ready`;
+    let statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Rate limit window: 1:00.000 • Ready`;
     chatLimitStatus.classList.remove('warning', 'limited');
 
     if (messagesLeft === 0 && messageTimestamps.length > 0) {

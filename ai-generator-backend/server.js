@@ -12,12 +12,12 @@ app.set('trust proxy', 1);
 // Rate limiting for public, unsaved chatbot usage.
 // In-memory is fine for a single Render instance. Use Redis if scaling horizontally.
 const aiLimiter = rateLimit({
-  windowMs: 3 * 60 * 1000,
+  windowMs: 60 * 1000,
   limit: 10,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   message: {
-    error: 'Too many chat requests. Please wait up to 3 minutes and try again.'
+    error: 'Too many chat requests. Please wait up to 60 seconds and try again.'
   }
 });
 

@@ -1,23 +1,33 @@
-function openModal(src) {
+function openModal(src, alt = '') {
   const modal = document.getElementById('imageModal');
   const modalImage = document.getElementById('modalImage');
   if (!modal || !modalImage) return;
-  modal.style.display = 'block';
+
   modalImage.src = src;
+  modalImage.alt = alt;
+  modal.style.display = 'flex';
+  modal.setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
 }
 
 function closeModal() {
   const modal = document.getElementById('imageModal');
+  const modalImage = document.getElementById('modalImage');
   if (!modal) return;
+
   modal.style.display = 'none';
+  modal.setAttribute('aria-hidden', 'true');
+  if (modalImage) {
+    modalImage.removeAttribute('src');
+    modalImage.alt = '';
+  }
   document.body.style.overflow = 'auto';
 }
 
 export function initModal() {
   document.addEventListener('click', (e) => {
     const img = e.target.closest?.('.image-gallery img');
-    if (img && img.src) openModal(img.src);
+    if (img && img.src) openModal(img.src, img.alt || 'Recipe photo');
   });
 
   const modal = document.getElementById('imageModal');
