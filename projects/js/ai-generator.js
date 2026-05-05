@@ -5,6 +5,7 @@ export function initAIGenerator() {
   const panel = document.getElementById('ai-generator-panel');
   const userInput = document.getElementById('user-input');
   const chatMessages = document.getElementById('chat-messages');
+  const chatLimitStatus = document.getElementById('chat-limit-status');
 
   console.log("Elements found:", {
     generateBtn: !!generateBtn,
@@ -20,7 +21,10 @@ export function initAIGenerator() {
   let chatHistory = [];
   let isLoading = false;
   let cooldownUntil = 0;
+  let messageTimestamps = [];
   const COOLDOWN_MS = 4000;
+  const LIMIT_WINDOW_MS = 3 * 60 * 1000;
+  const MAX_MESSAGES_PER_WINDOW = 10;
   
   // Multiple server fallbacks
   const servers = [
@@ -31,6 +35,7 @@ export function initAIGenerator() {
 
   // Ensure panel is always visible
   panel.style.display = 'block';
+  updateLimitStatus();
 
   generateBtn.addEventListener('click', () => {
     console.log("🎯 Generate button clicked!");
@@ -60,13 +65,25 @@ export function initAIGenerator() {
     }
 
     const now = Date.now();
+    pruneMessageTimestamps(now);
+
+    if (messageTimestamps.length >= MAX_MESSAGES_PER_WINDOW) {
+      const resetInMs = LIMIT_WINDOW_MS - (now - messageTimestamps[0]);
+      updateLimitStatus();
+      addMessage(`Message limit reached. Please try again in ${formatTime(resetInMs)}.`, 'ai', 'Limit');
+      return;
+    }
+
     if (now < cooldownUntil) {
       const secondsLeft = Math.ceil((cooldownUntil - now) / 1000);
+      updateLimitStatus();
       addMessage(`Please wait ${secondsLeft}s before sending another message.`, 'ai', 'Cooldown');
       return;
     }
 
     // Add user message to chat
+    messageTimestamps.push(now);
+    updateLimitStatus();
     addMessage(message, 'user');
     userInput.value = '';
     setLoading(true);
@@ -212,7 +229,7 @@ export function initAIGenerator() {
     isLoading = loading;
     generateBtn.disabled = loading;
     generateBtn.classList.toggle('cooldown', false);
-    generateBtn.textContent = loading ? 'Generating...' : 'Generate Text';
+    generateBtn.textContent = loading ? 'Sending...' : 'Send It';
     
     if (loading) {
       const typingDiv = document.createElement('div');
@@ -255,19 +272,59 @@ export function initAIGenerator() {
     cooldownUntil = Date.now() + COOLDOWN_MS;
     generateBtn.disabled = true;
     generateBtn.classList.add('cooldown');
+    updateLimitStatus();
 
     const intervalId = setInterval(() => {
       const remaining = cooldownUntil - Date.now();
+      updateLimitStatus();
       if (remaining <= 0) {
         clearInterval(intervalId);
         generateBtn.disabled = false;
         generateBtn.classList.remove('cooldown');
-        generateBtn.textContent = 'Generate Text';
+        generateBtn.textContent = 'Send It';
+        updateLimitStatus();
         return;
       }
 
       generateBtn.textContent = `Cooldown ${Math.ceil(remaining / 1000)}s`;
     }, 250);
+  }
+
+  function pruneMessageTimestamps(now = Date.now()) {
+    messageTimestamps = messageTimestamps.filter(timestamp => now - timestamp < LIMIT_WINDOW_MS);
+  }
+
+  function updateLimitStatus() {
+    if (!chatLimitStatus) return;
+
+    const now = Date.now();
+    pruneMessageTimestamps(now);
+
+    const messagesLeft = Math.max(0, MAX_MESSAGES_PER_WINDOW - messageTimestamps.length);
+    const cooldownRemaining = Math.max(0, cooldownUntil - now);
+
+    let statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} messages left • Ready`;
+    chatLimitStatus.classList.remove('warning', 'limited');
+
+    if (messagesLeft === 0 && messageTimestamps.length > 0) {
+      const resetInMs = LIMIT_WINDOW_MS - (now - messageTimestamps[0]);
+      statusText = `0 / ${MAX_MESSAGES_PER_WINDOW} messages left • Resets in ${formatTime(resetInMs)}`;
+      chatLimitStatus.classList.add('limited');
+    } else if (cooldownRemaining > 0) {
+      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} messages left • Cooldown ${Math.ceil(cooldownRemaining / 1000)}s`;
+      chatLimitStatus.classList.add('warning');
+    } else if (messagesLeft <= 3) {
+      chatLimitStatus.classList.add('warning');
+    }
+
+    chatLimitStatus.textContent = statusText;
+  }
+
+  function formatTime(ms) {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
   }
 
   function scrollToBottom() {
