@@ -211,6 +211,7 @@ export function initAIGenerator() {
   function setLoading(loading) {
     isLoading = loading;
     generateBtn.disabled = loading;
+    generateBtn.classList.toggle('cooldown', false);
     generateBtn.textContent = loading ? 'Generating...' : 'Generate Text';
     
     if (loading) {
@@ -253,17 +254,19 @@ export function initAIGenerator() {
   function startCooldown() {
     cooldownUntil = Date.now() + COOLDOWN_MS;
     generateBtn.disabled = true;
+    generateBtn.classList.add('cooldown');
 
     const intervalId = setInterval(() => {
       const remaining = cooldownUntil - Date.now();
       if (remaining <= 0) {
         clearInterval(intervalId);
         generateBtn.disabled = false;
+        generateBtn.classList.remove('cooldown');
         generateBtn.textContent = 'Generate Text';
         return;
       }
 
-      generateBtn.textContent = `Wait ${Math.ceil(remaining / 1000)}s`;
+      generateBtn.textContent = `Cooldown ${Math.ceil(remaining / 1000)}s`;
     }, 250);
   }
 
