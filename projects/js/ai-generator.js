@@ -98,7 +98,7 @@ export function initAIGenerator() {
       
       if (response.success) {
         console.log("✅ Successfully received AI response");
-        addMessage(response.reply, 'ai', 'OpenAI GPT-4o mini');
+        addMessage(response.reply, 'ai', 'yapBot');
         chatHistory.push(
           { role: 'user', content: message },
           { role: 'assistant', content: response.reply }
@@ -107,13 +107,13 @@ export function initAIGenerator() {
         // Fallback to local responses
         console.log("🔄 Using fallback response");
         const fallbackResponse = getFallbackResponse(message);
-        addMessage(fallbackResponse, 'ai', 'AI Assistant (Offline)');
+        addMessage(fallbackResponse, 'ai', 'yapBot (Offline)');
       }
 
     } catch (err) {
       console.error('❌ General error:', err);
       const fallbackResponse = getFallbackResponse(message);
-      addMessage(fallbackResponse, 'ai', 'AI Assistant (Offline)');
+      addMessage(fallbackResponse, 'ai', 'yapBot (Offline)');
     } finally {
       setLoading(false);
       startCooldown();
@@ -325,17 +325,17 @@ export function initAIGenerator() {
       ? LIMIT_WINDOW_MS - (now - messageTimestamps[0])
       : LIMIT_WINDOW_MS;
 
-    let statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • 3:00.000 window • Ready`;
+    let statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Rate limit window: 3:00.000 • Ready`;
     chatLimitStatus.classList.remove('warning', 'limited');
 
     if (messagesLeft === 0 && messageTimestamps.length > 0) {
-      statusText = `0 / ${MAX_MESSAGES_PER_WINDOW} left • Resets in ${formatPreciseTime(resetInMs)}`;
+      statusText = `0 / ${MAX_MESSAGES_PER_WINDOW} left • Rate limit resets in ${formatPreciseTime(resetInMs)}`;
       chatLimitStatus.classList.add('limited');
     } else if (cooldownRemaining > 0) {
-      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Cooldown ${(cooldownRemaining / 1000).toFixed(3)}s • Reset ${formatPreciseTime(resetInMs)}`;
+      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Anti-spam cooldown ${(cooldownRemaining / 1000).toFixed(3)}s • Rate limit reset ${formatPreciseTime(resetInMs)}`;
       chatLimitStatus.classList.add('warning');
     } else if (messageTimestamps.length > 0) {
-      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Reset ${formatPreciseTime(resetInMs)}`;
+      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Rate limit reset ${formatPreciseTime(resetInMs)}`;
     } else if (messagesLeft <= 3) {
       chatLimitStatus.classList.add('warning');
     }
