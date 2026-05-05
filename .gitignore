@@ -40,3 +40,6 @@ logs/
 backend/ai-generator-backend/node_modules/
 backend/ai-generator-backend/.env
 
+
+.dev.vars*
+!.dev.vars.example
