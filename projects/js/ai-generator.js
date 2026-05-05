@@ -107,13 +107,13 @@ export function initAIGenerator() {
         // Fallback to local responses
         console.log("🔄 Using fallback response");
         const fallbackResponse = getFallbackResponse(message);
-        addMessage(fallbackResponse, 'ai', 'yapBot (Offline)');
+        addMessage(fallbackResponse, 'ai', 'Offline Bot');
       }
 
     } catch (err) {
       console.error('❌ General error:', err);
       const fallbackResponse = getFallbackResponse(message);
-      addMessage(fallbackResponse, 'ai', 'yapBot (Offline)');
+      addMessage(fallbackResponse, 'ai', 'Offline Bot');
     } finally {
       setLoading(false);
       startCooldown();
