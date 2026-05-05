@@ -36,7 +36,7 @@ body {
 /* Header & Footer - UCF Gold */
 header {
   text-align: center;
-  padding: 2rem 1rem;
+  padding: 1.35rem 1rem;
   background: #FFC904;
   color: #000000;
   font-weight: 600;
@@ -69,7 +69,8 @@ footer a:hover {
   display: flex;
   justify-content: center;
   gap: 4rem;
-  margin-top: 1rem;
+  margin: 0 auto;
+  max-width: 520px;
   background-color: rgba(0, 0, 0, 0.1);
   padding: 1rem 0;
   border-radius: 8px;
@@ -118,9 +119,9 @@ h2 {
   border: 2px solid #FFC904;
   border-radius: 18px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  margin: 2rem auto;
+  margin: 1.5rem auto;
   max-width: 1000px;
-  padding: 3rem 2rem;
+  padding: 2.5rem 2rem;
   text-align: center;
 }
 
@@ -276,8 +277,8 @@ a.button:hover, .button:hover {
   background-color: #F5F5F5;
   border-radius: 16px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  padding: 2rem;
-  margin: 2rem auto;
+  padding: 1.75rem;
+  margin: 1.5rem auto;
   max-width: 1000px;
   border: 2px solid #FFC904;
 }
@@ -316,8 +317,8 @@ a.button:hover, .button:hover {
   display: flex;
   justify-content: center;
   align-items: stretch;
-  gap: 2rem;
-  margin: 2rem auto;
+  gap: 1.25rem;
+  margin: 1.5rem auto;
   max-width: 1000px;
   padding: 0 1rem;
 }

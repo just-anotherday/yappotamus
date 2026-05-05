@@ -22,6 +22,7 @@ export function initAIGenerator() {
   let isLoading = false;
   let cooldownUntil = 0;
   let messageTimestamps = [];
+  let statusTimerId = null;
   const COOLDOWN_MS = 4000;
   const LIMIT_WINDOW_MS = 3 * 60 * 1000;
   const MAX_MESSAGES_PER_WINDOW = 10;
@@ -36,6 +37,7 @@ export function initAIGenerator() {
   // Ensure panel is always visible
   panel.style.display = 'block';
   updateLimitStatus();
+  startStatusTimer();
 
   generateBtn.addEventListener('click', () => {
     console.log("🎯 Generate button clicked!");
@@ -273,6 +275,7 @@ export function initAIGenerator() {
     generateBtn.disabled = true;
     generateBtn.classList.add('cooldown');
     updateLimitStatus();
+    startStatusTimer();
 
     const intervalId = setInterval(() => {
       const remaining = cooldownUntil - Date.now();
@@ -290,6 +293,21 @@ export function initAIGenerator() {
     }, 250);
   }
 
+  function startStatusTimer() {
+    if (statusTimerId) return;
+
+    statusTimerId = setInterval(() => {
+      updateLimitStatus();
+
+      const hasActiveMessages = messageTimestamps.length > 0;
+      const isCoolingDown = Date.now() < cooldownUntil;
+      if (!hasActiveMessages && !isCoolingDown) {
+        clearInterval(statusTimerId);
+        statusTimerId = null;
+      }
+    }, 50);
+  }
+
   function pruneMessageTimestamps(now = Date.now()) {
     messageTimestamps = messageTimestamps.filter(timestamp => now - timestamp < LIMIT_WINDOW_MS);
   }
@@ -303,16 +321,21 @@ export function initAIGenerator() {
     const messagesLeft = Math.max(0, MAX_MESSAGES_PER_WINDOW - messageTimestamps.length);
     const cooldownRemaining = Math.max(0, cooldownUntil - now);
 
-    let statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} messages left • Ready`;
+    const resetInMs = messageTimestamps.length > 0
+      ? LIMIT_WINDOW_MS - (now - messageTimestamps[0])
+      : LIMIT_WINDOW_MS;
+
+    let statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • 3:00.000 window • Ready`;
     chatLimitStatus.classList.remove('warning', 'limited');
 
     if (messagesLeft === 0 && messageTimestamps.length > 0) {
-      const resetInMs = LIMIT_WINDOW_MS - (now - messageTimestamps[0]);
-      statusText = `0 / ${MAX_MESSAGES_PER_WINDOW} messages left • Resets in ${formatTime(resetInMs)}`;
+      statusText = `0 / ${MAX_MESSAGES_PER_WINDOW} left • Resets in ${formatPreciseTime(resetInMs)}`;
       chatLimitStatus.classList.add('limited');
     } else if (cooldownRemaining > 0) {
-      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} messages left • Cooldown ${Math.ceil(cooldownRemaining / 1000)}s`;
+      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Cooldown ${(cooldownRemaining / 1000).toFixed(3)}s • Reset ${formatPreciseTime(resetInMs)}`;
       chatLimitStatus.classList.add('warning');
+    } else if (messageTimestamps.length > 0) {
+      statusText = `${messagesLeft} / ${MAX_MESSAGES_PER_WINDOW} left • Reset ${formatPreciseTime(resetInMs)}`;
     } else if (messagesLeft <= 3) {
       chatLimitStatus.classList.add('warning');
     }
@@ -325,6 +348,14 @@ export function initAIGenerator() {
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  }
+
+  function formatPreciseTime(ms) {
+    const safeMs = Math.max(0, Math.ceil(ms));
+    const minutes = Math.floor(safeMs / 60000);
+    const seconds = Math.floor((safeMs % 60000) / 1000);
+    const milliseconds = safeMs % 1000;
+    return `${minutes}:${String(seconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`;
   }
 
   function scrollToBottom() {
