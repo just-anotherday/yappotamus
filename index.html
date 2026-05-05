@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Jason Yap | Portfolio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css" />
 </head>
 
@@ -11,12 +14,24 @@
   <div class="content">
     <header>
       <nav class="main-nav">
-        <a href="index.html">Home</a>
+        <a href="index.html" class="active">Home</a>
         <a href="projects/projects.html">Projects</a>
       </nav>
     </header>
 
     <main>
+      <section class="hero-card">
+        <p class="eyebrow">Software Engineer • AI • Backend • Game Projects</p>
+        <h1>Hi, I'm Jason Yap.</h1>
+        <p class="hero-copy">
+          I build practical software, AI-powered tools, and interactive projects with a focus on reliability, creativity, and real-world impact.
+        </p>
+        <div class="hero-actions">
+          <a href="projects/projects.html" class="button">View Projects</a>
+          <a href="assets/yapResume.pdf" target="_blank" class="button accent">View Resume</a>
+        </div>
+      </section>
+
       <section id="about" class="about-card">
         <div class="about-container">
           <img src="assets/tempProfilePhoto.jpg" alt="Jason Yap Photo" class="about-photo" />
@@ -53,8 +68,39 @@
           <a href="https://www.buymeacoffee.com/jasonnyapp7" target="_blank" class="button accent">Buy me a coffee</a>
         </section>
       </div>
+
+      <section class="featured-projects about-card">
+        <h2>Featured Work</h2>
+        <div class="featured-grid">
+          <article class="featured-card">
+            <h3>slimeScraper</h3>
+            <p>A Unity-built roguelike FPS prototype featuring procedural office floors and WebGL browser play.</p>
+            <div class="tech-badges">
+              <span>Unity</span>
+              <span>C#</span>
+              <span>Procedural Generation</span>
+              <span>WebGL</span>
+            </div>
+          </article>
+          <article class="featured-card">
+            <h3>Chat Companion</h3>
+            <p>An AI chat project connected to a backend service for generated text responses.</p>
+            <div class="tech-badges">
+              <span>AI</span>
+              <span>Node.js</span>
+              <span>OpenAI</span>
+              <span>API</span>
+            </div>
+          </article>
+        </div>
+        <a href="projects/projects.html" class="button">Explore All Projects</a>
+      </section>
     </main>
 
+    <footer>
+      <p>© 2025 Jason Yap — This website is my personal project.</p>
+      <p><a href="mailto:jason-yap@outlook.com">Email</a> | <a href="https://instagram.com/yappotamus" target="_blank">Instagram</a> | <a href="https://github.com/just-anotherday" target="_blank">GitHub</a></p>
+    </footer>
 
   </div>
 </body>

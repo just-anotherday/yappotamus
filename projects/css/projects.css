@@ -99,6 +99,15 @@
 }
 
 /* ===== GAME TITLE STYLES ===== */
+.project-title-block {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 1rem;
+  text-align: center;
+}
+
 .game-title {
   font-family: 'Permanent Marker', cursive;
   font-size: 2.8rem;
@@ -116,18 +125,33 @@
 .game-subtitle {
   font-family: 'Bebas Neue', sans-serif;
   font-size: 1.6rem;
-  text-align: left;
+  text-align: center;
   color: #e0a020;
   text-transform: uppercase;
   letter-spacing: 4px;
   margin: 0.2rem 0 1.5rem 0;
-  margin-left: 36%;
   text-shadow: 
     1px 1px 0px rgba(0, 0, 0, 0.3);
   opacity: 0.9;
   border-bottom: 2px solid rgba(224, 160, 32, 0.3);
   padding-bottom: 0.5rem;
   display: inline-block;
+}
+
+.project-badges {
+  justify-content: center;
+  margin: 0.5rem 0 1.25rem;
+}
+
+.project-badges span {
+  background: #000000;
+  border: 1px solid #FFC904;
+  border-radius: 999px;
+  color: #FFC904;
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.35rem 0.7rem;
 }
 
 /* ===== PROJECTS PAGE STYLES ===== */
