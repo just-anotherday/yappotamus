@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: yappotamus-backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend/ai-generator-backend:/app
+    working_dir: /app

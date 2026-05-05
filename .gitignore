@@ -37,6 +37,6 @@ logs/
 *.temp
 
 # AI Generator Backend
-ai-generator-backend/node_modules/
-ai-generator-backend/.env
+backend/ai-generator-backend/node_modules/
+backend/ai-generator-backend/.env
 
