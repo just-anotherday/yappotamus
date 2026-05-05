@@ -6,4 +6,3 @@ This is my personal portfolio website using HTML And CSS.
 *About Me: Short Introduction
 *Resume: Downloadable PDF of my Resume and viewable
 *Projects: Various projects
-*RecipeBook: Various culinary cuisines
