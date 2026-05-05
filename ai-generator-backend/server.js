@@ -2,56 +2,24 @@ import express from 'express';
 import fetch from 'node-fetch';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
 
 dotenv.config();
 
 const app = express();
+app.set('trust proxy', 1);
 
-// Rate limiting storage
-const rateLimitStore = new Map();
-
-// Enhanced rate limiting middleware
-const rateLimit = (windowMs = 60000, maxRequests = 5) => {
-  return (req, res, next) => {
-    const clientIP = req.ip || req.connection.remoteAddress;
-    const now = Date.now();
-    
-    if (!rateLimitStore.has(clientIP)) {
-      rateLimitStore.set(clientIP, { count: 1, firstRequest: now });
-    } else {
-      const clientData = rateLimitStore.get(clientIP);
-      
-      // Reset if window has passed
-      if (now - clientData.firstRequest > windowMs) {
-        clientData.count = 1;
-        clientData.firstRequest = now;
-      } else {
-        clientData.count++;
-      }
-      
-      // Check if over limit
-      if (clientData.count > maxRequests) {
-        const resetTime = clientData.firstRequest + windowMs;
-        return res.status(429).json({ 
-          error: "Too many requests", 
-          retryAfter: Math.ceil((resetTime - now) / 1000)
-        });
-      }
-    }
-    
-    next();
-  };
-};
-
-// Clean up old rate limit entries every minute
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, data] of rateLimitStore.entries()) {
-    if (now - data.firstRequest > 60000) {
-      rateLimitStore.delete(ip);
-    }
+// Rate limiting for public, unsaved chatbot usage.
+// In-memory is fine for a single Render instance. Use Redis if scaling horizontally.
+const aiLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    error: 'Too many chat requests. Please wait a few minutes and try again.'
   }
-}, 60000);
+});
 
 app.use(cors({
   origin: ["https://just-anotherday.github.io", "https://www.just-anotherday.github.io", "http://localhost:3000", "https://yappotamus.onrender.com", "https://yapvibes.com", "https://www.yapvibes.com"],
@@ -131,7 +99,7 @@ const handleAPIError = (err, res) => {
 };
 
 // OpenAI endpoint
-app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
+app.post('/api/openai', aiLimiter, async (req, res) => {
   // Global rate limit as backup
   if (requestCount >= 100) {
     return res.status(429).json({ error: "Service temporarily overloaded. Try again later." });
@@ -185,7 +153,7 @@ app.post('/api/openai', rateLimit(60000, 5), async (req, res) => {
 });
 
 // Legacy endpoint for backward compatibility
-app.post('/ai', rateLimit(60000, 5), async (req, res) => {
+app.post('/ai', aiLimiter, async (req, res) => {
   if (requestCount >= 100) {
     return res.status(429).json({ error: "Service temporarily overloaded. Try again later." });
   }

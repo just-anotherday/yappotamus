@@ -19,6 +19,8 @@ export function initAIGenerator() {
 
   let chatHistory = [];
   let isLoading = false;
+  let cooldownUntil = 0;
+  const COOLDOWN_MS = 4000;
   
   // Multiple server fallbacks
   const servers = [
@@ -57,6 +59,13 @@ export function initAIGenerator() {
       return;
     }
 
+    const now = Date.now();
+    if (now < cooldownUntil) {
+      const secondsLeft = Math.ceil((cooldownUntil - now) / 1000);
+      addMessage(`Please wait ${secondsLeft}s before sending another message.`, 'ai', 'Cooldown');
+      return;
+    }
+
     // Add user message to chat
     addMessage(message, 'user');
     userInput.value = '';
@@ -88,6 +97,7 @@ export function initAIGenerator() {
       addMessage(fallbackResponse, 'ai', 'AI Assistant (Offline)');
     } finally {
       setLoading(false);
+      startCooldown();
     }
   }
 
@@ -238,6 +248,23 @@ export function initAIGenerator() {
         typingIndicator.remove();
       }
     }
+  }
+
+  function startCooldown() {
+    cooldownUntil = Date.now() + COOLDOWN_MS;
+    generateBtn.disabled = true;
+
+    const intervalId = setInterval(() => {
+      const remaining = cooldownUntil - Date.now();
+      if (remaining <= 0) {
+        clearInterval(intervalId);
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Text';
+        return;
+      }
+
+      generateBtn.textContent = `Wait ${Math.ceil(remaining / 1000)}s`;
+    }, 250);
   }
 
   function scrollToBottom() {
