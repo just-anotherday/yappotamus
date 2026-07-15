@@ -1,6 +1,6 @@
-# yappotamus
+# YapVibes Website
 
-My personal portfolio project.
+Personal portfolio website — part of the YapVibes monorepo.
 
 ## Frontend (React + Tailwind)
 
