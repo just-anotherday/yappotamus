@@ -1,0 +1,49 @@
+# Cloudflare Wrangler
+.wrangler/
+.dev.vars
+.env.cloudflare
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.local.example
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# AI Generator Backend
+backend/ai-generator-backend/node_modules/
+backend/ai-generator-backend/.env
+
+
+.dev.vars*
+!.dev.vars.example
+
+
+
+# curl -X DELETE "https://www.yapvibes.com/api/leaderboard" -H "x-admin-reset-token: YOUR_TOKEN_HERE"

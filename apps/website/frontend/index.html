@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jason Yap | Home</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Permanent+Marker&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+
+<body>
+  <div class="content">
+    <header>
+      <div class="site-title">
+        <a href="index.html">yapvibes.</a>
+      </div>
+      <nav class="main-nav">
+        <a href="index.html" class="active">Home</a>
+<a href="projects/projects.html">Projects</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero-card">
+        <p class="eyebrow">Software Engineer • AI • Backend • Game Projects</p>
+        <h1>Hi, I'm Jason Yap.</h1>
+        <p class="hero-copy">
+          I build practical software, AI-powered tools, and interactive projects with a focus on reliability, creativity, and real-world impact.
+        </p>
+      </section>
+
+      <section id="about" class="about-card">
+        <div class="about-container">
+          <div>
+            <img src="assets/tempProfilePhoto.jpg" alt="Jason Yap Photo" class="about-photo" />
+            <p id="photo-click-hint" class="photo-click-hint" aria-live="polite"></p>
+          </div>
+          
+          <div class="about-text">
+            <h2>About Me</h2>
+            <p>
+              I recently graduated from <strong>University of Central Florida</strong> with a <strong>Bachelor of Science in Computer Science</strong> in 2026.
+              I am looking for a full-time software engineering role where I can apply my skills, grow as a developer, and contribute to impactful projects.
+            </p>
+            <p>
+              My background includes <span class="army-trigger-wrap"><button id="army-song-trigger" type="button" class="inline-audio-trigger" aria-label="Toggle Army song easter egg">U.S. Army</button></span> service at <em>Fort Bragg</em>, where I developed leadership, resilience, 
+              and the ability to perform under pressure. Today, I'm passionate about <strong>AI</strong>, 
+              <strong>backend development</strong>, and <strong>building software that solves real-world problems</strong>.
+            </p>
+            <p>
+              I'm excited to apply my technical skills and work ethic as part of a long-term team where I can grow, contribute, 
+              and build meaningful software throughout my career.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div class="resume-donation-wrapper">
+        <section id="resume">
+          <h2>Resume</h2>
+          <p>You can view or download my resume below:</p>
+          <a href="assets/yapResume.pdf" target="_blank" class="button">View Resume</a>
+        </section>
+
+        <section class="donation-card">
+          <h2>Support</h2>
+          <p>Donate, if you like. ✌️</p>
+          <a href="https://www.buymeacoffee.com/jasonnyapp7" target="_blank" class="button accent">Buy me a coffee</a>
+        </section>
+      </div>
+
+      <section class="featured-projects about-card">
+        <h2>Featured Work</h2>
+        <div class="featured-grid">
+          <article class="featured-card">
+            <h3>slimeScraper</h3>
+            <p>A Unity-built roguelike FPS prototype featuring procedural office floors and WebGL browser play.</p>
+            <div class="tech-badges">
+              <span>Unity</span>
+              <span>C#</span>
+              <span>Procedural Generation</span>
+              <span>WebGL</span>
+            </div>
+          </article>
+          <article class="featured-card">
+            <h3>Chat Companion</h3>
+            <p>An AI chat project connected to a backend service for generated text responses.</p>
+            <div class="tech-badges">
+              <span>AI</span>
+              <span>Node.js</span>
+              <span>OpenAI</span>
+              <span>API</span>
+            </div>
+          </article>
+        </div>
+        <a href="projects/projects.html" class="button">Explore All Projects</a>
+      </section>
+    </main>
+
+    <footer>
+      <p>© 2026 Jason Yap — This website is my personal project.</p>
+      <p><a href="mailto:jason@yapvibes.com">Email</a> | <a href="https://instagram.com/yappotamus" target="_blank">Instagram</a> | <a href="https://github.com/just-anotherday" target="_blank">GitHub</a> | <a href="https://yapvibes.com" target="_blank" rel="noopener noreferrer">yapvibes.com</a></p>
+    </footer>
+
+  </div>
+  <div id="army-counter-pill" class="army-counter-pill" aria-live="polite"></div>
+
+</body>
+
+<script>
+window.addEventListener('pageshow', () => {
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+});
+
+let saluteCount = 0;
+const profilePhoto = document.querySelector('.about-photo');
+const armySongTrigger = document.querySelector('#army-song-trigger');
+const armyCounterPill = document.querySelector('#army-counter-pill');
+const photoHint = document.querySelector('#photo-click-hint');
+let flagClickCount = 0;
+
+// Local audio files avoid cross-origin ORB/CORS blocking in browsers.
+const firstCall = new Audio('assets/FirstCall.mp3');
+const retreatCall = new Audio('assets/retreat.mp3');
+const armySong = new Audio('assets/THE_ARMY_SONG_BAND.MP3');
+firstCall.preload = 'none';
+retreatCall.preload = 'none';
+armySong.preload = 'none';
+firstCall.volume = 0.3;
+retreatCall.volume = 0.3;
+armySong.volume = 0.3;
+let retreatStartTimer = null;
+let flagHideTimer = null;
+let armySongPlaying = false;
+let flagSequencePlaying = false;
+
+function stopFlagAudioSequence() {
+  firstCall.pause();
+  retreatCall.pause();
+  firstCall.currentTime = 0;
+  retreatCall.currentTime = 0;
+
+  if (retreatStartTimer) {
+    clearTimeout(retreatStartTimer);
+    retreatStartTimer = null;
+  }
+  if (flagHideTimer) {
+    clearTimeout(flagHideTimer);
+    flagHideTimer = null;
+  }
+
+  if (profilePhoto) {
+    hideFlagOverPhoto(profilePhoto);
+  }
+  saluteCount = 0;
+  flagSequencePlaying = false;
+  if (photoHint) photoHint.textContent = '';
+}
+
+function updateArmyHint() {
+  if (!armyCounterPill) return;
+  armyCounterPill.textContent = '';
+  armyCounterPill.classList.remove('is-visible');
+}
+
+function updatePhotoHint() {
+  if (!photoHint) return;
+  const threshold = flagSequencePlaying ? 2 : 3;
+  const prefix = flagSequencePlaying ? 'OFF' : 'ON';
+  photoHint.textContent = flagClickCount > 0 ? `Flag ${prefix}: ${flagClickCount}/${threshold}` : '';
+}
+
+if (armySongTrigger) {
+  armySongTrigger.addEventListener('click', () => {
+    if (armySongPlaying) {
+      armySong.pause();
+      armySong.currentTime = 0;
+      armySongPlaying = false;
+      return;
+    }
+
+    armySong.pause();
+    armySong.currentTime = 0;
+    armySong.play().then(() => {
+      armySongPlaying = true;
+    }).catch(() => {
+      armySongPlaying = false;
+    });
+  });
+}
+
+armySong.onended = () => {
+  armySongPlaying = false;
+  updateArmyHint();
+};
+
+function stopAllEasterEggMedia() {
+  stopFlagAudioSequence();
+  armySong.pause();
+  armySong.currentTime = 0;
+  armySongPlaying = false;
+}
+
+window.addEventListener('pagehide', stopAllEasterEggMedia);
+window.addEventListener('beforeunload', stopAllEasterEggMedia);
+
+document.querySelectorAll('a[href]').forEach((link) => {
+  link.addEventListener('click', () => {
+    stopAllEasterEggMedia();
+  });
+});
+
+if (profilePhoto) {
+  profilePhoto.addEventListener('click', () => {
+    flagClickCount += 1;
+    const threshold = flagSequencePlaying ? 2 : 3;
+    updatePhotoHint();
+    if (flagClickCount < threshold) return;
+
+    if (!flagSequencePlaying) {
+      stopFlagAudioSequence();
+
+      firstCall.currentTime = 0;
+      firstCall.play().catch(() => {});
+      flagSequencePlaying = true;
+
+      const fallbackFlagDurationMs = 15000;
+      const retreatDurationMs = Number.isFinite(retreatCall.duration) ? retreatCall.duration * 1000 : 6000;
+      const totalSequenceMs = 9000 + retreatDurationMs;
+      showFlagOverPhoto(profilePhoto, totalSequenceMs || fallbackFlagDurationMs);
+
+      retreatCall.onended = () => {
+        hideFlagOverPhoto(profilePhoto);
+        saluteCount = 0;
+      };
+
+      // Follow-up call begins after 9 seconds.
+      retreatStartTimer = setTimeout(() => {
+        retreatCall.currentTime = 0;
+        retreatCall.play().catch(() => {});
+      }, 9000);
+
+      profilePhoto.style.animation = 'militarySalute 2s ease-in-out';
+      setTimeout(() => {
+        profilePhoto.style.animation = '';
+      }, 2000);
+
+      // Fallback cleanup in case media ended event doesn't fire.
+      flagHideTimer = setTimeout(() => {
+        hideFlagOverPhoto(profilePhoto);
+        saluteCount = 0;
+        flagSequencePlaying = false;
+      }, totalSequenceMs || fallbackFlagDurationMs);
+    } else {
+      stopFlagAudioSequence();
+    }
+
+    flagClickCount = 0;
+    updatePhotoHint();
+  });
+}
+
+/* Flag Easter Egg */
+function hideFlagOverPhoto(photo) {
+  const existingFlag = document.querySelector('.photo-flag');
+  if (existingFlag) existingFlag.remove();
+  photo.style.visibility = 'visible';
+}
+
+function showFlagOverPhoto(photo, durationMs) {
+  const rect = photo.getBoundingClientRect();
+  
+  // Hide photo temporarily
+  photo.style.visibility = 'hidden';
+
+  const flag = document.createElement('div');
+  flag.className = 'photo-flag';
+  flag.setAttribute('role', 'button');
+  flag.setAttribute('tabindex', '0');
+  flag.setAttribute('aria-label', 'Stop flag audio');
+  flag.style.width = rect.width * 1.3 + 'px';
+  flag.style.height = rect.height * 1.3 + 'px';
+  flag.style.top = rect.top + window.scrollY + rect.height/2 - (rect.height*1.5)/2 + 'px';
+  flag.style.left = rect.left + window.scrollX + rect.width/2 - (rect.width*1.5)/2 + 'px';
+
+  // Build canton and stars
+  const canton = document.createElement('div');
+  canton.className = 'flag-canton';
+  for (let row = 0; row < 9; row++) {
+    const rowDiv = document.createElement('div');
+    rowDiv.className = 'star-row';
+    const starCount = row % 2 === 0 ? 6 : 5;
+    for (let i = 0; i < starCount; i++) {
+      const star = document.createElement('span');
+      star.className = 'flag-star';
+      star.textContent = '★';
+      rowDiv.appendChild(star);
+    }
+    canton.appendChild(rowDiv);
+  }
+  flag.appendChild(canton);
+
+  const glow = document.createElement('div');
+  glow.className = 'flag-glow';
+  flag.appendChild(glow);
+
+  const pole = document.createElement('div');
+  pole.className = 'flag-pole';
+  flag.appendChild(pole);
+
+  for (let i = 0; i < 14; i++) {
+    const particle = document.createElement('span');
+    particle.className = 'flag-particle';
+    particle.style.left = `${Math.random() * 100}%`;
+    particle.style.top = `${Math.random() * 100}%`;
+    particle.style.animationDelay = `${(Math.random() * 1.6).toFixed(2)}s`;
+    particle.style.animationDuration = `${(2.6 + Math.random() * 1.8).toFixed(2)}s`;
+    flag.appendChild(particle);
+  }
+
+  document.body.appendChild(flag);
+
+  flag.addEventListener('click', () => {
+    stopFlagAudioSequence();
+  });
+  flag.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      stopFlagAudioSequence();
+    }
+  });
+
+  setTimeout(() => {
+    hideFlagOverPhoto(photo);
+  }, durationMs);
+}
+</script>
+
+<style>
+.photo-flag {
+  position: absolute;
+  z-index: 10000;
+  animation: wave3d 3.6s ease-in-out infinite alternate;
+  background: repeating-linear-gradient(
+    to bottom,
+    #b31942 0 7.7%,
+    white 7.7% 15.4%
+  );
+  border: 2px solid #333;
+  border-radius: 8px;
+  overflow: hidden;
+  pointer-events: auto;
+  cursor: pointer;
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.4), inset 0 0 30px rgba(255, 255, 255, 0.22);
+  transform-origin: left center;
+}
+
+.inline-audio-trigger {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  cursor: pointer;
+}
+
+.army-trigger-wrap {
+  display: inline-flex;
+  position: relative;
+  z-index: 2;
+  padding: 0 0.15rem;
+  border-radius: 6px;
+  background: rgba(255, 201, 4, 0.18);
+}
+
+.army-counter-pill {
+  position: fixed;
+  top: 0.9rem;
+  right: 0.9rem;
+  z-index: 12000;
+  border-radius: 999px;
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  background: rgba(255, 251, 235, 0.95);
+  color: #7c2d12;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.38rem 0.66rem;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.army-counter-pill.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.photo-click-hint {
+  text-align: center;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #6b7280;
+  min-height: 1.1rem;
+}
+
+.inline-audio-trigger:hover,
+.inline-audio-trigger:focus-visible {
+  color: #1f2937;
+}
+
+
+.flag-glow {
+  position: absolute;
+  inset: -18% -10%;
+  background: radial-gradient(circle at 30% 40%, rgba(255, 215, 110, 0.42), rgba(255, 215, 110, 0) 60%);
+  animation: glowPulse 2.3s ease-in-out infinite alternate;
+}
+
+.flag-pole {
+  position: absolute;
+  left: -8px;
+  top: -8%;
+  width: 7px;
+  height: 116%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #d2a754 0%, #8a6427 100%);
+  box-shadow: 1px 0 4px rgba(0, 0, 0, 0.45);
+}
+
+.flag-particle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 240, 195, 0.9);
+  box-shadow: 0 0 8px rgba(255, 240, 195, 0.65);
+  animation: particleFloat linear infinite;
+}
+
+.flag-canton {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 53%;
+  background: #0a3161;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  padding: 2px 4px;
+}
+
+.star-row {
+  display: flex;
+  justify-content: space-evenly;
+}
+
+.flag-star {
+  color: white;
+  font-size: 10px;
+  line-height: 1;
+}
+
+@keyframes wave3d {
+  0% { transform: perspective(650px) rotateY(6deg) rotateZ(-1.4deg) skewY(0deg) translateY(0); }
+  50% { transform: perspective(650px) rotateY(-8deg) rotateZ(1.8deg) skewY(2.2deg) translateY(-2px); }
+  100% { transform: perspective(650px) rotateY(7deg) rotateZ(-1.2deg) skewY(0.4deg) translateY(1px); }
+}
+
+@keyframes glowPulse {
+  0% { opacity: 0.45; transform: scale(0.96); }
+  100% { opacity: 0.9; transform: scale(1.06); }
+}
+
+@keyframes particleFloat {
+  0% { transform: translateY(6px) scale(0.8); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: translateY(-24px) scale(1.2); opacity: 0; }
+}
+</style>
+
+</html>

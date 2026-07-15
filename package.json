@@ -1,0 +1,25 @@
+{
+  "name": "yapvibes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "YapVibes monorepo - Website, Projects app, and Stocks dashboard",
+  "workspaces": [
+    "apps/projects",
+    "apps/stocks/frontend",
+    "apps/website/frontend/app",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:website": "npm run dev --workspace=apps/website/frontend/app",
+    "dev:projects": "npm run dev --workspace=apps/projects",
+    "dev:stocks-frontend": "npm run dev --workspace=apps/stocks/frontend",
+    "build:website": "npm run build --workspace=apps/website/frontend/app",
+    "build:projects": "npm run build --workspace=apps/projects",
+    "build:stocks-frontend": "npm run build --workspace=apps/stocks/frontend",
+    "lint": "npm run lint --workspaces --if-present",
+    "format": "npx prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\""
+  },
+  "keywords": [],
+  "author": "just-anotherday",
+  "license": "MIT"
+}

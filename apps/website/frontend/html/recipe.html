@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Redirecting to recipe…</title>
+</head>
+<body>
+  <p>Redirecting to the recipe page…</p>
+  <script>
+    const query = window.location.search || '';
+    window.location.replace(`../recipes/recipe.html${query}`);
+  </script>
+  <noscript>
+    <p><a href="../recipes/recipe.html">Continue to recipe page</a></p>
+  </noscript>
+</body>
+</html>

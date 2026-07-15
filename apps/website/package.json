@@ -1,0 +1,13 @@
+{
+  "name": "yappotamus",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install:app": "npm ci --prefix frontend/app",
+    "build": "npm run build --prefix frontend/app",
+    "dev": "npm run dev --prefix frontend/app"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5"
+  }
+}

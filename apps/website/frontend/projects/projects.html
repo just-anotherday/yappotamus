@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jason Yap | Projects</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <link rel="stylesheet" href="css/projects.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Permanent+Marker&family=Bebas+Neue&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="particles-js"></div>
+  
+  <!-- Nuclear Easter Egg Elements -->
+  <div class="click-counter" id="click-counter" style="display:none;">Clicks: 0/11</div>
+  <div class="emergency-warning" id="emergency-warning" style="display:none;">
+    <div>🚨 CRITICAL ERROR 🚨</div>
+    <div style="font-size: 0.5em; margin-top: 20px;">NUCLEAR DETONATION DETECTED</div>
+  </div>
+
+  <div class="content">
+    <!-- Header Component -->
+    <div id="header-container"></div>
+    
+    <main>
+      <!-- Game Section Component -->
+      <div id="game-section-container"></div>
+      
+      <!-- Pan Mee Recipe Component -->
+      <div id="panmee-container"></div>
+      
+      <!-- AI Generator Component -->
+      <div id="ai-generator-container"></div>
+    </main>
+    
+    <!-- Footer -->
+    <footer id="footcolor">
+      <p>© 2026 Jason Yap — This website is my personal project.</p>
+      <p><a href="mailto:jason@yapvibes.com">Email</a> | <a href="https://instagram.com/yappotamus" target="_blank">Instagram</a> | <a href="https://github.com/just-anotherday" target="_blank">GitHub</a> | <a href="https://yapvibes.com" target="_blank" rel="noopener noreferrer">yapvibes.com</a></p>
+    </footer>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  
+  <!-- Project Scripts -->
+  <script type="module" src="js/projects-main.js"></script>
+  <script>
+    (() => {
+      const sequence = "wpm";
+      const targetPath = "../wpm.html";
+      let buffer = "";
+
+      document.addEventListener("keydown", (event) => {
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key.length !== 1) return;
+
+        const key = event.key.toLowerCase();
+        if (!/[a-z]/.test(key)) return;
+
+        buffer = `${buffer}${key}`.slice(-sequence.length);
+
+        if (buffer === sequence) {
+          buffer = "";
+          window.location.href = targetPath;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

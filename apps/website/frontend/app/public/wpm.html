@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yapvibes WPM Arcade</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/wpm.css" />
+</head>
+<body>
+  <main class="arcade-shell">
+    <header class="arcade-header">
+      <h1>Yapvibes WPM Arcade</h1>
+      <p class="subtitle">Type fast. Hit combos. Chase high scores.</p>
+    </header>
+
+    <section class="panel typing-panel" aria-labelledby="typing-test-title">
+      <h2 id="typing-test-title">Typing Test</h2>
+
+      <div class="player-setup" id="player-setup">
+        <label for="session-player-name">Arcade Tag:</label>
+        <input type="text" id="session-player-name" maxlength="20" placeholder="Enter your name to start" />
+      </div>
+
+      <div class="sentence-area" id="sentence-display" aria-live="polite">
+        Your sentence will appear here.
+      </div>
+
+      <label for="typing-input" class="input-label">Start typing:</label>
+      <textarea
+        id="typing-input"
+        class="typing-input"
+        rows="5"
+        placeholder="Type the sentence here..."
+        autocomplete="off"
+        spellcheck="false"
+      ></textarea>
+
+      <section class="results" id="results" aria-live="polite">
+        <h3>Results</h3>
+        <p>WPM: <span id="wpm-result">--</span></p>
+        <p>Accuracy: <span id="accuracy-result">--</span></p>
+        <p>Time: <span id="time-result">--</span></p>
+      </section>
+
+    </section>
+
+    <section class="panel leaderboard-panel" id="arcade-leaderboard" aria-labelledby="leaderboard-title">
+      <h2 id="leaderboard-title">Arcade Leaderboard</h2>
+
+      <p class="score-display hidden" id="score-display">
+        Score: <span id="latest-score">0</span>
+      </p>
+
+      <p class="playing-as" id="playing-as">Playing as: ---</p>
+
+      <div class="name-submit hidden" id="leaderboard-name-section">
+        <p class="leaderboard-hint">Run complete! Submit score, then continue.</p>
+      </div>
+
+      <div class="button-row">
+        <button type="button" id="submit-score-btn">Submit Score</button>
+        <button type="button" id="next-round-btn">Next Round</button>
+        <button type="button" id="reset-leaderboard-btn" class="danger hidden">Reset Leaderboard</button>
+      </div>
+
+      <section class="results" id="session-stats" aria-live="polite">
+        <h3>Session Stats</h3>
+        <p>Rounds: <span id="session-rounds">0</span></p>
+        <p>Total Score: <span id="session-total-score">0.00</span></p>
+        <p>Avg WPM: <span id="session-avg-wpm">0.00</span></p>
+        <p>Avg Accuracy: <span id="session-avg-accuracy">0.00%</span></p>
+        <p>Best WPM: <span id="session-best-wpm">0.00</span></p>
+        <p>Best Accuracy: <span id="session-best-accuracy">0.00%</span></p>
+      </section>
+
+      <ol id="leaderboard-list" class="leaderboard-list" aria-label="Top 20 scores">
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+        <li>---</li>
+      </ol>
+    </section>
+
+    <section class="panel round-history-panel" id="round-history" aria-labelledby="round-history-title" aria-live="polite">
+      <h2 id="round-history-title">Round History</h2>
+      <p class="round-history-capacity">Capacity: <span id="round-history-capacity">0/33</span></p>
+      <ol id="round-history-list" class="leaderboard-list" aria-label="Completed round history">
+        <li>---</li>
+      </ol>
+    </section>
+  </main>
+
+  <script src="js/wpm.js"></script>
+</body>
+</html>

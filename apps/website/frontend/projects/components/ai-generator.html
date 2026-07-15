@@ -1,0 +1,24 @@
+<div id="ai-generator-panel" class="project about-card ai-generator-panel">
+  <h2 class="chat-title">Chat Companion</h2>
+  <p class="chat-subtitle">AI Generated text responses using OpenAI Models.</p>
+  <div class="tech-badges project-badges">
+    <span>AI</span>
+    <span>OpenAI</span>
+    <span>Node.js</span>
+    <span>API</span>
+  </div>
+  
+  <div class="chat-container">
+    <div id="chat-messages" class="chat-messages"></div>
+    
+    <div class="input-area">
+      <div class="chat-status-row">
+        <span id="chat-limit-status" class="chat-limit-status">3 / 3 messages left • Ready</span>
+        <span id="backend-status-badge" class="backend-status-badge">Backend: Unknown</span>
+        <button id="reconnect-btn" class="reconnect-btn" type="button">Reconnect</button>
+      </div>
+      <textarea id="user-input" class="user-input" placeholder="Type your message here..."></textarea>
+      <button id="generate-ai" class="generate-btn">Send It</button>
+    </div>
+  </div>
+</div>

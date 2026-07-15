@@ -1,0 +1,9 @@
+{
+  "name": "@yapvibes/config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared configuration (ESLint, Prettier, TSConfig) for YapVibes applications",
+  "keywords": [],
+  "author": "just-anotherday",
+  "license": "MIT"
+}
