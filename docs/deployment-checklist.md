@@ -36,7 +36,7 @@
 |---------|-------|
 | **Branch** | `main` |
 | **Root Directory** | `apps/stocks/frontend` |
-| **Build Command** | `npm run build` |
+| **Build Command** | `npm run build:cf` |
 | **Build Output** | `.open-next` |
 | **Framework** | Next.js (via OpenNext Cloudflare adapter) |
 | **Environment Variables** | `NEXT_PUBLIC_API_BASE`, `NEXT_PUBLIC_WS_URL` |
