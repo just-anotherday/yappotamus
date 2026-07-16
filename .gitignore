@@ -44,3 +44,7 @@ npm-debug.log*
 
 # Turbo/Turbopack cache
 .turbo/
+
+# Subdirectory lockfiles (monorepo uses single root package-lock.json)
+apps/**/package-lock.json
+packages/**/package-lock.json
