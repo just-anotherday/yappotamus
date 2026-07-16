@@ -36,7 +36,7 @@ export function initAIGenerator() {
   
   // Multiple server fallbacks
   const servers = [
-    'https://yappotamus.onrender.com'
+    'https://api.yapvibes.com'
   ];
   
   let currentServer = servers[0];

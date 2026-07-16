@@ -9,7 +9,7 @@ export default function SiteFooter() {
         |{' '}
         <a
           className="underline-offset-4 hover:underline"
-          href="https://instagram.com/yappotamus"
+          href="https://instagram.com/yapvibes"
           target="_blank"
           rel="noreferrer"
         >

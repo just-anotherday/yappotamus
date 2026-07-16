@@ -51,7 +51,16 @@ for var in REQUIRED_ENV_VARS:
         raise RuntimeError(f"Missing required environment variable: {var}")
 
 # CORS middleware for Next.js frontend (env-based origins)
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+# Production defaults include all YapVibes domains
+_DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000,"
+    "http://localhost:5173,"
+    "https://yapvibes.com,"
+    "https://stocks.yapvibes.com,"
+    "https://projects.yapvibes.com,"
+    "https://yapvibes-stocks.pages.dev"
+)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", _DEFAULT_CORS_ORIGINS)
 allow_origins_list = [origin.strip() for origin in CORS_ORIGINS.split(",")]
 
 # ---------- Rate Limiting config ----------

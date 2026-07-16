@@ -3,7 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import SiteHeader from './SiteHeader'
 import SiteFooter from './SiteFooter'
 
-const SITE_URL = 'https://yappotamus.com'
+const SITE_URL = 'https://yapvibes.com'
 
 const routeMeta = {
   '/': {

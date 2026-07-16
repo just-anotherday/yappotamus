@@ -22,7 +22,14 @@ const aiLimiter = rateLimit({
 });
 
 app.use(cors({
-  origin: ["https://just-anotherday.github.io", "https://www.just-anotherday.github.io", "http://localhost:3000", "https://yappotamus.onrender.com", "https://yapvibes.com", "https://www.yapvibes.com"],
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://yapvibes.com",
+    "https://www.yapvibes.com",
+    "https://projects.yapvibes.com",
+    "https://stocks.yapvibes.com"
+  ],
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"],
   credentials: true,
