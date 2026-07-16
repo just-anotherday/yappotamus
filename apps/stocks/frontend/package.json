@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:opennext": "npx opennextjs-cloudflare build",
-    "build:cf": "next build && npx opennextjs-cloudflare build",
+    "build:cf": "next build && npx opennextjs-cloudflare build && cp .open-next/worker.js .open-next/_worker.js || copy .open-next\\worker.js .open-next\\_worker.js",
     "start": "next start",
     "lint": "eslint"
   },
