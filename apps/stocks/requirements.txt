@@ -33,3 +33,4 @@ yfinance>=0.2.41
 
 # Local LLM integration (Ollama for financial news analysis)
 ollama>=0.4.0
+tzdata
