@@ -25,6 +25,8 @@ import finnhub
 import tenacity
 from dotenv import load_dotenv
 
+from backend.config.polling_settings import polling_settings
+
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.error_fallback import create_error_fallback
 from backend.lib.risk_metrics import _compute_composite_risk, _safe_pct
@@ -63,18 +65,23 @@ def get_finnhub_client() -> finnhub.Client:
 # Rate limiter (Free tier: 60 calls/min ≈ 1 call/sec safe average)
 # ------------------------------------------------------------------
 
-_rate_lock = asyncio.Lock()
+_rate_lock: Optional[asyncio.Lock] = None
 _last_call_time: float = 0.0
-# Free tier: 60 calls/min. With batch concurrency of 6, each batch makes ~12 calls (quote+profile).
-# We need ~5 batches for 30 tickers. 60/12 = 5 calls/s safe average per concurrent group.
-# Using 0.5s interval allows ~120 calls/min total but rate limiter spreads concurrent calls out.
-_min_interval: float = 0.5
+_min_interval: float = 60.0 / polling_settings.FINNHUB_REQUESTS_PER_MINUTE
+
+
+def _get_rate_lock() -> asyncio.Lock:
+    """Return the process-shared limiter lock, bound lazily to the active loop."""
+    global _rate_lock
+    if _rate_lock is None:
+        _rate_lock = asyncio.Lock()
+    return _rate_lock
 
 
 async def _rate_limiter():
     """Ensure we don't exceed the free-tier rate limit."""
     global _last_call_time
-    async with _rate_lock:
+    async with _get_rate_lock():
         now = time.time()
         elapsed = now - _last_call_time
         if elapsed < _min_interval:

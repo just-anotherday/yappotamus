@@ -193,6 +193,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("[Shutdown] Failed to stop AI Worker: %s", e)
 
+    for task_name in ("_post_market_task", "_market_report_task"):
+        task = getattr(app.state, task_name, None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
 
 def create_app() -> FastAPI:
     """Factory function to create the FastAPI application."""
