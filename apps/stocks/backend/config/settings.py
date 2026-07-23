@@ -108,6 +108,29 @@ class Settings:
         return os.getenv("APP_ACCESS_TOKEN") or None
 
     @property
+    def APP_ACCESS_TOKENS(self) -> List[str]:
+        """Effective configured access tokens from both environment variables.
+
+        Combines legacy ``APP_ACCESS_TOKEN`` (single token) with the new
+        pipe-delimited ``APP_ACCESS_TOKENS`` variable.  Whitespace around
+        each configured entry is trimmed, empty entries are dropped, and
+        duplicates are removed while preserving first-seen order.
+        """
+        tokens: List[str] = []
+
+        legacy_token = (os.getenv("APP_ACCESS_TOKEN") or "").strip()
+        if legacy_token:
+            tokens.append(legacy_token)
+
+        configured_tokens = os.getenv("APP_ACCESS_TOKENS", "")
+        for token in configured_tokens.split("|"):
+            normalized = token.strip()
+            if normalized and normalized not in tokens:
+                tokens.append(normalized)
+
+        return tokens
+
+    @property
     def MAINTENANCE_API_TOKEN(self) -> Optional[str]:
         return os.getenv("MAINTENANCE_API_TOKEN") or None
 
@@ -343,8 +366,10 @@ class Settings:
         )
         if self.MARKET_DATA_BACKOFF_MAX_S < self.MARKET_DATA_BACKOFF_INITIAL_S:
             raise EnvironmentError("MARKET_DATA_BACKOFF_MAX_S must be >= MARKET_DATA_BACKOFF_INITIAL_S")
-        if not self.APP_ACCESS_TOKEN:
-            raise EnvironmentError("APP_ACCESS_TOKEN is required")
+        if not self.APP_ACCESS_TOKENS:
+            raise EnvironmentError(
+                "APP_ACCESS_TOKEN or APP_ACCESS_TOKENS is required"
+            )
         if self.MAINTENANCE_API_ENABLED and not self.MAINTENANCE_API_TOKEN:
             raise EnvironmentError("MAINTENANCE_API_TOKEN is required when MAINTENANCE_API_ENABLED=true")
 

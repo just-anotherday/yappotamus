@@ -53,7 +53,11 @@ async def test_auth_missing_wrong_and_correct_token(auth_app, monkeypatch):
 
 def test_missing_app_access_token_fails_clearly(monkeypatch):
     monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
-    with pytest.raises(EnvironmentError, match="^APP_ACCESS_TOKEN is required$"):
+    monkeypatch.delenv("APP_ACCESS_TOKENS", raising=False)
+    with pytest.raises(
+        EnvironmentError,
+        match=r"APP_ACCESS_TOKEN or APP_ACCESS_TOKENS is required$",
+    ):
         Settings().validate()
 
 

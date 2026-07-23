@@ -1,11 +1,10 @@
 import asyncio
 import base64
 import logging
-import secrets
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from backend.config.settings import settings
+from backend.auth import is_valid_access_token
 from backend.services.market_data_service import MarketDataService
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ async def websocket_endpoint(websocket: WebSocket):
             token = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8")
         except (ValueError, UnicodeDecodeError):
             token = ""
-    if not token or not secrets.compare_digest(token, settings.APP_ACCESS_TOKEN or ""):
+    if not is_valid_access_token(token):
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
