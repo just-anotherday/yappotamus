@@ -23,11 +23,11 @@ if DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL a
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    pool_size=5,                 # capped below PostgreSQL 15-conn limit to avoid EMAXCONNSESSION on deploy
-    max_overflow=5,
+    pool_size=settings.DB_POOL_SIZE,         # deployment-safe default via DB_POOL_SIZE env var
+    max_overflow=settings.DB_MAX_OVERFLOW,    # deployment-safe default via DB_MAX_OVERFLOW env var
+    pool_timeout=settings.DB_POOL_TIMEOUT,    # prevent hanging if pool exhausted
     pool_recycle=3600,
-    pool_pre_ping=True,         # health check before each checkout
-    pool_timeout=10,             # wait up to 10s for a free connection before failing
+    pool_pre_ping=True,                       # health check before each checkout
 )
 
 async_session_factory = async_sessionmaker(

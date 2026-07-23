@@ -52,6 +52,47 @@ class Settings:
     def DATABASE_URL(self) -> str:
         return os.getenv("DATABASE_URL", "")
 
+    @property
+    def DB_POOL_SIZE(self) -> int:
+        """Maximum number of persistent connections in the pool.
+
+        Defaults to 3 because many providers (Railway Free, Supabase Free) cap
+        total sessions at ~15.  With deployment overlap the worst-case budget is::
+
+            old process:  pool_size + max_overflow = 5
+            new process:  pool_size + max_overflow = 5
+            alembic:     1
+            total:       11   (headroom 4 below a 15-session cap)
+
+        Set higher only if your provider's connection limit is known to exceed it.
+        """
+        return self._number("DB_POOL_SIZE", "3", int, minimum=1)
+
+    @property
+    def DB_MAX_OVERFLOW(self) -> int:
+        """Maximum overflow connections beyond pool_size.
+
+        Overflow connections are created on-demand when all pool_size connections
+        are checked out and new requests arrive.  Combined with ``DB_POOL_SIZE``,
+        the total per-process budget is ``pool_size + max_overflow``.
+        """
+        return self._number("DB_MAX_OVERFLOW", "2", int, minimum=0)
+
+    @property
+    def DB_POOL_TIMEOUT(self) -> int:
+        """Maximum seconds to wait for acquiring a connection from the pool.
+
+        Defaults to 10 because under heavy load without this setting the driver
+        hangs indefinitely until the request times out — masking a connection
+        exhaustion bug behind a generic timeout.
+        """
+        return self._number("DB_POOL_TIMEOUT", "10", int, minimum=1)
+
+    @cached_property
+    def DB_POOL_TOTAL(self) -> int:
+        """Worst-case single-process connection budget (pool_size + max_overflow)."""
+        return self.DB_POOL_SIZE + self.DB_MAX_OVERFLOW
+
     # ----- Supabase (optional - used by news ingestion for image proxy) -----
     @property
     def SUPABASE_URL(self) -> Optional[str]:
