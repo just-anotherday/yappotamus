@@ -45,11 +45,11 @@ export default function Login() {
       >
         {theme === 'light' ? '🌙' : '☀️'}
       </button>
-      <div className="bg-white border border-gray-200 dark:border-gray-700 dark:bg-gray-800 p-8 rounded-lg shadow-md w-full max-w-sm">
-        <h1 className="mb-6 text-center text-2xl font-bold text-gray-800 dark:text-gray-100">
+      <div className="bg-white border border-gray-200 dark:border-gray-600 dark:bg-gray-850 p-8 rounded-lg shadow-md w-full max-w-sm">
+        <h1 className="mb-6 text-center text-2xl font-bold text-gray-800 dark:text-gray-50">
           Planner
         </h1>
-        <p className="text-center text-gray-500 dark:text-gray-400 mb-6">
+        <p className="text-center text-gray-500 dark:text-gray-300 mb-6">
           {isSignUp ? 'Create an account' : 'Sign in to your account'}
         </p>
 
@@ -61,7 +61,7 @@ export default function Login() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-400"
+              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-50 dark:placeholder:text-gray-400"
             />
           </div>
 
@@ -72,7 +72,7 @@ export default function Login() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-400"
+              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-50 dark:placeholder:text-gray-400"
             />
           </div>
 
