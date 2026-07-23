@@ -653,7 +653,7 @@ export default function ReportsPage() {
       className="dark:bg-slate-800 dark:border-slate-700">
         <h1 style={{ margin: '0 0 1rem', fontSize: '1.25rem', fontWeight: 700, color: '#374151' }}
           className="dark:text-white">
-          My Saved Analysis Reports
+          Generated Analysis Reports
         </h1>
 
         {/* Filters */}
