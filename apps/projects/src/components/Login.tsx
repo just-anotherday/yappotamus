@@ -37,7 +37,7 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">
       <button
         onClick={toggleTheme}
         className="absolute top-4 right-4 p-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 rounded-md hover:bg-gray-300 dark:hover:bg-gray-600 transition cursor-pointer"
@@ -45,8 +45,10 @@ export default function Login() {
       >
         {theme === 'light' ? '🌙' : '☀️'}
       </button>
-      <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md w-full max-w-sm">
-        <h1 className="text-2xl font-bold text-center text-gray-800 dark:text-gray-100 mb-6">YapVibes</h1>
+      <div className="bg-white border border-gray-200 dark:border-gray-700 dark:bg-gray-800 p-8 rounded-lg shadow-md w-full max-w-sm">
+        <h1 className="mb-6 text-center text-2xl font-bold text-gray-800 dark:text-gray-100">
+          Planner
+        </h1>
         <p className="text-center text-gray-500 dark:text-gray-400 mb-6">
           {isSignUp ? 'Create an account' : 'Sign in to your account'}
         </p>
@@ -59,7 +61,7 @@ export default function Login() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-400"
             />
           </div>
 
@@ -70,12 +72,12 @@ export default function Login() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-400"
             />
           </div>
 
           {error && (
-            <p className="text-red-500 text-sm">{error}</p>
+            <p className="text-red-500 dark:text-red-400 text-sm">{error}</p>
           )}
 
           <button

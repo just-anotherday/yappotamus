@@ -25,6 +25,32 @@ export default function Footer() {
             An investment research tool. Risk scores are heuristic composites, not financial advice.
           </p>
         </div>
+        <div className="mt-2 flex items-center gap-1 text-xs">
+          <a
+            className="text-indigo-600 dark:text-indigo-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            href="mailto:jason@yapvibes.com"
+          >
+            Email
+          </a>
+          {' | '}
+          <a
+            className="text-indigo-600 dark:text-indigo-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            href="https://instagram.com/yapvibes"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Instagram
+          </a>
+          {' | '}
+          <a
+            className="text-indigo-600 dark:text-indigo-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            href="https://github.com/just-anotherday"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub
+          </a>
+        </div>
       </div>
     </footer>
   );
