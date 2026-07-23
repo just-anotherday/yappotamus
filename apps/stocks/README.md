@@ -124,9 +124,19 @@ QUOTE_CACHE_MAX_SIZE=256
 
 ### 4. Start the Application
 
-**Terminal 1 — Backend:**
+Run commands below from `apps/stocks`.
+
+**Database migrations (required before backend deployment):**
 ```bash
-uvicorn backend.main:app --reload --port 8000
+python -m alembic upgrade head
+```
+
+Review generated migrations before applying them. Application startup verifies
+connectivity but never creates, drops, or alters tables.
+
+**Terminal 1 — Backend (includes the in-process AI worker):**
+```bash
+python run.py
 ```
 
 **Terminal 2 — Frontend:**
@@ -136,7 +146,17 @@ npm install          # first time only
 npm run dev
 ```
 
-Open **http://localhost:3000** in your browser. Tables are created automatically on startup via Alembic-less auto-init.
+**Verification commands:**
+```bash
+python -m pip install -r requirements-test.txt
+python -m pytest tests -q
+cd frontend
+npm run typecheck
+npm run build
+```
+
+Open **http://localhost:3000** in your browser. The AI worker currently starts
+inside the FastAPI lifespan; there is no separate worker process command.
 
 ## API Endpoints
 
@@ -167,7 +187,7 @@ Open **http://localhost:3000** in your browser. Tables are created automatically
 
 ## Architecture Notes
 
-- **Database tables** are auto-created on backend startup (no migration tool).
+- **Database schema** is managed by Alembic (`python -m alembic upgrade head`); startup performs a connectivity check only.
 - **News ingestion** runs automatically every 15 minutes during market hours (8 AM – 6 PM EST) as a background scheduler.
 - **WebSocket price streaming** uses a background thread to listen to Yahoo Finance WebSockets, then bridges events back to the FastAPI event loop.
 - **Error handling** is centralized via FastAPI exception handlers (`backend/exceptions.py`).

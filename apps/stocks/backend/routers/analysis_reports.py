@@ -39,6 +39,7 @@ class SaveReportRequest(BaseModel):
     articles_count: int = 0
     model_used: str = ""
     prompt_version: str = "1.0"
+    prompt_hash: Optional[str] = None
     current_price_at_analysis: Optional[float] = None
 
 
@@ -121,6 +122,7 @@ async def reports_save(
         articles_count=request.articles_count,
         model_used=request.model_used,
         prompt_version=request.prompt_version,
+        prompt_hash=request.prompt_hash,
         current_price_at_analysis=request.current_price_at_analysis,
     )
     await session.commit()

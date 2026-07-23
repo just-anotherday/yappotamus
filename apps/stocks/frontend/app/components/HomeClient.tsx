@@ -36,6 +36,10 @@ export default function HomeClient() {
     watchlistOrder,
     reorderWatchlist,
     maxWatchlistSize,
+    postMarketFlash,
+    isReordering,
+    lastRefreshedAt,
+    loadWatchlist,
   } = useWatchlist();
 
   const { articles, loading: newsLoading, refetch } = useNews(undefined, NEWS_FETCH_LIMIT);
@@ -220,10 +224,14 @@ export default function HomeClient() {
           watchlist={watchlist}
           livePrices={livePrices}
           priceFlash={priceFlash}
+          postMarketFlash={postMarketFlash}
           loading={watchlistLoading}
           onRemove={removeTicker}
           watchlistOrder={watchlistOrder}
           onReorder={reorderWatchlist}
+          onRefresh={() => loadWatchlist()}
+          lastRefreshedAt={lastRefreshedAt}
+          isReordering={isReordering}
         />
       </div>
     </div>

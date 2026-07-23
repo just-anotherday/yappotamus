@@ -1,0 +1,1 @@
+"""Hierarchical financial intelligence domain."""

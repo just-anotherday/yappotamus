@@ -3,6 +3,7 @@
 // ==============================================================================
 
 import { API_BASE } from '@/types/stock';
+import { apiFetch } from '@/lib/apiFetch';
 import type {
   StockData,
   WatchlistItem,
@@ -24,7 +25,7 @@ import type {
 } from '@/types/stock';
 
 export const fetchStock = async (ticker: string): Promise<StockData> => {
-  const res = await fetch(`${API_BASE}/api/stock/${ticker.toUpperCase()}`);
+  const res = await apiFetch(`${API_BASE}/api/stock/${ticker.toUpperCase()}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch stock data');
@@ -36,7 +37,7 @@ export const fetchWatchlistData = async (tickers?: string): Promise<WatchlistIte
   const url = tickers
     ? `${API_BASE}/api/watchlist?tickers=${tickers}`
     : `${API_BASE}/api/watchlist`;
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch watchlist');
@@ -44,8 +45,29 @@ export const fetchWatchlistData = async (tickers?: string): Promise<WatchlistIte
   return res.json();
 };
 
-export const apiAddToWatchlist = async (ticker: string): Promise<void> => {
-  const res = await fetch(`${API_BASE}/api/watchlist/add`, {
+export interface PostMarketQuote {
+  post_market_price: number;
+  post_market_change: number;
+  post_market_change_percent: number;
+}
+
+export interface WatchlistMutationResponse {
+  success: boolean;
+  message: string;
+  data: WatchlistItem | null;
+}
+
+export const fetchPostMarketPrices = async (): Promise<Record<string, PostMarketQuote>> => {
+  const res = await apiFetch(`${API_BASE}/api/watchlist/post-market`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Failed to fetch after-hours prices');
+  }
+  return res.json();
+};
+
+export const apiAddToWatchlist = async (ticker: string): Promise<WatchlistMutationResponse> => {
+  const res = await apiFetch(`${API_BASE}/api/watchlist/add`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticker: ticker.toUpperCase() }),
@@ -54,10 +76,11 @@ export const apiAddToWatchlist = async (ticker: string): Promise<void> => {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to add to watchlist');
   }
+  return res.json();
 };
 
 export const apiRemoveFromWatchlist = async (ticker: string): Promise<void> => {
-  const res = await fetch(`${API_BASE}/api/watchlist/${ticker.toUpperCase()}`, {
+  const res = await apiFetch(`${API_BASE}/api/watchlist/${ticker.toUpperCase()}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
@@ -89,7 +112,7 @@ export const fetchDbNews = async (
   if (startDate) params.set('start_date', startDate);
   if (endDate) params.set('end_date', endDate);
 
-  const res = await fetch(`${API_BASE}/news?${params.toString()}`);
+  const res = await apiFetch(`${API_BASE}/news?${params.toString()}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch news from database');
@@ -98,7 +121,7 @@ export const fetchDbNews = async (
 };
 
 export const apiUpdateWatchlistOrder = async (tickers: string[]): Promise<void> => {
-  const res = await fetch(`${API_BASE}/api/watchlist/order`, {
+  const res = await apiFetch(`${API_BASE}/api/watchlist/order`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tickers }),
@@ -110,7 +133,7 @@ export const apiUpdateWatchlistOrder = async (tickers: string[]): Promise<void> 
 };
 
 export const getWatchlistConfig = async (): Promise<WatchlistConfig> => {
-  const res = await fetch(`${API_BASE}/api/watchlist/config`);
+  const res = await apiFetch(`${API_BASE}/api/watchlist/config`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch watchlist config');
@@ -120,7 +143,7 @@ export const getWatchlistConfig = async (): Promise<WatchlistConfig> => {
 
 /** Fetch all distinct tickers from the news database (GET /news/tickers) */
 export const fetchNewsTickers = async (): Promise<string[]> => {
-  const res = await fetch(`${API_BASE}/news/tickers`);
+  const res = await apiFetch(`${API_BASE}/news/tickers`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch news tickers');
@@ -135,7 +158,7 @@ export const fetchNewsTickers = async (): Promise<string[]> => {
 
 /** Get the latest cached AI intelligence report for a company */
 export const fetchCompanyReport = async (ticker: string): Promise<CachedCompanyReport> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to fetch cached report for ${ticker}`);
@@ -161,7 +184,7 @@ export const fetchCompanyReportsBatch = async (tickers: string[]): Promise<Cache
 
 /** Get the latest cached daily market-wide intelligence report */
 export const fetchMarketReport = async (): Promise<CachedMarketReport> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/market/latest`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/latest`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch market report');
@@ -173,7 +196,7 @@ export const fetchMarketReport = async (): Promise<CachedMarketReport> => {
 export const triggerCompanyReportRegeneration = async (ticker: string, model?: string): Promise<{ status: string; ticker: string }> => {
   const body: Record<string, any> = {};
   if (model) body.model = model;
-  const res = await fetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/regenerate`, {
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/regenerate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -197,7 +220,7 @@ export interface OllamaConfig {
   connected: boolean;
 }
 export const fetchOllamaConfig = async (): Promise<OllamaConfig> => {
-  const res = await fetch(`${API_BASE}/api/analysis/config`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/config`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch Ollama config');
@@ -207,7 +230,7 @@ export const fetchOllamaConfig = async (): Promise<OllamaConfig> => {
 
 /** Get current AI job queue status */
 export const fetchAIQueueStatus = async (): Promise<AIQueueStatus> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/queue/status`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/queue/status`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch queue status');
@@ -217,7 +240,7 @@ export const fetchAIQueueStatus = async (): Promise<AIQueueStatus> => {
 
 /** Manually trigger a sector report regeneration */
 export const triggerSectorReportRegeneration = async (sector: string): Promise<{ status: string; sector: string }> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/sector/${encodeURIComponent(sector)}/regenerate`, {
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/sector/${encodeURIComponent(sector)}/regenerate`, {
     method: 'POST',
   });
   if (!res.ok) {
@@ -229,7 +252,7 @@ export const triggerSectorReportRegeneration = async (sector: string): Promise<{
 
 /** Manually trigger a market report regeneration */
 export const triggerMarketReportRegeneration = async (): Promise<{ status: string }> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/market/regenerate`, {
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/regenerate`, {
     method: 'POST',
   });
   if (!res.ok) {
@@ -248,7 +271,7 @@ export const triggerAllCompanyReports = async (tickers: string[], model?: string
 
 /** Get comprehensive pipeline status */
 export const fetchPipelineStatus = async (): Promise<PipelineStatus> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/pipeline/status`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/pipeline/status`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch pipeline status');
@@ -277,7 +300,7 @@ export interface ReportHistoryResponse {
   entries: ReportHistoryEntry[];
 }
 export const fetchCompanyReportHistory = async (ticker: string, page = 1, limit = 20): Promise<ReportHistoryResponse> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/history?page=${page}&limit=${limit}`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/history?page=${page}&limit=${limit}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to fetch report history for ${ticker}`);
@@ -291,7 +314,7 @@ export const fetchCompanyReportHistory = async (ticker: string, page = 1, limit 
 
 /** Get all market trackers (GET /api/markets/) */
 export const fetchMarketTrackers = async (): Promise<MarketTracker[]> => {
-  const res = await fetch(`${API_BASE}/api/markets/`);
+  const res = await apiFetch(`${API_BASE}/api/markets/`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch market trackers');
@@ -301,7 +324,7 @@ export const fetchMarketTrackers = async (): Promise<MarketTracker[]> => {
 
 /** Get single market tracker detail with risk signal (GET /api/markets/{ticker}) */
 export const fetchMarketTrackerDetail = async (ticker: string): Promise<MarketTrackerDetail> => {
-  const res = await fetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}`);
+  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to fetch detail for ${ticker}`);
@@ -311,7 +334,7 @@ export const fetchMarketTrackerDetail = async (ticker: string): Promise<MarketTr
 
 /** Get overall market regime (GET /api/markets/regime) */
 export const fetchMarketRegime = async (): Promise<MarketRegime> => {
-  const res = await fetch(`${API_BASE}/api/markets/regime`);
+  const res = await apiFetch(`${API_BASE}/api/markets/regime`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch market regime');
@@ -347,7 +370,7 @@ export const fetchMarketPrices = async (
   period: ChartPeriod = '6M',
 ): Promise<OhlcvPoint[]> => {
   const days = periodToDays[period];
-  const res = await fetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/prices?days=${days}`);
+  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/prices?days=${days}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to fetch prices for ${ticker}`);
@@ -367,7 +390,7 @@ export const fetchMarketPrices = async (
 
 /** Get price statistics (GET /api/markets/{ticker}/stats) */
 export const fetchMarketPriceStats = async (ticker: string): Promise<Record<string, any>> => {
-  const res = await fetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/stats`);
+  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/stats`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to fetch stats for ${ticker}`);
@@ -377,7 +400,7 @@ export const fetchMarketPriceStats = async (ticker: string): Promise<Record<stri
 
 /** Compute risk signal on demand (POST /api/markets/{ticker}/risk-signal) */
 export const computeRiskSignal = async (ticker: string): Promise<Record<string, any>> => {
-  const res = await fetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/risk-signal`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/risk-signal`, { method: 'POST' });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to compute risk signal for ${ticker}`);
@@ -387,7 +410,7 @@ export const computeRiskSignal = async (ticker: string): Promise<Record<string, 
 
 /** Backfill historical price data (POST /api/markets/{ticker}/backfill) */
 export const backfillMarketPrices = async (ticker: string): Promise<{ message: string; records_added: number }> => {
-  const res = await fetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/backfill`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/backfill`, { method: 'POST' });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to backfill prices for ${ticker}`);
@@ -403,7 +426,7 @@ export interface RiskSignalResponse {
   advanced_metrics: AdvancedRiskMetrics;
 }
 export const fetchRiskSignal = async (ticker: string): Promise<RiskSignalResponse> => {
-  const res = await fetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/risk`);
+  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/risk`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to fetch risk signal for ${ticker}`);
@@ -413,7 +436,7 @@ export const fetchRiskSignal = async (ticker: string): Promise<RiskSignalRespons
 
 /** Refresh all market tracker price data (POST /api/markets/refresh) */
 export const refreshMarketTrackers = async (): Promise<MarketRefreshResponse> => {
-  const res = await fetch(`${API_BASE}/api/markets/refresh`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/api/markets/refresh`, { method: 'POST' });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to refresh market trackers');
@@ -456,7 +479,7 @@ export const fetchUnifiedReports = async (
   if (date_from) params.set('from', date_from);
   if (date_to) params.set('to', date_to);
 
-  const res = await fetch(`${API_BASE}/api/analysis/reports/unified?${params.toString()}`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/unified?${params.toString()}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch unified intelligence reports');
@@ -489,7 +512,7 @@ export const fetchMarketReportHistory = async (
   page: number = 1,
   limit: number = 20,
 ): Promise<MarketReportHistoryResponse> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/market/history?page=${page}&limit=${limit}`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/history?page=${page}&limit=${limit}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Failed to fetch market report history');
@@ -499,7 +522,7 @@ export const fetchMarketReportHistory = async (
 
 /** Fetch a specific market report by ID */
 export const fetchMarketReportById = async (reportId: number): Promise<CachedMarketReport> => {
-  const res = await fetch(`${API_BASE}/api/analysis/reports/market/${reportId}`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/${reportId}`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `Failed to fetch market report #${reportId}`);

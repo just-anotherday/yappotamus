@@ -4,7 +4,7 @@
 
 ```
 Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
-├── Cloudflare Pages    ──▶   Railway / Self-hosted Docker
+├── Cloudflare Worker   ──▶   Railway / Self-hosted Docker
 └── Vercel (optional)         Supabase PostgreSQL (DB)
                               OpenAI API (production AI)
 ```
@@ -23,18 +23,21 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | **Yes** | Supabase PostgreSQL connection string |
+| `APP_ACCESS_TOKEN` | **Yes** | Private token used by the frontend for authenticated API/WebSocket access |
 | `FINNHUB_API_KEY` | **Yes** | Market data API key |
 | `OPENAI_API_KEY` | **Yes** (prod) | OpenAI API key for AI analysis |
 | `AI_PROVIDER` | No | Set to `openai` (default: `ollama`) |
 | `OPENAI_MODEL` | No | Model name (default: `gpt-4o-mini`) |
-| `CORS_ORIGINS` | No | Comma-separated allowed origins |
+| `OPENAI_ALLOWED_MODELS` | **Yes** when OpenAI is used | Must include `OPENAI_MODEL` (for example `gpt-4o-mini`) |
+| `CORS_ORIGINS` | **Yes** | Include `https://stocks.yapvibes.com` and the Worker preview domain |
 | `PORT` | No | Override default port 8000 |
 
 ### Deployment Steps
 
-1. Connect Railway to your GitHub repository (`apps/stocks` branch)
+1. Connect Railway to the GitHub repository and set the service root directory to `apps/stocks`
 2. Set environment variables in Railway dashboard
-3. Deploy → Railway auto-detects Dockerfile and builds
+3. Keep the service at one replica because the news scheduler runs inside FastAPI
+4. Deploy → Railway builds the Dockerfile and runs `python -m alembic upgrade head` before starting Uvicorn
 
 ### Manual Deployment (Docker Compose)
 
@@ -45,35 +48,69 @@ docker compose -f apps/stocks/docker-compose.yml up -d
 
 ---
 
-## Frontend Deployment (Cloudflare Pages)
+## Frontend Deployment (Cloudflare Workers)
 
 ### Prerequisites
-- Cloudflare account with Pages enabled
-- Wrangler CLI installed (`npm i -g wrangler`)
+- Cloudflare account with Workers enabled
+- Repository dependencies installed locally or by CI (`npm ci` from the repository root)
 
 ### Build Configuration
 
-**Cloudflare Pages Settings:**
-- Framework preset: **None** (custom build)
-- Build command: `cd apps/stocks/frontend && npm ci && npm run build`
-- Build output directory: `.open-next/optimised`
+**Cloudflare Workers Builds settings:**
 - Root directory: `/` (repository root)
+- Build command: `npm ci && npm run build:cf --workspace=apps/stocks/frontend`
+- Deploy command: `npx opennextjs-cloudflare deploy --cwd apps/stocks/frontend`
+- Wrangler config: `apps/stocks/frontend/wrangler.toml`
 
-### Environment Variables (set in Cloudflare Pages dashboard)
+Do not publish `.next`, `.open-next`, or `.open-next/optimised` as a Pages static directory.
+OpenNext generates a Worker entry point and an assets binding; deploying only a directory
+causes the custom domain to return a 404 instead of invoking Next.js.
+
+### Environment Variables (set in Cloudflare Workers Builds dashboard)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NEXT_PUBLIC_API_BASE_URL` | **Yes** | Backend API URL (e.g., `https://stocks-api.up.railway.app`) |
-| `NEXT_PUBLIC_WS_URL` | **Yes** | WebSocket URL (e.g., `wss://stocks-api.up.railway.app`) |
+| `NEXT_PUBLIC_API_BASE` | **Yes** | Backend origin without a trailing slash (e.g., `https://stocks-api.up.railway.app`) |
+| `NEXT_PUBLIC_WS_URL` | **Yes** | Complete WebSocket endpoint (e.g., `wss://stocks-api.up.railway.app/ws`) |
 
 ### Manual Deployment
 
 ```bash
 cd apps/stocks/frontend
-npm ci
-npm run build          # Runs open-next build internally
-npx wrangler pages deploy .open-next/optimised
+npm run deploy:cf
 ```
+
+The two `NEXT_PUBLIC_*` values are compiled into the browser bundle, so set them
+as **build variables before building**. They are not secrets.
+
+### Custom Domain and 404 Recovery
+
+1. Deploy the Worker and verify its generated `*.workers.dev` URL returns HTTP 200.
+2. In **Workers & Pages → stocks-frontend → Settings → Domains & Routes**, add
+   `stocks.yapvibes.com` as a custom domain.
+3. Remove `stocks.yapvibes.com` from any old Pages project or legacy Worker route.
+   Only one Cloudflare resource should own the hostname.
+4. Keep the DNS record proxied. Cloudflare creates/updates the DNS target when the
+   custom domain is attached to the Worker.
+
+### Start and Verify Article Collection
+
+The collector runs in the FastAPI lifespan and starts its first cycle immediately,
+then repeats every 15 minutes. After the Railway deployment:
+
+```bash
+# Process and dependency checks
+curl https://YOUR-BACKEND/health/live
+curl https://YOUR-BACKEND/health
+
+# Trigger an immediate authenticated collection cycle (default watchlist)
+curl -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" \
+  https://YOUR-BACKEND/api/news/ingest
+```
+
+Confirm Railway logs contain `NewsScheduler Started` and `Cycle complete`, and
+confirm `news_articles` rows appear in PostgreSQL. The production watchlist must
+contain tickers; startup seeds defaults when its migration tables are available.
 
 ---
 
@@ -103,7 +140,8 @@ No code changes needed to switch providers.
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Backend liveness probe (returns `{"status": "ok"}`) |
+| `GET /health/live` | Process-only liveness probe |
+| `GET /health` | Database, worker, AI provider, and dependency readiness diagnostics |
 | `GET /api/ollama/config` | AI provider status and available models |
 | `GET /api/analysis/status` | AI worker queue status |
 
@@ -124,9 +162,9 @@ Override with the `CORS_ORIGINS` environment variable.
 ## Troubleshooting
 
 ### Frontend Build Fails on Cloudflare
-1. Ensure Node.js 20+ is selected in Cloudflare Pages build settings
-2. Verify `open-next` and `@opennextjs/cloudflare` are in `package.json`
-3. Check that `.open-next/optimised` directory is created after build
+1. Use Node.js 20 or 22 LTS in Cloudflare Builds (not an untested current release)
+2. Verify `@opennextjs/cloudflare` is installed by the root workspace lockfile
+3. Run `npm run build:cf --workspace=apps/stocks/frontend` and confirm `.open-next/worker.js` and `.open-next/assets` exist
 
 ### Backend Connection Issues
 1. Verify Supabase connection string includes the `+asyncpg` driver prefix

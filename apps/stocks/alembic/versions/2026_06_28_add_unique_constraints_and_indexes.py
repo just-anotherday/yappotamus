@@ -39,13 +39,20 @@ def upgrade() -> None:
         ['ticker']
     )
 
-    # Step 3: Performance index on news_articles(ticker, pub_date DESC)
-    op.create_index(
-        'idx_news_articles_ticker_pubdate',
-        'news_articles',
-        ['ticker', 'pub_date'],
-        unique=False
-    )
+    # Step 3: Performance index on news_articles(ticker, pub_date DESC).
+    # The historical root migration can initialize a database without the
+    # legacy news_articles table, so only apply this legacy-table index when
+    # that table is present.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF to_regclass('public.news_articles') IS NOT NULL THEN
+                CREATE INDEX idx_news_articles_ticker_pubdate
+                    ON news_articles (ticker, pub_date);
+            END IF;
+        END
+        $$
+    """)
 
     # Step 4: Index on ai_job_queue for worker polling efficiency
     op.create_index(
@@ -58,5 +65,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index('idx_ai_job_queue_status_scheduled', table_name='ai_job_queue')
-    op.drop_index('idx_news_articles_ticker_pubdate', table_name='news_articles')
+    op.drop_index(
+        'idx_news_articles_ticker_pubdate',
+        table_name='news_articles',
+        if_exists=True,
+    )
     op.drop_constraint('uq_ai_company_reports_ticker', 'ai_company_reports', type_='unique')

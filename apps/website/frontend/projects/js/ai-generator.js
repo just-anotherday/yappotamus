@@ -34,10 +34,13 @@ export function initAIGenerator() {
   let hasTriggeredLimitEgg = false;
   let isExplosionActive = false;
   
-  // Multiple server fallbacks
+  // Multiple server fallbacks (read from window config, default to same-origin)
+  const aiApiUrl = (typeof window !== 'undefined' && window.__APP_CONFIG__?.aiApiUrl)
+    ? window.__APP_CONFIG__.aiApiUrl
+    : '';
   const servers = [
-    'https://api.yapvibes.com'
-  ];
+    aiApiUrl || 'http://localhost:5000'
+  ].filter(Boolean);
   
   let currentServer = servers[0];
 

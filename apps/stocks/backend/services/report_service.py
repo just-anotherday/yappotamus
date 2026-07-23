@@ -26,6 +26,7 @@ async def create_report(
     articles_count: int,
     model_used: str,
     prompt_version: str = "1.0",
+    prompt_hash: Optional[str] = None,
     current_price_at_analysis: Optional[float] = None,
 ) -> int:
     """Save a new analysis report and return its id."""
@@ -40,6 +41,7 @@ async def create_report(
         articles_count=articles_count,
         model_used=model_used or "",
         prompt_version=prompt_version,
+        prompt_hash=prompt_hash,
         current_price_at_analysis=current_price_at_analysis,
     )
     session.add(obj)
@@ -101,6 +103,8 @@ async def list_reports(
             "confidence_score": r.confidence_score,
             "articles_count": r.articles_count,
             "model_used": r.model_used,
+            "prompt_version": r.prompt_version,
+            "prompt_hash": r.prompt_hash,
             "current_price_at_analysis": r.current_price_at_analysis,
             "created_at": r.created_at,
         }

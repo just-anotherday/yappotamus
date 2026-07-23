@@ -23,6 +23,8 @@ class ReportSummaryOut(BaseModel):
     articles_count: int
     current_price_at_analysis: Optional[float] = None
     model_used: str
+    prompt_version: str
+    prompt_hash: Optional[str] = None
     created_at: datetime
 
 
@@ -46,6 +48,7 @@ class AnalysisReportDetail(BaseModel):
     articles_count: int
     model_used: str
     prompt_version: str
+    prompt_hash: Optional[str] = None
     current_price_at_analysis: Optional[float] = None
     created_at: datetime
 

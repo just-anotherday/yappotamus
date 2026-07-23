@@ -5,8 +5,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.news_schemas import NewsArticleOut, NewsPaginatedResponse
 from backend.config.database import get_async_session
 from backend.services.news_query_service import query_news, get_distinct_tickers as query_distinct_tickers
+from backend.services.news_ingestion_service import fetch_and_ingest_many, fetch_and_ingest_news
+from backend.services.watchlist_service import get_all_tickers
 
 router = APIRouter(tags=["news"])
+
+
+@router.post("/api/news/ingest")
+async def ingest_watchlist_news(
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Immediately ingest news for every ticker in the persisted watchlist."""
+    tickers = await get_all_tickers(session)
+    results = await fetch_and_ingest_many(tickers, session, limit=25) if tickers else {}
+    return {"tickers": len(tickers), "articles_processed": sum(results.values()), "results": results}
+
+
+@router.post("/api/news/ingest/{ticker}")
+async def ingest_ticker_news(
+    ticker: str,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Immediately ingest recent news for one ticker."""
+    normalized_ticker = ticker.strip().upper()
+    count = await fetch_and_ingest_news(normalized_ticker, session, limit=30)
+    return {"ticker": normalized_ticker, "articles_processed": count}
 
 
 @router.get("/news", response_model=NewsPaginatedResponse)

@@ -9,26 +9,27 @@ Env vars:
 """
 
 import logging
-import os
 from typing import Any, Dict, Optional
 
 import httpx
 
+from backend.config.settings import settings
 from backend.services.ai.ai_service import BaseAIClient
+from backend.services.ai.exceptions import AIConnectionError, AIValidationError
 
 logger = logging.getLogger(__name__)
-
-# --- Configuration ---
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 class OpenAIProvider(BaseAIClient):
     """OpenAI LLM provider using Chat Completions API."""
 
     def __init__(self) -> None:
-        self.api_key = OPENAI_API_KEY
-        self.model = OPENAI_MODEL
+        self.api_key = settings.OPENAI_API_KEY or ""
+        self.model = settings.OPENAI_MODEL
+
+    def default_timeout(self) -> float:
+        """OpenAI has a fixed short timeout."""
+        return 120.0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -40,11 +41,21 @@ class OpenAIProvider(BaseAIClient):
         user_prompt: str,
         temperature: float = 0.3,
         max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
         **kwargs: Any,
     ) -> str:
         """Generate text using OpenAI chat completions."""
         if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set")
+            raise AIValidationError("OPENAI_API_KEY is not set")
+
+        # Use provided model override, fall back to configured default
+        active_model = model or self.model
+
+        # Cost control: never call OpenAI with a model outside the allowlist,
+        # even if a caller bypasses the upstream validation in ollama_service.
+        allowed = settings.OPENAI_ALLOWED_MODELS
+        if active_model not in allowed:
+            raise AIValidationError(f"Model {active_model} is not allowed")
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -52,7 +63,7 @@ class OpenAIProvider(BaseAIClient):
         ]
 
         payload: Dict[str, Any] = {
-            "model": self.model,
+            "model": active_model,
             "messages": messages,
             "temperature": temperature,
         }
@@ -94,20 +105,26 @@ class OpenAIProvider(BaseAIClient):
                     attempt, exc,
                 )
 
-        raise RuntimeError(
+        raise AIConnectionError(
             f"OpenAI generate failed after 3 retries: {last_error}"
         ) from last_error
 
     async def is_available(self) -> bool:
-        """Check if OpenAI API key is configured and reachable."""
-        if not self.api_key:
-            return False
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    "https://api.openai.com/v1/models",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                )
-                return resp.status_code == 200
-        except Exception:
-            return False
+        """Return whether required local OpenAI configuration is present.
+
+        Avoid a billable/unrestricted provider discovery request. Connectivity is
+        established by the actual generation call and mapped to AIConnectionError.
+        """
+        return bool(self.api_key and settings.OPENAI_ALLOWED_MODELS)
+
+    async def list_models(self) -> list[dict]:
+        """Return allowed OpenAI models.
+
+        Only returns models from OPENAI_ALLOWED_MODELS whitelist.
+        Never exposes unrestricted model discovery to the frontend for cost control.
+        """
+        allowed = settings.OPENAI_ALLOWED_MODELS
+        return [
+            {"name": model, "size": 0, "modified_at": None}
+            for model in allowed
+        ]

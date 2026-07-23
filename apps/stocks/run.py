@@ -17,8 +17,9 @@ import selectors
 
 from dotenv import load_dotenv
 
-# Load .env file in development (ignored safely if not found)
-load_dotenv()
+# Load .env file in development; override=False ensures Railway-provided env vars
+# (like DATABASE_URL) take precedence over values in the local .env file.
+load_dotenv(override=False)
 
 # On Windows, force SelectorEventLoop for asyncpg compatibility
 if sys.platform == "win32":

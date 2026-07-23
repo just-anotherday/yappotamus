@@ -55,6 +55,7 @@ class AIJobQueue(Base):
         nullable=False,
         comment="'article' | 'asset' | 'sector' | 'market'",
     )
+    dedupe_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     # Priority (lower = higher priority)
     priority: Mapped[int] = mapped_column(Integer, server_default="10", default=10)
@@ -87,6 +88,7 @@ class AIJobQueue(Base):
         Index("idx_ai_job_queue_scheduled", "scheduled_for"),
         Index("idx_ai_job_queue_target", "target_type", "target_id"),
         Index("idx_ai_job_queue_job_type", "job_type"),
+        Index("idx_ai_job_queue_dedupe", "job_type", "dedupe_key", "status"),
     )
 
     def __repr__(self):

@@ -28,6 +28,7 @@ class AnalysisReportModel(Base):
     articles_count: Mapped[int] = mapped_column(Integer, nullable=False)
     model_used: Mapped[str] = mapped_column(String(50), nullable=False, server_default="")
     prompt_version: Mapped[str] = mapped_column(String(20), nullable=False, server_default="1.0")
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     current_price_at_analysis: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[object] = mapped_column(TIMESTAMP, server_default=func.now())

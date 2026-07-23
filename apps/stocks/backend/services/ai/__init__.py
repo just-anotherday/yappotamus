@@ -14,6 +14,23 @@ Supported providers:
     - openai  (production)
 """
 
-from backend.services.ai.ai_service import AIService, get_ai_service
+from backend.services.ai.ai_service import (
+    BaseAIClient,
+    ProviderRegistry,
+    get_ai_service,
+    reset_ai_service,
+)
 
-__all__ = ["AIService", "get_ai_service"]
+# Register built-in providers
+from backend.services.ai.ollama_provider import OllamaProvider  # noqa: F401
+from backend.services.ai.openai_provider import OpenAIProvider  # noqa: F401
+
+ProviderRegistry.register("ollama", OllamaProvider)
+ProviderRegistry.register("openai", OpenAIProvider)
+
+__all__ = [
+    "BaseAIClient",
+    "ProviderRegistry",
+    "get_ai_service",
+    "reset_ai_service",
+]

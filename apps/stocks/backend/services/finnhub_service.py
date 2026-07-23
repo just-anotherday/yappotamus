@@ -17,21 +17,17 @@ Endpoints used:
 
 import asyncio
 import logging
-import os
 import time
 from typing import Any, Dict, List, Optional
 
 import finnhub
 import tenacity
-from dotenv import load_dotenv
 
+from backend.config.settings import settings
 from backend.config.polling_settings import polling_settings
-
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.error_fallback import create_error_fallback
 from backend.lib.risk_metrics import _compute_composite_risk, _safe_pct
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +35,7 @@ logger = logging.getLogger(__name__)
 # Client initialization
 # ------------------------------------------------------------------
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-if not FINNHUB_API_KEY:
+if not settings.FINNHUB_API_KEY:
     logger.warning("[Finnhub] FINNHUB_API_KEY not set in environment. API calls will fail.")
 
 _client: Optional[finnhub.Client] = None
@@ -53,11 +48,11 @@ def get_finnhub_client() -> finnhub.Client:
     """
     global _client
     if _client is None:
-        if not FINNHUB_API_KEY:
+        if not settings.FINNHUB_API_KEY:
             raise RuntimeError(
                 "Finnhub API key not set. Set FINNHUB_API_KEY in your .env file."
             )
-        _client = finnhub.Client(api_key=FINNHUB_API_KEY)
+        _client = finnhub.Client(api_key=settings.FINNHUB_API_KEY)
     return _client
 
 

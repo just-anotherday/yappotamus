@@ -5,31 +5,27 @@ Preserves all existing timeout, retry, and model-size logic from ollama_service.
 """
 
 import logging
-import os
 from typing import Any, Dict, Optional
 
 import httpx
 
+from backend.config.settings import settings
 from backend.services.ai.ai_service import BaseAIClient
 
 logger = logging.getLogger(__name__)
-
-# --- Configuration (same env vars as before) ---
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-OLLAMA_TIMEOUT_SMALL_S = float(os.getenv("OLLAMA_TIMEOUT_SMALL_S", "900"))
-OLLAMA_TIMEOUT_LARGE_S = float(os.getenv("OLLAMA_TIMEOUT_LARGE_S", "1200"))
-OLLAMA_MAX_RETRIES = int(os.getenv("OLLAMA_MAX_RETRIES", "3"))
-MODEL_SIZE_THRESHOLD_GB = float(os.getenv("MODEL_SIZE_THRESHOLD_GB", "8"))
 
 
 class OllamaProvider(BaseAIClient):
     """Ollama LLM provider using the /api/generate endpoint."""
 
     def __init__(self) -> None:
-        self.base_url = OLLAMA_BASE_URL
-        self.model = OLLAMA_MODEL
-        self.max_retries = OLLAMA_MAX_RETRIES
+        self.base_url = settings.OLLAMA_BASE_URL
+        self.model = settings.OLLAMA_MODEL
+        self.max_retries = settings.OLLAMA_MAX_RETRIES
+
+    def default_timeout(self) -> float:
+        """Ollama uses model-size-based timeouts, base default for small models."""
+        return settings.OLLAMA_TIMEOUT_SMALL_S
 
     # ------------------------------------------------------------------
     # Public interface
@@ -41,11 +37,14 @@ class OllamaProvider(BaseAIClient):
         user_prompt: str,
         temperature: float = 0.3,
         max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
         **kwargs: Any,
     ) -> str:
         """Generate text using Ollama /api/generate endpoint."""
+        # Use provided model override, fall back to configured default
+        active_model = model or self.model
         payload: Dict[str, Any] = {
-            "model": self.model,
+            "model": active_model,
             "prompt": user_prompt,
             "system": system_prompt,
             "stream": False,
@@ -92,6 +91,26 @@ class OllamaProvider(BaseAIClient):
         except Exception:
             return False
 
+    async def list_models(self) -> list[dict]:
+        """Dynamically fetch all installed Ollama models."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{self.base_url}/api/tags")
+                if resp.status_code != 200:
+                    return []
+                data = resp.json()
+                models = []
+                for m in data.get("models", []):
+                    models.append({
+                        "name": m.get("name", "unknown"),
+                        "size": m.get("size", 0),
+                        "modified_at": m.get("modified_at"),
+                    })
+                return models
+        except Exception as e:
+            logger.warning(f"[AI][Ollama] Could not list models: {e}")
+            return []
+
 
 # ----------------------------------------------------------------------
 # Helper: timeout selection based on model size (reused from ollama_service.py)
@@ -101,5 +120,5 @@ def _get_timeout_for_model(model_name: str) -> float:
     """Return appropriate timeout for the given Ollama model."""
     # Large models (> 8GB) get longer timeouts
     if any(big in model_name.lower() for big in ("70b", "13b", "34b", "65b")):
-        return OLLAMA_TIMEOUT_LARGE_S
-    return OLLAMA_TIMEOUT_SMALL_S
+        return settings.OLLAMA_TIMEOUT_LARGE_S
+    return settings.OLLAMA_TIMEOUT_SMALL_S

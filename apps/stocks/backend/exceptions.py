@@ -5,6 +5,8 @@ from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
+from backend.services.ai.exceptions import AIConnectionError, AIValidationError
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,6 +29,26 @@ def register_exception_handlers(app):
                 "details": exc.errors(),
                 "status_code": 422,
             },
+        )
+
+    @app.exception_handler(AIValidationError)
+    async def ai_validation_exception_handler(request: Request, exc: AIValidationError):
+        logger.warning(
+            f"[AI][Validation] {request.method} {request.url}: {exc.message}"
+        )
+        return JSONResponse(
+            status_code=400,
+            content={"error": exc.message, "status_code": 400},
+        )
+
+    @app.exception_handler(AIConnectionError)
+    async def ai_connection_exception_handler(request: Request, exc: AIConnectionError):
+        logger.error(
+            f"[AI][Connection] {request.method} {request.url}: {exc.message}"
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"error": exc.message, "status_code": 503},
         )
 
     @app.exception_handler(HTTPException)

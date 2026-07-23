@@ -4,8 +4,9 @@
     "builder": "DOCKERFILE"
   },
   "deploy": {
-    "startCommand": "python run.py",
-    "healthcheckPath": "/health",
+    "preDeployCommand": "python -m alembic upgrade head",
+    "startCommand": "uvicorn backend.main:app --host 0.0.0.0 --port $PORT",
+    "healthcheckPath": "/health/live",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10

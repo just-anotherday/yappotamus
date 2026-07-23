@@ -30,7 +30,8 @@ from backend.models.asset import Asset, AssetTicker
 from backend.models.news import NewsArticle
 from backend.services.finnhub_service import get_finnhub_client
 from backend.services.article_scorer import rank_articles
-from backend.services.ollama_service import OLLAMA_MODEL
+from backend.services.ai.ai_service import resolve_provider_model
+from backend.services.ollama_service import CURRENT_PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class AIWorker:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         # Registry of job_type -> handler method
         self._handlers = {
+            "article_intelligence": self._handle_article_intelligence,
             "company_report": self._handle_company_report,
             "sector_report": self._handle_sector_report,
             "market_report": self._handle_market_report,
@@ -97,6 +99,7 @@ class AIWorker:
                 )
             )
             .order_by(AIJobQueue.priority.asc(), AIJobQueue.scheduled_for.asc())
+            .with_for_update(skip_locked=True)
             .limit(self.max_concurrent)
         )
 
@@ -106,8 +109,12 @@ class AIWorker:
         for job in jobs:
             job.status = "processing"
             job.started_at = datetime.utcnow()
+            job.error_message = None
 
         if jobs:
+            # The row locks and status transition are committed together. A
+            # concurrent PostgreSQL worker skips these locked rows and cannot
+            # claim the same job.
             await session.commit()
         return jobs
 
@@ -185,6 +192,22 @@ class AIWorker:
     # ------------------------------------------------------------------
     # Job Handlers
     # ------------------------------------------------------------------
+    async def _handle_article_intelligence(self, job) -> dict:
+        from backend.intelligence.article_service import generate_article_intelligence
+        from backend.config.settings import settings
+        payload = job.payload or {}
+        async with self.get_session_factory() as session:
+            article = await session.get(NewsArticle, job.target_id)
+            if article is None:
+                return {"status": "skipped", "reason": "article_not_found", "article_id": job.target_id}
+            if not settings.is_intelligence_pilot_ticker(article.ticker):
+                return {"status": "skipped", "reason": "outside_pilot_universe", "article_id": job.target_id}
+            artifact = await generate_article_intelligence(
+                session, job.target_id, force=bool(payload.get("force")),
+                provider=payload.get("provider"), model=payload.get("model"),
+            )
+        return {"status": artifact.status, "article_id": job.target_id, "generation_revision": artifact.generation_revision}
+
     async def _handle_company_report(self, job) -> dict:
         """Generate company intelligence report via Ollama and persist to DB."""
         logger.info("[AIWorker] Processing company report for asset_id=%d", job.target_id)
@@ -271,8 +294,8 @@ class AIWorker:
                 analysis_date=datetime.utcnow().isoformat(),
             )
 
-            # 5. Call Ollama (use model override if provided, else default)
-            effective_model = model or OLLAMA_MODEL
+            # 5. Resolve the configured provider's model before generation.
+            _, effective_model = resolve_provider_model(model_name=model)
             result = await generate_analysis(analysis_request, model=effective_model)
 
             # 6. Persist report to DB (filter by both asset_id AND ticker to prevent cross-ticker contamination)
@@ -332,7 +355,7 @@ class AIWorker:
                     confidence_score=result.confidence_score,
                     articles_count=len(articles),
                     model_used=effective_model,
-                    prompt_version="1.0",
+                    prompt_version=CURRENT_PROMPT_VERSION,
                     price_snapshot=price_data.current_price,
                 )
                 session.add(new_report)
@@ -720,11 +743,26 @@ class AIWorker:
 # ------------------------------------------------------------------
 # Queue helper — enqueue a job
 # ------------------------------------------------------------------
-async def enqueue_job(session: AsyncSession, job_type: str, target_type: str, target_id: int, payload: Optional[dict] = None, priority: int = 10) -> bool:
+async def enqueue_job(session: AsyncSession, job_type: str, target_type: str, target_id: int, payload: Optional[dict] = None, priority: int = 10, dedupe_key: Optional[str] = None) -> bool:
     """Enqueue an AI processing job. Returns True if queued."""
     from backend.models.ai_job_queue import AIJobQueue
 
-    # Deduplicate: check for existing pending/processing job for same target+type
+    # Serialize enqueue attempts for the same logical target for this
+    # transaction. PostgreSQL releases the advisory lock on commit/rollback,
+    # closing the race between the existence check and INSERT.
+    await session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtext(:job_type), hashtext(:target_key)"
+            ")"
+        ),
+        {
+            "job_type": job_type,
+            "target_key": dedupe_key or f"{target_type}:{target_id}",
+        },
+    )
+
+    # Deduplicate pending/processing work after acquiring the target lock.
     exists_stmt = (
         select(AIJobQueue.id)
         .where(
@@ -732,6 +770,7 @@ async def enqueue_job(session: AsyncSession, job_type: str, target_type: str, ta
                 AIJobQueue.job_type == job_type,
                 AIJobQueue.target_type == target_type,
                 AIJobQueue.target_id == target_id,
+                AIJobQueue.dedupe_key == dedupe_key,
                 AIJobQueue.status.in_(["pending", "processing"]),
             )
         )
@@ -746,6 +785,7 @@ async def enqueue_job(session: AsyncSession, job_type: str, target_type: str, ta
         job_type=job_type,
         target_type=target_type,
         target_id=target_id,
+        dedupe_key=dedupe_key,
         payload=payload or {},
         priority=priority,
         status="pending",

@@ -111,14 +111,24 @@ class FinancialAnalysisResponse(BaseModel):
     asset: str
     overall_sentiment: Literal["Very Bullish", "Bullish", "Neutral", "Bearish", "Very Bearish"]
     confidence_score: int = Field(ge=0, le=100)
+    investment_rating: Optional[Literal["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]] = Field(
+        default=None,
+        description="Actionable stance derived from the evidence, distinct from sentiment",
+    )
     articles_used: List[ArticleReference] = Field(default_factory=list, description="Articles included in the analysis")
     news_summary: List[str] = []
     key_catalysts: List[str] = []
     key_risks: List[KeyRisk] = []
+    bull_case: List[str] = Field(default_factory=list, description="Evidence-based reasons the stock could outperform")
+    bear_case: List[str] = Field(default_factory=list, description="Evidence-based reasons the stock could decline")
     market_reaction_analysis: Optional[str] = None
     technical_analysis: Optional[TechnicalAnalysisResponse] = None
     outlook: Optional[OutlookResponse] = None
     actionable_insights: List[str] = []
+    portfolio_fit: Optional[str] = Field(
+        default=None,
+        description="Which investor profiles this fits and what portfolio role it could play",
+    )
     executive_summary: Optional[str] = None
     current_price_at_analysis: Optional[float] = Field(
         default=None,
@@ -128,21 +138,43 @@ class FinancialAnalysisResponse(BaseModel):
 
 
 # ==============================================================================
-# MODEL MANAGEMENT (for listing available Ollama models)
+# MODEL MANAGEMENT (provider-aware)
 # ==============================================================================
 
-class OllamaModelInfo(BaseModel):
-    """Information about an installed Ollama model."""
+class ModelInfo(BaseModel):
+    """Information about an available model."""
 
     name: str
     size: int = 0
     modified_at: Optional[str] = None
 
 
+# Kept for backward compatibility
+OllamaModelInfo = ModelInfo
+
+
+class ProviderInfo(BaseModel):
+    """Information about an available AI provider."""
+
+    id: str  # "ollama", "openai", etc.
+    name: str  # Display name, e.g. "Ollama", "OpenAI"
+    available: bool
+    models: List[ModelInfo] = []
+
+
+class ProviderConfigResponse(BaseModel):
+    """Unified provider-aware configuration status."""
+
+    providers: List[ProviderInfo] = []
+    default_provider: str = "ollama"
+    default_model: str = ""
+
+
+# Backward-compat alias
 class OllamaConfigResponse(BaseModel):
-    """Current Ollama configuration status."""
+    """Current Ollama configuration status (legacy)."""
 
     ollama_url: str
     default_model: str
-    available_models: List[OllamaModelInfo] = []
+    available_models: List[ModelInfo] = []
     connected: bool = False

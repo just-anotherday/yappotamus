@@ -17,7 +17,6 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -31,6 +30,7 @@ from backend.services.finnhub_service import get_finnhub_client, _rate_limiter
 from backend.services.ticker_extractor import ticker_extractor
 from backend.services.asset_sync import get_asset_id_by_ticker
 from backend.services.ai_worker import enqueue_job
+from backend.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -97,22 +97,12 @@ async def _recover_thumbnails(session: AsyncSession, batch_size: int = _THUMB_RE
 
 
 async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager) -> None:
-	"""Periodically fetch news for all watchlist tickers every 15 minutes (8 AM - 6 PM EST only).
+	"""Periodically fetch news for all watchlist tickers every 15 minutes (runs all day).
 	
 	Each cycle also attempts to recover thumbnails for recently-ingested articles
 	that are missing them.
 	"""
-	est = ZoneInfo("US/Eastern")
 	while True:
-		now_est = datetime.now(est)
-		if now_est.hour < 8 or now_est.hour >= 18:
-			logger.info(
-				f"[NewsScheduler] Outside 8 AM–6 PM EST window "
-				f"(current: {now_est.strftime('%H:%M')} EST); sleeping."
-			)
-			await asyncio.sleep(_scheduler_interval_seconds)
-			continue
-
 		try:
 			tickers = await tickers_fn()
 			async with session_factory() as session:
@@ -417,14 +407,14 @@ async def ingest_article(session: AsyncSession, article_in: NewsArticleIngest) -
 
 async def batch_ingest_articles(
     session: AsyncSession, articles_in: list[NewsArticleIngest]
-) -> int:
+) -> list[int]:
     """Batch upsert multiple articles in a single transaction.
 
     Uses PostgreSQL ON CONFLICT with RETURNING to avoid N+1 round-trips.
-    Returns the number of articles inserted or updated.
+    Returns IDs for articles that were inserted or materially updated.
     """
     if not articles_in:
-        return 0
+        return []
 
     values = [article.model_dump(exclude_unset=True) for article in articles_in]
 
@@ -441,11 +431,15 @@ async def batch_ingest_articles(
             "pub_date": stmt.excluded.pub_date,
             "raw_json": stmt.excluded.raw_json,
         },
-    )
+        where=(NewsArticle.title.is_distinct_from(stmt.excluded.title)
+               | NewsArticle.summary.is_distinct_from(stmt.excluded.summary)
+               | NewsArticle.ticker.is_distinct_from(stmt.excluded.ticker)
+               | NewsArticle.pub_date.is_distinct_from(stmt.excluded.pub_date)),
+    ).returning(NewsArticle.id)
 
-    await session.execute(stmt)
+    result = await session.execute(stmt)
     await session.commit()
-    return len(values)
+    return list(result.scalars().all())
 
 
 async def fetch_and_ingest_news(ticker: str, session: AsyncSession, limit: int = 30) -> int:
@@ -515,7 +509,19 @@ async def fetch_and_ingest_news(ticker: str, session: AsyncSession, limit: int =
         logger.info(f"[NewsIngestion] No valid articles to ingest for {ticker}")
         return 0
 
-    ingested = await batch_ingest_articles(session, normalized_articles)
+    material_article_ids = await batch_ingest_articles(session, normalized_articles)
+    ingested = len(material_article_ids)
+
+    if settings.INTELLIGENCE_ENABLED and material_article_ids:
+        from backend.intelligence.article_service import ARTICLE_PROMPT_HASH, article_source_content_hash
+        rows = (await session.execute(select(NewsArticle).where(NewsArticle.id.in_(material_article_ids)))).scalars().all()
+        for row in rows:
+            if not settings.is_intelligence_pilot_ticker(row.ticker):
+                continue
+            source_hash = article_source_content_hash(row)
+            await enqueue_job(session, "article_intelligence", "article", row.id,
+                              payload={"source_hash": source_hash, "prompt_hash": ARTICLE_PROMPT_HASH},
+                              priority=8, dedupe_key=f"{row.id}:{source_hash}:{ARTICLE_PROMPT_HASH}")
 
     # --- Pipeline: Extract tickers from new articles → queue company report jobs ---
     try:

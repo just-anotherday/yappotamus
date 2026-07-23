@@ -6,6 +6,7 @@ import ThemeProvider from "@/components/ThemeProvider";
 import AppHeader from "@/components/AppHeader";
 import Footer from "@/components/Footer";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import AuthGate from "@/components/AuthGate";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -37,13 +38,15 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col bg-gray-50 dark:bg-gradient-to-br dark:from-slate-800 dark:via-gray-900 dark:to-slate-700">
         <ThemeProvider>
-          <WatchlistConfigProvider>
-            <AppHeader />
-            <ErrorBoundary>
-              <main className="min-h-0 flex-1">{children}</main>
-            </ErrorBoundary>
-            <Footer />
-          </WatchlistConfigProvider>
+          <AuthGate>
+            <WatchlistConfigProvider>
+              <AppHeader />
+              <ErrorBoundary>
+                <main className="min-h-0 flex-1">{children}</main>
+              </ErrorBoundary>
+              <Footer />
+            </WatchlistConfigProvider>
+          </AuthGate>
         </ThemeProvider>
       </body>
     </html>

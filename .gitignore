@@ -18,10 +18,11 @@ venv/
 env/
 *.egg-info/
 
-# Environment files
+# Environment files (all secrets / local config)
 .env
 .env.local
-.env.*.local
+.env.*
+!.env.example
 
 # IDE / Editor
 .vscode/

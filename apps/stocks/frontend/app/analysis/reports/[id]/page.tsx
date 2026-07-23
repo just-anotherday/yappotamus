@@ -3,7 +3,9 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { API_BASE } from '@/types/stock';
+import { apiFetch } from '@/lib/apiFetch';
 import type { ReportDetail, KeyRisk, FinancialAnalysisReport, ArticleReference } from '@/types/stock';
+import { formatReportDateTime, getPromptBadge } from '@/lib/reportPresentation';
 
 export default function ReportDetailPage() {
   const { id } = useParams();
@@ -13,7 +15,7 @@ export default function ReportDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/analysis/reports/${id}`)
+    apiFetch(`${API_BASE}/api/analysis/reports/${id}`)
       .then(async res => {
         if (!res.ok) {
           const err = await res.json();
@@ -29,7 +31,7 @@ export default function ReportDetailPage() {
   const handleDelete = async () => {
     if (!confirm('Are you sure you want to delete this report?')) return;
     try {
-      const res = await fetch(`${API_BASE}/api/analysis/reports/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/api/analysis/reports/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete');
       router.push('/analysis/reports');
     } catch (e) {
@@ -55,6 +57,17 @@ export default function ReportDetailPage() {
         case 'High': return '#ef4444';
         case 'Medium': return '#f59e0b';
         case 'Low': return '#10b981';
+        default: return '#6b7280';
+      }
+    };
+
+    const getInvestmentRatingColor = (rating: string) => {
+      switch (rating) {
+        case 'Strong Buy': return '#10b981';
+        case 'Buy': return '#34d399';
+        case 'Hold': return '#f59e0b';
+        case 'Sell': return '#f87171';
+        case 'Strong Sell': return '#ef4444';
         default: return '#6b7280';
       }
     };
@@ -95,15 +108,26 @@ export default function ReportDetailPage() {
         {/* Executive Summary & Sentiment Header */}
         <div style={{ padding: '1.5rem', borderRadius: '12px', background: '#f9fafb', border: '1px solid #e5e7eb' }}
           className="dark:bg-slate-800 dark:border-slate-700">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
             <h2 style={{ margin: 0, color: '#111827' }} className="dark:text-white">{data.asset}</h2>
-            <span style={{
-              padding: '0.375rem 1rem', borderRadius: '999px',
-              background: getSentimentColor(data.overall_sentiment),
-              color: 'white', fontWeight: 600, fontSize: '0.875rem',
-            }}>
-              {data.overall_sentiment}
-            </span>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              {data.investment_rating && (
+                <span style={{
+                  padding: '0.375rem 1rem', borderRadius: '999px',
+                  background: getInvestmentRatingColor(data.investment_rating),
+                  color: 'white', fontWeight: 600, fontSize: '0.875rem',
+                }}>
+                  {data.investment_rating}
+                </span>
+              )}
+              <span style={{
+                padding: '0.375rem 1rem', borderRadius: '999px',
+                background: getSentimentColor(data.overall_sentiment),
+                color: 'white', fontWeight: 600, fontSize: '0.875rem',
+              }}>
+                {data.overall_sentiment}
+              </span>
+            </div>
           </div>
           <div style={{ marginBottom: '1rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
@@ -168,6 +192,34 @@ export default function ReportDetailPage() {
           </div>
         )}
 
+        {/* Bull Case / Bear Case */}
+        {((data.bull_case && data.bull_case.length > 0) || (data.bear_case && data.bear_case.length > 0)) && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1.5rem' }}>
+            {data.bull_case && data.bull_case.length > 0 && (
+              <div style={{ padding: '1.5rem', borderRadius: '12px', background: '#f0fdf4', border: '1px solid #bbf7d0' }}
+                className="dark:bg-green-900/30 dark:border-green-800">
+                <h3 style={{ marginTop: 0, fontSize: '1.25rem', fontWeight: 700, letterSpacing: '0.025em', color: '#166534', paddingBottom: '0.5rem', borderBottom: '2px solid #bbf7d0' }} className="dark:text-green-400 dark:border-green-800">Bull Case</h3>
+                <ul style={{ paddingLeft: '1.25rem' }}>
+                  {data.bull_case.map((item, i) => (
+                    <li key={i} style={{ marginBottom: '0.5rem', lineHeight: 1.6, color: '#166534' }} className="dark:text-green-300">{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {data.bear_case && data.bear_case.length > 0 && (
+              <div style={{ padding: '1.5rem', borderRadius: '12px', background: '#fef2f2', border: '1px solid #fecaca' }}
+                className="dark:bg-red-900/30 dark:border-red-800">
+                <h3 style={{ marginTop: 0, fontSize: '1.25rem', fontWeight: 700, letterSpacing: '0.025em', color: '#991b1b', paddingBottom: '0.5rem', borderBottom: '2px solid #fecaca' }} className="dark:text-red-400 dark:border-red-800">Bear Case</h3>
+                <ul style={{ paddingLeft: '1.25rem' }}>
+                  {data.bear_case.map((item, i) => (
+                    <li key={i} style={{ marginBottom: '0.5rem', lineHeight: 1.6, color: '#991b1b' }} className="dark:text-red-300">{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Market Reaction */}
         <div style={{ padding: '1.5rem', borderRadius: '12px', background: 'white', border: '1px solid #e5e7eb' }}
           className="dark:bg-slate-800 dark:border-slate-700">
@@ -224,6 +276,15 @@ export default function ReportDetailPage() {
                 <li key={i} style={{ marginBottom: '0.5rem', lineHeight: 1.6, color: '#1e40af' }} className="dark:text-blue-300">{item}</li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {/* Portfolio Fit */}
+        {data.portfolio_fit && (
+          <div style={{ padding: '1.5rem', borderRadius: '12px', background: '#f8fafc', border: '1px solid #e2e8f0' }}
+            className="dark:bg-slate-800 dark:border-slate-700">
+            <h3 style={{ marginTop: 0, fontSize: '1.25rem', fontWeight: 700, letterSpacing: '0.025em', color: '#1e293b', paddingBottom: '0.5rem', borderBottom: '2px solid #cbd5e1' }} className="dark:text-white dark:border-slate-600">Portfolio Consideration</h3>
+            <p style={{ lineHeight: 1.6, color: '#374151' }} className="dark:text-gray-300">{data.portfolio_fit}</p>
           </div>
         )}
 
@@ -314,14 +375,23 @@ export default function ReportDetailPage() {
         </button>
       </div>
 
+      <div style={{ marginBottom: '1rem' }}>
+        <h1 style={{ margin: 0, fontSize: '1.75rem', color: '#111827' }} className="dark:text-white">
+          {report.ticker} Analysis
+        </h1>
+        <div style={{ marginTop: 4, color: '#6b7280', fontSize: '0.875rem' }} className="dark:text-slate-400">
+          {formatReportDateTime(report.created_at)}
+        </div>
+      </div>
+
       {/* Report metadata */}
       <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', fontSize: '0.875rem', color: '#6b7280', flexWrap: 'wrap' }}
         className="dark:text-slate-400">
-        <span><strong>Report ID:</strong> #{report.id}</span>
+        <span style={{ fontSize: '0.75rem' }}><strong>Record ID:</strong> {report.id}</span>
         <span><strong>Articles:</strong> {report.articles_count}</span>
         <span><strong>Days back:</strong> {report.days_back}</span>
         <span><strong>Model:</strong> {report.model_used}</span>
-        <span><strong>Generated:</strong> {new Date(report.created_at).toLocaleString()}</span>
+        <span><strong>Prompt:</strong> {getPromptBadge(report.prompt_version, report.prompt_hash)}</span>
       </div>
 
       {/* Report content */}

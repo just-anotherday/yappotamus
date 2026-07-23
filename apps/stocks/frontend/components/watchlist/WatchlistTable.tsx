@@ -6,55 +6,57 @@
 
 import React, { useState, useCallback, useMemo, useRef, Fragment, useEffect } from 'react';
 import Link from 'next/link';
-import { DndContext, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { formatCurrency, formatLargeNumber, formatShares, formatPercent, riskBadgeClass, recommendationBadgeClass, isMeaningfulPercent, safePercent, safeNumber, formatExpenseRatio, formatAUM } from '@/lib/formatters';
+import { formatCurrency, formatLargeNumber, formatShares, formatPercent, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
 import type { WatchlistItem, LiveQuote } from '@/types/stock';
 import TickerTooltip from './TickerTooltip';
-
-function useAfterHours(): boolean {
-  const [isAfterHours, setIsAfterHours] = useState(false);
-
-  useEffect(() => {
-    function update() {
-      try {
-        // Get current time in US Eastern (EST/EDT) via Intl API
-        const now = new Date();
-        const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
-        const etDate = new Date(etStr);
-        const hour = etDate.getHours();
-        const weekday = etDate.getDay(); // 0=Sun, 1-6=Mon-Sat
-        // After hours: weekdays only, from 4PM (16) onwards
-        setIsAfterHours(weekday >= 1 && weekday <= 5 && hour >= 16);
-      } catch {
-        setIsAfterHours(false);
-      }
-    }
-    update();
-    const id = setInterval(update, 60_000); // recheck every minute
-    return () => clearInterval(id);
-  }, []);
-
-  return isAfterHours;
-}
+import { useExtendedHours } from '@/hooks/useExtendedHours';
+import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from '@/lib/watchlistPresentation';
+import type { WatchlistDirectionFilter, WatchlistSort } from '@/lib/watchlistPresentation';
 
 interface WatchlistTableProps {
   watchlist: WatchlistItem[];
   livePrices: Record<string, LiveQuote>;
   priceFlash: Record<string, 'up' | 'down'>;
+  postMarketFlash: Record<string, 'up' | 'down'>;
   loading: boolean;
   onRemove: (ticker: string) => void;
   watchlistOrder: string[];
   onReorder: (newOrder: string[]) => void;
+  onRefresh: () => void;
+  lastRefreshedAt: Date | null;
+  isReordering: boolean;
 }
 
-export default function WatchlistTable({ watchlist, livePrices, priceFlash, loading, onRemove, watchlistOrder, onReorder }: WatchlistTableProps) {
+const SortableRow = React.memo(function SortableRow({ ticker, disabled, children }: { ticker: string; disabled: boolean; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: ticker, disabled });
+  return (
+    <tr ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }}>
+      <td {...attributes} {...listeners} className={`px-3 py-2.5 text-gray-400 select-none text-center ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-grab'}`} aria-label={`Reorder ${ticker}`}>
+        <span aria-hidden="true">⋮⋮</span>
+      </td>
+      {children}
+    </tr>
+  );
+});
+
+export default function WatchlistTable({ watchlist, livePrices, priceFlash, postMarketFlash, loading, onRemove, watchlistOrder, onReorder, onRefresh, lastRefreshedAt, isReordering }: WatchlistTableProps) {
   const [expandedTickers, setExpandedTickers] = useState<Set<string>>(new Set());
   const [deletingTicker, setDeletingTicker] = useState<string | null>(null);
-  const showAfterHours = useAfterHours();
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<WatchlistSort>('custom');
+  const [direction, setDirection] = useState<WatchlistDirectionFilter>('all');
+  const { isExtendedHours: showAfterHours } = useExtendedHours();
 
   const allExpanded = watchlist.length > 0 && expandedTickers.size === watchlist.length;
+  const reorderEnabled = canReorderWatchlist(sort, search, direction) && !isReordering;
+
+  useEffect(() => {
+    const tickers = new Set(watchlist.map(item => item.ticker));
+    setExpandedTickers(prev => new Set([...prev].filter(ticker => tickers.has(ticker))));
+  }, [watchlist]);
 
   const toggleExpand = (ticker: string) => {
     setExpandedTickers(prev => {
@@ -94,43 +96,19 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
   };
 
   // ----------------------------------------------------------------
-  // SortableRow: wraps each watchlist row with @dnd-kit useSortable
-  // ----------------------------------------------------------------
-  function SortableRow({ ticker, children }: { ticker: string; children: React.ReactNode }) {
-    const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: ticker });
-
-    const style: React.CSSProperties = {
-      transform: CSS.Transform.toString(transform),
-      transition,
-    };
-
-    return (
-      <tr ref={setNodeRef} style={style}>
-        <td
-          {...attributes}
-          {...listeners}
-          className="px-3 py-2.5 cursor-grab text-gray-400 select-none text-center"
-        >
-          <span>⋮⋮</span>
-        </td>
-        {children}
-      </tr>
-    );
-  }
-
-  // ----------------------------------------------------------------
   // DnD sensors + handlers
   // ----------------------------------------------------------------
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 5 },
-    })
+    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
-      if (!over || active.id === over.id) return;
+      if (!reorderEnabled || !over || active.id === over.id) return;
 
       const oldIndex = watchlistOrder.indexOf(String(active.id));
       const newIndex = watchlistOrder.indexOf(String(over.id));
@@ -139,15 +117,14 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
       const reordered = arrayMove(watchlistOrder, oldIndex, newIndex);
       onReorder(reordered);
     },
-    [watchlistOrder, onReorder]
+    [watchlistOrder, onReorder, reorderEnabled]
   );
 
   // Build ordered list from watchlistOrder + watchlist data
-  const orderedWatchlist = useMemo(() => {
-    if (watchlistOrder.length === 0) return watchlist;
-    const map = new Map(watchlist.map(item => [item.ticker, item]));
-    return watchlistOrder.map(ticker => map.get(ticker)).filter((item): item is WatchlistItem => Boolean(item));
-  }, [watchlist, watchlistOrder]);
+  const orderedWatchlist = useMemo(
+    () => presentWatchlist(watchlist, watchlistOrder, livePrices, search, sort, direction),
+    [watchlist, watchlistOrder, livePrices, search, sort, direction],
+  );
 
   // Market cap classification per financial standards
   function marketCapLabel(mc: number): { label: string; color: string } {
@@ -198,6 +175,20 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
         )}
       </div>
 
+      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3 shadow-sm dark:bg-slate-900">
+        <input aria-label="Search watchlist" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search ticker or company" className="min-w-48 flex-1 rounded-md border px-3 py-2 text-sm dark:bg-slate-800" />
+        <select aria-label="Sort watchlist" value={sort} onChange={event => setSort(event.target.value as WatchlistSort)} className="rounded-md border px-3 py-2 text-sm dark:bg-slate-800">
+          <option value="custom">Custom order</option><option value="ticker">Ticker</option><option value="change">Price change</option><option value="market-cap">Market cap</option>
+        </select>
+        <select aria-label="Filter watchlist movers" value={direction} onChange={event => setDirection(event.target.value as WatchlistDirectionFilter)} className="rounded-md border px-3 py-2 text-sm dark:bg-slate-800">
+          <option value="all">All</option><option value="gainers">Gainers</option><option value="losers">Losers</option>
+        </select>
+        <span className="text-xs text-gray-500">{orderedWatchlist.length} of {watchlist.length}</span>
+        <button type="button" onClick={onRefresh} disabled={loading} className="rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-50">{loading ? 'Refreshing…' : 'Refresh'}</button>
+        <span className="text-xs text-gray-400">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed'}</span>
+        {!reorderEnabled && <span className="w-full text-xs text-amber-600">Clear filters and select Custom order to drag.</span>}
+      </div>
+
       {loading ? (
         /* Skeleton loader: renders a table-shaped skeleton with 4 pulsing rows */
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
@@ -230,7 +221,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
           </table>
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border min-w-fit inline-block">
+        <div className="w-full overflow-x-auto bg-white rounded-xl shadow-sm border">
           <DndContext
             sensors={sensors}
             onDragStart={() => { draggedRef.current = true; }}
@@ -240,7 +231,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
               draggedRef.current = false;
             }}
           >
-            <SortableContext items={watchlistOrder} strategy={verticalListSortingStrategy}>
+            <SortableContext items={reorderEnabled ? watchlistOrder : []} strategy={verticalListSortingStrategy} disabled={!reorderEnabled}>
               <table className="w-full text-sm whitespace-nowrap">
                 <thead className="bg-gray-100 border-b">
                   <tr>
@@ -249,7 +240,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
                     <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Current Price</th>
                      <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Change %</th>
                      {showAfterHours && (
-                       <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums" title="After-Hours Price (available 4PM-close ET)">After Hours</th>
+                       <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums" title="Extended-hours price (pre-market and after-hours ET)">After Hours</th>
                      )}
                      <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Market Cap</th>
                    </tr>
@@ -262,17 +253,13 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
                 // Use live price if available, fall back to static fundamental data
                 const displayPrice = live?.price ?? item.current_price;
 
-                // Compute change % relative to Previous Close (industry standard)
-                let displayChangePct: number | undefined;
-                if (item.previous_close > 0) {
-                  displayChangePct = ((displayPrice - item.previous_close) / item.previous_close) * 100;
-                }
+                const displayChangePct = getWatchlistChange(item, live) ?? undefined;
 
                 return (
                   <Fragment key={item.ticker}>
                     {/* Main row - wrapped in SortableRow for drag-and-drop */}
-                    <SortableRow ticker={item.ticker}>
-                      <td className="px-3 py-2.5 relative group cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => safeToggleExpand(item.ticker)}>
+                    <SortableRow ticker={item.ticker} disabled={!reorderEnabled}>
+                      <td className="px-3 py-2.5 relative group cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => safeToggleExpand(item.ticker)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); safeToggleExpand(item.ticker); } }} tabIndex={0} role="button" aria-expanded={isExpanded} aria-controls={`${item.ticker}-details`}>
                         <div className="flex flex-col">
                           <span className="font-bold text-gray-900 text-sm">{item.ticker}</span>
                           <span className="text-gray-500 text-xs truncate max-w-[120px]">
@@ -301,9 +288,17 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
                       }`} onClick={() => safeToggleExpand(item.ticker)}>
                         {displayChangePct != null ? (displayChangePct > 0 ? '+' : '') + displayChangePct.toFixed(2) + '%' : 'N/A'}
                       </td>
-                      {/* After-Hours column — only renders after 4PM ET */}
+                      {/* Extended-hours column — renders during weekday pre/post-market */}
                       {showAfterHours && (
-                        <td className={`px-3 py-2.5 text-right tabular-nums ${item.post_market_price != null && item.post_market_price > 0 ? 'text-blue-600 font-medium' : 'text-gray-400'}`} onClick={() => safeToggleExpand(item.ticker)}>
+                        <td className={`px-3 py-2.5 text-right tabular-nums transition-colors duration-1000 ${
+                          item.post_market_price != null && item.post_market_price > 0
+                            ? postMarketFlash[item.ticker] === 'up'
+                              ? 'text-green-600 font-medium bg-green-200'
+                              : postMarketFlash[item.ticker] === 'down'
+                                ? 'text-red-600 font-medium bg-red-200'
+                                : 'text-blue-600 font-medium'
+                            : 'text-gray-400'
+                        }`} onClick={() => safeToggleExpand(item.ticker)}>
                           {item.post_market_price != null && item.post_market_price > 0 
                             ? formatCurrency(item.post_market_price)
                             : '\u2014'}
@@ -314,8 +309,8 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, load
 
                     {/* Expanded detail row */}
                     {isExpanded && (
-                      <tr key={`${item.ticker}-detail`} className="border-b hover:bg-gray-50 transition-colors">
-                        <td colSpan={6} className="bg-gray-50 px-6 py-5">
+                      <tr id={`${item.ticker}-details`} key={`${item.ticker}-detail`} className="border-b hover:bg-gray-50 transition-colors">
+                        <td colSpan={watchlistColumnCount(showAfterHours)} className="bg-gray-50 px-6 py-5">
                           {/* Max-width container keeps expanded content within table structure */}
                           <div className="w-full">
                             {/* Header Card with description + action bar */}

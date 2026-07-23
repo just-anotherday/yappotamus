@@ -229,6 +229,12 @@ async def refresh_post_market_prices():
         raise HTTPException(status_code=500, detail=f"Failed to refresh post-market prices: {str(e)}")
 
 
+@router.get("/post-market")
+async def get_post_market_prices():
+    """Return the latest cached extended-hours prices without refetching fundamentals."""
+    return PostMarketService.get_instance().get_post_market_data()
+
+
 @router.get("/config", response_model=WatchlistConfigResponse)
 async def get_watchlist_config():
     """Return watchlist configuration (defaults, limits, version)."""

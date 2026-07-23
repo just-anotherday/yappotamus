@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchDbNews } from '@/lib/api';
+import { getAppWebSocketProtocols, invalidateAppToken } from '@/lib/apiFetch';
 import { WS_URL } from '@/types/stock';
 import type { NewsArticle } from '@/types/stock';
 
@@ -72,7 +73,10 @@ export function useNews(
   const wsRef = useRef<WebSocket | null>(null);
   const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
+    const protocols = getAppWebSocketProtocols();
+    if (!protocols) return;
+
+    const ws = new WebSocket(WS_URL, protocols);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
@@ -91,7 +95,12 @@ export function useNews(
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      if (event.code === 4401) {
+        invalidateAppToken();
+        return;
+      }
+
       // Attempt reconnect after 5s if not intentionally closed
       setTimeout(() => {
         if (wsRef.current && wsRef.current.readyState === WebSocket.CLOSED) {

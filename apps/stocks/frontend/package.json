@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "build:opennext": "npx opennextjs-cloudflare build",
-    "build:cf": "next build && npx opennextjs-cloudflare build",
+    "build:cf": "npm run build:opennext",
+    "deploy:cf": "npm run build:opennext && npx opennextjs-cloudflare deploy",
     "start": "next start",
-    "lint": "eslint"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint",
+    "test:reports": "node --experimental-strip-types --test lib/reportPresentation.test.mjs",
+    "test:watchlist": "node --experimental-strip-types --test lib/watchlistPresentation.test.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

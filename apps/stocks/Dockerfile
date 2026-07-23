@@ -26,15 +26,17 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy backend source
 COPY backend ./backend
+COPY alembic.ini .
+COPY alembic ./alembic
 COPY run.py .
 
  # Expose port (default to 8000; Railway injects PORT env var dynamically)
  ENV PORT=8000
  EXPOSE ${PORT}
 
- # Health check - start-period increased to allow full lifespan startup
+ # Process-only health check; database readiness is exposed separately at /health.
  HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
-     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+     CMD python -c "import os, urllib.request; urllib.request.urlopen('http://localhost:' + os.getenv('PORT', '8000') + '/health/live')" || exit 1
 
  # Use run.py which handles production detection + dynamic PORT reading
  CMD ["python", "run.py"]

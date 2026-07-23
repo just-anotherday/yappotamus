@@ -55,13 +55,13 @@ function HeaderContent() {
             <div className="mt-4 ml-1 flex items-center gap-2">
               <span className="inline-block w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
               <p className="text-lg max-w-2xl font-medium">
-                <span className="bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500 bg-clip-text text-transparent font-bold"> Live Price</span>
-                <span className="text-gray-600 dark:text-gray-300"> — </span>
                 <span className="bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500 bg-clip-text text-transparent font-bold"> Market News</span>
                 <span className="text-gray-600 dark:text-gray-300"> — </span>
-                <span className="bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500 bg-clip-text text-transparent font-bold"> AI Analysis Reports!</span>
+                <span className="bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500 bg-clip-text text-transparent font-bold"> AI Analysis Reports</span>
                 <span className="text-gray-600 dark:text-gray-300"> — </span>
-                <span className="bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500 bg-clip-text text-transparent font-bold"> &more, coming soon!</span>
+                <span className="bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500 bg-clip-text text-transparent font-bold"> &more,</span>
+                <span className="text-gray-600 dark:text-gray-300"> — </span>
+                <span className="bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500 bg-clip-text text-transparent font-bold"> coming soon!</span>
                 <span className="text-gray-600 dark:text-gray-300 animate-bounce inline-block"> 👋</span>
               </p>
 
@@ -107,6 +107,7 @@ function HeaderContent() {
                   Analysis Reports
                </Link>
 
+               {/* TODO: Uncomment when Intelligence feature is ready for production
                <Link
                  href="/intelligence"
                  className="group px-4 py-2 rounded-lg bg-gradient-to-r from-orange-500 to-orange-600 text-white text-sm font-bold shadow-md hover:from-orange-600 hover:to-orange-700 hover:shadow-lg transition-all duration-300 flex items-center gap-2 tracking-wide"
@@ -116,6 +117,7 @@ function HeaderContent() {
                  </svg>
                  Intelligence
                </Link>
+               */}
 
                  <Link
                    href="/activity"

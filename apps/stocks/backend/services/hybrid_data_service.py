@@ -16,11 +16,11 @@ Rate limit sync:
 
 import asyncio
 import logging
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from backend.config.settings import settings
 from backend.services.finnhub_service import get_stock_price as finnhub_get_stock_price
 from backend.services.yfinance_fallback import get_stock_price_yf
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
@@ -33,8 +33,8 @@ _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="yf-fallback")
 
 # Bounded TTL cache: stores (data, timestamp) tuples. Entries older than
 # _CACHE_TTL seconds are evicted on access. Max size limits memory growth.
-_CACHE_TTL = float(os.getenv("HYBRID_CACHE_TTL_S", "300"))  # default 5 minutes
-_CACHE_MAX_SIZE = int(os.getenv("HYBRID_CACHE_MAX_SIZE", "1000"))
+_CACHE_TTL = settings.HYBRID_CACHE_TTL_S  # default 5 minutes
+_CACHE_MAX_SIZE = settings.HYBRID_CACHE_MAX_SIZE
 _cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
 

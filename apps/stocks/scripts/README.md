@@ -89,6 +89,26 @@ Most scripts require:
 
 Ensure your `.env` file is configured before running.
 
+### Article Intelligence maintenance
+
+The resumable Article Intelligence workflow is exposed as a thin module CLI:
+
+```bash
+python scripts/article_intelligence_maintenance.py start --ticker SPY
+python scripts/article_intelligence_maintenance.py status <run-id>
+python scripts/article_intelligence_maintenance.py resume <run-id>
+python scripts/article_intelligence_maintenance.py dry-run <run-id>
+python scripts/article_intelligence_maintenance.py publish <run-id>
+```
+
+Configure `MAINTENANCE_PRODUCTION_URL`, `MAINTENANCE_API_TOKEN`, and optionally
+`MAINTENANCE_RUN_STORE_PATH`, `MAINTENANCE_OLLAMA_MODEL`, and
+`MAINTENANCE_HTTP_TIMEOUT_S`. Use the global `--env-file <path>` option before
+the subcommand to load a dedicated dotenv file. Final results are emitted as a
+single JSON object on stdout; progress and errors are emitted as JSON Lines on
+stderr for scheduler and automation compatibility. Reuse the reported run ID
+with `resume`, `dry-run`, or `publish` after interruption.
+
 ---
 
 ## Maintenance Notes

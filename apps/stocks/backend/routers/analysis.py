@@ -7,12 +7,8 @@ using news articles and market price data via Ollama.
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 from typing import List, Optional
-
-from dotenv import load_dotenv
-load_dotenv()
 
 from fastapi import APIRouter, HTTPException, Query, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,36 +19,60 @@ from backend.models.analysis import (
     NewsArticleRequest,
     OllamaConfigResponse,
     PriceDataRequest,
+    ProviderConfigResponse,
 )
 from backend.models.news import NewsArticle
 from backend.config.database import get_async_session
 from backend.services.report_service import create_report
 from backend.services.ollama_service import (
+    CURRENT_PROMPT_VERSION,
     generate_analysis,
+    get_effective_prompt_hash,
     get_ollama_config,
     check_ollama_connection,
     _get_timeout_for_model,
 )
 from backend.services.hybrid_data_service import get_hybrid_stock_price
 
+from backend.config.settings import settings
+from backend.services.ai.ai_service import resolve_provider_model
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 # Default fallback timeout (configurable via ANALYSIS_TIMEOUT_S env var)
-ANALYSIS_TIMEOUT = float(os.getenv("ANALYSIS_TIMEOUT_S", "900"))  # seconds (default 15 min)
+ANALYSIS_TIMEOUT = settings.ANALYSIS_TIMEOUT_S
+
+# Upper bound on how many articles can be sent to the LLM in one analysis.
+# Keeps prompt size (and cost) bounded regardless of how many articles the
+# picker surfaces for browsing.
+MAX_ARTICLES_PER_ANALYSIS = 40
 
 
 @router.get("/config", response_model=OllamaConfigResponse)
 async def analysis_get_config():
-    """Get current Ollama configuration and connection status."""
+    """Get current Ollama/AI provider configuration and connection status."""
     return await get_ollama_config()
+
+
+@router.get("/providers", response_model=ProviderConfigResponse)
+async def analysis_get_providers():
+    """
+    Get all available AI providers and their models.
+
+    Returns a list of providers (ollama, openai) with their availability status
+    and available models for each provider.
+    """
+    from backend.services.ollama_service import get_provider_config
+    return await get_provider_config()
 
 
 @router.post("/generate", response_model=FinancialAnalysisResponse)
 async def analysis_generate(
     request: FinancialAnalysisRequest,
-    model: Optional[str] = Query(None, description="Override default Ollama model"),
+    model: Optional[str] = Query(None, description="Override default model"),
+    provider: Optional[str] = Query(None, description="AI provider to use (ollama, openai)"),
     session: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -60,18 +80,13 @@ async def analysis_generate(
 
     Accepts news articles and price data, feeds them to the LLM,
     and returns a structured analysis report.
-    """
-    # Validate Ollama is reachable
-    connected = await check_ollama_connection()
-    if not connected:
-        raise HTTPException(
-            status_code=503,
-            detail="Ollama server is unreachable. Ensure Ollama is running on the configured endpoint.",
-        )
 
+    If provider is specified, uses that provider for generation.
+    Otherwise falls back to the globally configured AI_PROVIDER setting.
+    """
     try:
         result = await asyncio.wait_for(
-            generate_analysis(request, model=model),
+            generate_analysis(request, model=model, provider=provider),
             timeout=ANALYSIS_TIMEOUT,
         )
         result.current_price_at_analysis = request.price_data.current_price
@@ -81,28 +96,28 @@ async def analysis_generate(
             status_code=504,
             detail=f"Analysis generation timed out after {ANALYSIS_TIMEOUT}s",
         )
-    except RuntimeError as e:
-        logger.error(f"[Analysis] Generation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/articles/{ticker}")
 async def analysis_get_available_articles(
     ticker: str,
     days_back: int = Query(3, ge=1, le=14, description="Only consider articles from the last N days"),
+    limit: int = Query(100, ge=1, le=200, description="Max articles to return for browsing/selection"),
     session: AsyncSession = Depends(get_async_session),
 ):
     """
     Return available news articles for a ticker within the last N days.
-    
+
     Used by the frontend article picker so the user can manually select
-    which articles to include in an analysis.
+    which articles to include in an analysis. `limit` bounds how many
+    candidates are returned for browsing - raising `days_back` only surfaces
+    older articles if the window hasn't already been truncated by `limit`.
     """
     from datetime import timedelta
     from backend.models.news_schemas import NewsArticleOut
 
     from sqlalchemy import select, case
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    cutoff = datetime.now() - timedelta(days=days_back)
     # Use CASE to fall back to imported_at when pub_date is NULL
     effective_date = case(
         (NewsArticle.pub_date.isnot(None), NewsArticle.pub_date),
@@ -116,28 +131,49 @@ async def analysis_get_available_articles(
                 effective_date >= cutoff,
             )
             .order_by(effective_date.desc())
-            .limit(30)
+            .limit(limit)
         )
         articles = result.scalars().all()
     except Exception as e:
         logger.error(f"[Analysis] Failed to fetch available articles for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch articles: {e}")
 
+    import traceback
+    serialized = []
+    for a in articles:
+        try:
+            serialized.append(NewsArticleOut.model_validate(a).model_dump(mode='json'))
+        except Exception as se:
+            logger.warning(f"[Analysis] Failed to serialize article id={getattr(a, 'id', '?')}: {se}\n{traceback.format_exc()}")
+            # Fallback: manual dict construction for problematic rows
+            serialized.append({
+                "id": getattr(a, 'id', None),
+                "finnhub_id": getattr(a, 'finnhub_id', None),
+                "ticker": getattr(a, 'ticker', None),
+                "title": getattr(a, 'title', None),
+                "summary": getattr(a, 'summary', None),
+                "provider_name": getattr(a, 'provider_name', None),
+                "article_url": getattr(a, 'article_url', None),
+                "thumbnail_url": getattr(a, 'thumbnail_url', None),
+                "pub_date": getattr(a, 'pub_date', None).isoformat() if hasattr(a, 'pub_date') and a.pub_date else None,
+                "imported_at": getattr(a, 'imported_at', None).isoformat() if hasattr(a, 'imported_at') and a.imported_at else None,
+            })
     return {
         "ticker": ticker.upper(),
         "days_back": days_back,
         "count": len(articles),
-        "articles": [NewsArticleOut.model_validate(a).model_dump() for a in articles],
+        "articles": serialized,
     }
 
 
 @router.post("/analyze_ticker", response_model=FinancialAnalysisResponse)
 async def analysis_analyze_ticker(
     ticker: str = Body(..., embed=True, description="Ticker symbol to analyze"),
-    max_articles: int = Body(15, ge=1, le=30, description="Max news articles to include (default 15, max 30 for performance)"),
+    max_articles: int = Body(15, ge=1, le=MAX_ARTICLES_PER_ANALYSIS, description=f"Max news articles to include (default 15, max {MAX_ARTICLES_PER_ANALYSIS} for cost/performance)"),
     days_back: int = Body(3, ge=1, le=14, description="Only consider articles from the last N days (default 3, max 14)"),
-    model: Optional[str] = Body(None, embed=True, description="Override default Ollama model"),
-    article_ids: Optional[List[int]] = Body(None, embed=True, description="Optional list of specific article IDs to analyze (max 20). If not provided, auto-selects most recent articles."),
+    model: Optional[str] = Body(None, embed=True, description="Override default model"),
+    provider: Optional[str] = Body(None, embed=True, description="AI provider to use (ollama, openai)"),
+    article_ids: Optional[List[int]] = Body(None, embed=True, description=f"Optional list of specific article IDs to analyze (max {MAX_ARTICLES_PER_ANALYSIS}). If not provided, auto-selects most recent articles."),
     session: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -154,7 +190,7 @@ async def analysis_analyze_ticker(
     # 1. Fetch news articles for this ticker
     if article_ids is not None and len(article_ids) > 0:
         # Custom selection: fetch only the specified articles, but filter by ticker for safety
-        capped_ids = article_ids[:20]  # Enforce max 20 articles
+        capped_ids = article_ids[:MAX_ARTICLES_PER_ANALYSIS]
         try:
             result = await session.execute(
                 select(NewsArticle)
@@ -177,7 +213,7 @@ async def analysis_analyze_ticker(
         # Auto-selection: most recent articles filtered by recency
         from datetime import timedelta
         from sqlalchemy import case
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+        cutoff = datetime.now() - timedelta(days=days_back)
         # Use CASE to fall back to imported_at when pub_date is NULL
         effective_date = case(
             (NewsArticle.pub_date.isnot(None), NewsArticle.pub_date),
@@ -259,19 +295,13 @@ async def analysis_analyze_ticker(
     )
 
     # 4. Generate analysis
-    connected = await check_ollama_connection()
-    if not connected:
-        raise HTTPException(
-            status_code=503,
-            detail="Ollama server is unreachable.",
-        )
+    provider_name, model_name = resolve_provider_model(provider, model)
 
     try:
         # Use dynamic timeout based on model size (15 min small, 20 min large)
-        model_name = model or os.getenv("OLLAMA_MODEL", "unknown")
-        dyn_timeout = _get_timeout_for_model(model_name)
+        dyn_timeout = _get_timeout_for_model(model_name, provider_name)
         result = await asyncio.wait_for(
-            generate_analysis(analysis_request, model=model),
+            generate_analysis(analysis_request, model=model, provider=provider),
             timeout=dyn_timeout,
         )
 
@@ -279,14 +309,14 @@ async def analysis_analyze_ticker(
         result.current_price_at_analysis = current_price if current_price else None
 
         # 5. Save report to database
-        model_name = model or os.getenv("OLLAMA_MODEL", "unknown")
         report_id = await create_report(
             session=session,
             ticker=ticker.upper(),
             report_data=result.model_dump(),
             articles_count=len(news_requests),
             model_used=model_name,
-            prompt_version="1.0",
+            prompt_version=CURRENT_PROMPT_VERSION,
+            prompt_hash=get_effective_prompt_hash(analysis_request),
             current_price_at_analysis=current_price if current_price else None,
         )
         await session.commit()
@@ -298,6 +328,3 @@ async def analysis_analyze_ticker(
             status_code=504,
             detail=f"Analysis generation timed out after {dyn_timeout}s",
         )
-    except RuntimeError as e:
-        logger.error(f"[Analysis] Generation failed for {ticker}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))

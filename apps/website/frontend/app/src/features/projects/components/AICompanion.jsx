@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 const COOLDOWN_MS = 3000
 const LIMIT_WINDOW_MS = 30_000
 const MAX_MESSAGES_PER_WINDOW = 3
-const API_URL = import.meta.env.VITE_AI_API_BASE || 'https://api.yapvibes.com/api/openai'
+// No hardcoded fallback — VITE_AI_API_BASE must be set via .env
+const API_URL = import.meta.env.VITE_AI_API_BASE
 
 function formatTime(seconds) {
   return Math.max(0, Math.ceil(seconds)).toFixed(2)

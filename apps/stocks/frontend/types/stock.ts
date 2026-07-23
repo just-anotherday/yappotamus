@@ -310,14 +310,18 @@ export interface FinancialAnalysisReport {
   asset: string;
   overall_sentiment: "Very Bullish" | "Bullish" | "Neutral" | "Bearish" | "Very Bearish";
   confidence_score: number;
+  investment_rating?: "Strong Buy" | "Buy" | "Hold" | "Sell" | "Strong Sell" | null;
   articles_used: ArticleReference[];
   news_summary: string[];
   key_catalysts: string[];
   key_risks: KeyRisk[];
+  bull_case?: string[];
+  bear_case?: string[];
   market_reaction_analysis: string;
   technical_analysis: TechnicalAnalysisData;
   outlook: OutlookData;
   actionable_insights: string[];
+  portfolio_fit?: string | null;
   executive_summary: string;
   current_price_at_analysis?: number | null;
 }
@@ -348,6 +352,8 @@ export interface ReportSummary {
   articles_count: number;
   current_price_at_analysis: number | null;
   model_used: string;
+  prompt_version: string;
+  prompt_hash: string | null;
   created_at: string; // ISO timestamp
 }
 
@@ -367,6 +373,7 @@ export interface ReportDetail {
   days_back: number;
   model_used: string;
   prompt_version: string;
+  prompt_hash: string | null;
   current_price_at_analysis: number | null;
   created_at: string; // ISO timestamp
 }
