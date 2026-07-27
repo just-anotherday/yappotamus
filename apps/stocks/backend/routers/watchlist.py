@@ -87,6 +87,7 @@ async def get_watchlist(
             ticker_key = item.get("ticker", "")
             if ticker_key and ticker_key in pm_data:
                 item.update(pm_data[ticker_key])
+        MarketDataService.get_instance().seed_reference_quotes(results)
         return [WatchlistItem(**item) for item in results]
     except HTTPException:
         raise
@@ -139,6 +140,7 @@ async def add_to_watchlist(
         item = await _get_stock_price_safe(ticker)
         if not item:
             raise HTTPException(status_code=404, detail=f"Ticker {ticker} not found")
+        market_data.seed_reference_quotes([item])
         watchlist_item = WatchlistItem(**item)
         return WatchlistResponse(
             success=True,

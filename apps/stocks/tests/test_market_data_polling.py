@@ -59,6 +59,32 @@ def test_only_changed_quotes_are_broadcast():
     assert service._broadcast.call_count == 1
 
 
+def test_reference_quote_seeding_corrects_live_change_without_replacing_live_price():
+    service = MarketDataService()
+    service.latest_quotes["AAA"] = {
+        "ticker": "AAA",
+        "price": 102.0,
+        "change": 0.0,
+        "change_percent": 0.0,
+        "volume": 20,
+        "previous_close": 102.0,
+    }
+    service._broadcast = MagicMock(return_value=True)
+
+    assert service.seed_reference_quotes([
+        {"ticker": "AAA", "current_price": 101.0, "previous_close": 100.0, "volume": 10}
+    ]) == 1
+    assert service.latest_quotes["AAA"] == {
+        "ticker": "AAA",
+        "price": 102.0,
+        "change": 2.0,
+        "change_percent": 2.0,
+        "volume": 20,
+        "previous_close": 100.0,
+    }
+    service._broadcast.assert_called_once_with(service.latest_quotes["AAA"])
+
+
 def test_single_flight_rejects_overlapping_cycle():
     service = MarketDataService()
     service._poll_guard.acquire()

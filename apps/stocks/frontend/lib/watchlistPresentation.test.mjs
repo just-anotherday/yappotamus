@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canReorderWatchlist, presentWatchlist, watchlistColumnCount } from './watchlistPresentation.ts';
+import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from './watchlistPresentation.ts';
 
 const item = (ticker, company_name, current_price, previous_close, market_cap) => ({ ticker, company_name, current_price, previous_close, market_cap });
 const items = [item('BBB', 'Beta', 90, 100, 20), item('AAA', 'Alpha', 110, 100, 10)];
@@ -18,6 +18,12 @@ test('sorts ticker, change, market cap and filters movers', () => {
   assert.deepEqual(presentWatchlist(items, [], {}, '', 'market-cap', 'all').map(x => x.ticker), ['BBB', 'AAA']);
   assert.deepEqual(presentWatchlist(items, [], {}, '', 'custom', 'gainers').map(x => x.ticker), ['AAA']);
   assert.deepEqual(presentWatchlist(items, [], {}, '', 'custom', 'losers').map(x => x.ticker), ['BBB']);
+});
+
+test('prefers the live change percentage and falls back to the live previous close', () => {
+  const base = item('AAA', 'Alpha', 110, 100, 10);
+  assert.equal(getWatchlistChange(base, { ticker: 'AAA', price: 120, change: 1, change_percent: 1.25, volume: 1 }), 1.25);
+  assert.equal(getWatchlistChange({ ...base, previous_close: 0 }, { ticker: 'AAA', price: 102, change: 2, change_percent: null, volume: 1, previous_close: 100 }), 2);
 });
 
 test('reordering is limited to the unfiltered custom view', () => {

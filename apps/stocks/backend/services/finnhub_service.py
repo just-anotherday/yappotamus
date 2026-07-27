@@ -156,9 +156,12 @@ async def fetch_company_profile(ticker: str) -> Dict[str, Any]:
     client = get_finnhub_client()
     try:
         profile = await _retry_api(_do_profile, client, ticker)
-        # company_profile2 returns a list; take first match
-        if profile and len(profile) > 0:
-            return profile[0]
+        # finnhub-python 2.x returns profile2 as a dict. Accept the legacy list
+        # shape as well so an SDK change cannot silently erase fundamentals.
+        if isinstance(profile, dict):
+            return profile
+        if isinstance(profile, list):
+            return next((item for item in profile if isinstance(item, dict)), {})
         # Empty result is expected for ETFs, indices, etc. — don't spam logs
         if ticker.upper() in KNOWN_NON_STOCK_SYMBOLS:
             logger.debug("[Finnhub] %s is a non-stock symbol (ETF/index), no profile available.", ticker)
@@ -207,6 +210,13 @@ async def get_ticker_info(ticker: str) -> Dict[str, Any]:
         logger.error("[Finnhub] No data available for %s", ticker)
         return {}
 
+    market_cap = (profile.get("marketCapitalization") or 0) * 1_000_000
+    if profile.get("shareOutstanding") is not None:
+        shares_outstanding = (profile.get("shareOutstanding") or 0) * 1_000_000
+    else:
+        # Preserve the former plural-key contract as an absolute-unit fallback.
+        shares_outstanding = profile.get("sharesOutstanding") or 0
+
     # Merge into the same structure expected by downstream consumers
     info: Dict[str, Any] = {
         # Identity (from profile or quote)
@@ -229,8 +239,10 @@ async def get_ticker_info(ticker: str) -> Dict[str, Any]:
         "regularMarketChangePercent": _safe_pct(quote.get("d", 0), quote.get("pc", 1)),
 
         # Market cap + fundamentals (from profile)
-        "marketCap": profile.get("marketCapitalization") or 0,
-        "sharesOutstanding": profile.get("sharesOutstanding") or 0,
+        # Finnhub reports marketCapitalization in millions; the public API and
+        # frontend use absolute currency units.
+        "marketCap": market_cap,
+        "sharesOutstanding": shares_outstanding,
         "floatShares": profile.get("dilutedSharesOutstanding") or 0,
 
         # Risk indicators (best-effort from profile)

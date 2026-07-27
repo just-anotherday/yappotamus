@@ -130,6 +130,40 @@ class MarketDataService:
         with self._lock:
             return self.latest_quotes.get(ticker.strip().upper())
 
+    def seed_reference_quotes(self, items: List[Dict[str, Any]]) -> int:
+        """Seed prior-close baselines from the authoritative REST quote response.
+
+        The minute-bar poll stays lightweight while Finnhub's prior close keeps
+        WebSocket daily change values accurate. Existing live prices win over
+        the slightly older REST price when both are available.
+        """
+        seeded = 0
+        for item in items:
+            ticker = str(item.get("ticker") or "").strip().upper()
+            previous_close = _finite_positive(item.get("previous_close"))
+            if not ticker or previous_close is None:
+                continue
+            with self._lock:
+                previous = self.latest_quotes.get(ticker, {})
+                price = _finite_positive(previous.get("price")) or _finite_positive(item.get("current_price"))
+                if price is None:
+                    continue
+                change = round(price - previous_close, 4)
+                quote = {
+                    "ticker": ticker,
+                    "price": price,
+                    "change": change,
+                    "change_percent": round(change / previous_close * 100, 4),
+                    "volume": int(previous.get("volume") or item.get("volume") or 0),
+                    "previous_close": previous_close,
+                }
+                changed = quote != previous
+                self.latest_quotes[ticker] = quote
+            seeded += 1
+            if changed:
+                self._broadcast(quote)
+        return seeded
+
     def start(self, default_tickers: Optional[List[str]] = None) -> None:
         if self._running:
             logger.warning("[MarketData] already_running=true")

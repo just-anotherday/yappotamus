@@ -110,6 +110,7 @@ export interface LiveQuote {
   change: number | null;
   change_percent: number | null;
   volume: number;
+  previous_close?: number | null;
 }
 
 export interface StockNews {

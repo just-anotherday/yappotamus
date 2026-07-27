@@ -4,8 +4,10 @@ export type WatchlistSort = 'custom' | 'ticker' | 'change' | 'market-cap';
 export type WatchlistDirectionFilter = 'all' | 'gainers' | 'losers';
 
 export function getWatchlistChange(item: WatchlistItem, live?: LiveQuote): number | null {
+  if (live?.change_percent != null && Number.isFinite(live.change_percent)) return live.change_percent;
   const price = live?.price ?? item.current_price;
-  return item.previous_close > 0 ? ((price - item.previous_close) / item.previous_close) * 100 : null;
+  const previousClose = live?.previous_close ?? item.previous_close;
+  return previousClose > 0 ? ((price - previousClose) / previousClose) * 100 : null;
 }
 
 export function presentWatchlist(
