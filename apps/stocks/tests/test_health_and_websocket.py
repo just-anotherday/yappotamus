@@ -16,6 +16,51 @@ def test_health_liveness_is_lightweight():
     assert response.json() == {"status": "healthy"}
 
 
+def test_health_instantiates_registered_ai_providers(monkeypatch):
+    class AvailableProvider:
+        def __init__(self):
+            self.initialized = True
+
+        async def is_available(self):
+            return self.initialized
+
+    class EmptyResult:
+        def all(self):
+            return []
+
+        def scalar_one_or_none(self):
+            return None
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, statement):
+            return EmptyResult()
+
+    class FakeSessionFactory:
+        def __call__(self):
+            return FakeSession()
+
+    worker = MagicMock()
+    worker._running = True
+    monkeypatch.setattr(app.state, "ai_worker", worker)
+    monkeypatch.setattr("backend.main.async_session_factory", FakeSessionFactory())
+    monkeypatch.setattr(
+        "backend.services.ai.ProviderRegistry.get", lambda provider_id: AvailableProvider
+    )
+
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dependencies"]["openai"]["status"] == "available"
+    assert payload["dependencies"]["ollama"]["status"] == "available"
+
+
 def test_websocket_rejects_missing_token():
     client = TestClient(app)
     with pytest.raises(WebSocketDisconnect) as exc_info:

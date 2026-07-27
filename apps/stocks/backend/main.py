@@ -317,7 +317,10 @@ def create_app() -> FastAPI:
         provider_status = {}
         for provider_id in ("openai", "ollama"):
             try:
-                provider = ProviderRegistry.get(provider_id)
+                provider_class = ProviderRegistry.get(provider_id)
+                if provider_class is None:
+                    raise LookupError(f"AI provider is not registered: {provider_id}")
+                provider = provider_class()
                 available = await asyncio.wait_for(provider.is_available(), timeout=1.5)
                 provider_status[provider_id] = {"status": "available" if available else "unavailable"}
             except Exception:
