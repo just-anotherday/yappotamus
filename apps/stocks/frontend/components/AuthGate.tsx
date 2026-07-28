@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { API_BASE } from '@/types/stock';
+import { API_BASE } from '@/lib/serviceUrls';
 import {
   apiFetch,
   clearAppToken,
@@ -9,6 +9,7 @@ import {
   setAppToken,
   AUTH_INVALID_EVENT,
 } from '@/lib/apiFetch';
+import { ApiError, requireOk } from '@/lib/apiError';
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [unlocked, setUnlocked] = useState(false);
@@ -39,19 +40,18 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
     try {
       const response = await apiFetch(`${API_BASE}/api/auth/verify`);
-      if (!response.ok) {
-        clearAppToken();
-        setUnlocked(false);
-        setError('Unable to verify the access token. Please try again.');
-        return;
-      }
+      await requireOk(response, 'Unable to verify the access token. Please try again.');
 
       setUnlocked(true);
       setInput('');
-    } catch {
+    } catch (requestError) {
       clearAppToken();
       setUnlocked(false);
-      setError('Unable to reach the API. Check the connection and try again.');
+      setError(
+        requestError instanceof ApiError
+          ? requestError.message
+          : 'Unable to reach the API. Check the connection and try again.',
+      );
     } finally {
       setValidating(false);
     }

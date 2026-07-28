@@ -1,3 +1,5 @@
+import { normalizeFetchError } from '@/lib/apiError';
+
 // ==============================================================================
 // APP ACCESS TOKEN - single-user auth (sessionStorage-backed fetch wrapper)
 // ==============================================================================
@@ -54,7 +56,12 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
   const headers = new Headers(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
-  const res = await fetch(input, { ...init, headers });
+  let res: Response;
+  try {
+    res = await fetch(input, { ...init, headers });
+  } catch (error) {
+    throw normalizeFetchError(error);
+  }
 
   if (res.status === 401) {
     invalidateAppToken();

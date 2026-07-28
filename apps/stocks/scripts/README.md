@@ -45,6 +45,7 @@ Ad-hoc management and diagnostic scripts for the Stock Data Dashboard project.
 | `check_author_provider.py` | Inspect author and provider fields in news data | ✅ Read-only | |
 | `check_yf_voo.py` | Test yfinance data for VOO specifically | ✅ Read-only | Debug helper |
 | `test_yf_fallback.py` | Test yfinance fallback functionality | ✅ Read-only | |
+| `diagnose_watchlist_symbols.py` | Print normalized SPY/QQQ/SPCX/AAPL watchlist payloads without credentials | ? Read-only | Accepts optional ticker arguments |
 
 ### Data Modification
 

@@ -3,11 +3,181 @@ import type { LiveQuote, WatchlistItem } from '@/types/stock';
 export type WatchlistSort = 'custom' | 'ticker' | 'change' | 'market-cap';
 export type WatchlistDirectionFilter = 'all' | 'gainers' | 'losers';
 
+export function isFiniteWatchlistNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+export function formatWatchlistCurrency(value: unknown): string {
+  if (!isFiniteWatchlistNumber(value)) return 'N/A';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD',
+  }).format(value);
+}
+
+export function formatWatchlistNumber(value: unknown, decimals = 2): string {
+  return isFiniteWatchlistNumber(value) ? value.toFixed(decimals) : 'N/A';
+}
+
+export function formatWatchlistRecommendation(value: unknown): string {
+  return typeof value === 'string' && value.trim()
+    ? value.replace('_', ' ').toUpperCase()
+    : 'N/A';
+}
+
+function sortableMarketCap(value: unknown): number {
+  return isFiniteWatchlistNumber(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+const PRESERVE_WHEN_MISSING: readonly (keyof WatchlistItem)[] = [
+  'symbol',
+  'company_name',
+  'sector',
+  'industry',
+  'long_business_summary',
+  'website',
+  'full_time_employees',
+  'average_analyst_rating',
+  'forward_pe',
+  'ceo_name',
+  'exchange',
+  'security_type',
+  'shares_outstanding',
+  'float_shares',
+  'insider_percent',
+  'institution_percent',
+  'short_percent_of_float',
+  'shares_short',
+  'target_mean_price',
+  'target_median_price',
+  'target_high_price',
+  'target_low_price',
+  'recommendation_key',
+  'number_of_analysts',
+];
+
+const PRESERVE_WHEN_ZERO: readonly (keyof WatchlistItem)[] = [
+  'current_price',
+  'open_price',
+  'previous_close',
+  'day_low',
+  'day_high',
+  'fifty_two_week_high',
+  'fifty_two_week_low',
+  'market_cap',
+  'volume',
+  'full_time_employees',
+  'shares_outstanding',
+  'float_shares',
+  'shares_short',
+  'target_mean_price',
+  'target_median_price',
+  'target_high_price',
+  'target_low_price',
+  'number_of_analysts',
+];
+
+function isMissingRefreshValue(value: unknown): boolean {
+  return value == null || (typeof value === 'string' && value.trim() === '');
+}
+
+function preserveField<K extends keyof WatchlistItem>(
+  result: WatchlistItem,
+  previous: WatchlistItem,
+  field: K,
+): void {
+  result[field] = previous[field];
+}
+
+function preserveObjectField<T, K extends keyof T>(
+  result: T,
+  previous: T,
+  field: K,
+): void {
+  result[field] = previous[field];
+}
+function mergeEtfData(
+  previous: NonNullable<WatchlistItem['etf_data']>,
+  incoming: NonNullable<WatchlistItem['etf_data']>,
+): NonNullable<WatchlistItem['etf_data']> {
+  const merged = { ...previous, ...incoming };
+  for (const field of Object.keys(previous) as (keyof typeof previous)[]) {
+    if (isMissingRefreshValue(incoming[field])) preserveObjectField(merged, previous, field);
+  }
+  return merged;
+}
+
+/**
+ * Keep last-known fundamentals when a full REST refresh returns a sparse or
+ * per-symbol error shell. Incoming quotes still replace valid quote fields.
+ * The incoming list remains authoritative for membership and ordering.
+ */
+export function mergeWatchlistRefresh(
+  previousItems: WatchlistItem[],
+  incomingItems: WatchlistItem[],
+): WatchlistItem[] {
+  const previousByTicker = new Map(previousItems.map(item => [item.ticker, item]));
+
+  return incomingItems.map(incoming => {
+    const previous = previousByTicker.get(incoming.ticker);
+    if (!previous) return incoming;
+
+    const isErrorShell = incoming.company_name?.trim().toLowerCase() === 'error'
+      || incoming.recommendation_key?.trim().toLowerCase() === 'error';
+    if (isErrorShell) {
+      return {
+        ...previous,
+        post_market_price: incoming.post_market_price ?? previous.post_market_price,
+        post_market_change: incoming.post_market_change ?? previous.post_market_change,
+        post_market_change_percent: incoming.post_market_change_percent ?? previous.post_market_change_percent,
+      };
+    }
+
+    const merged: WatchlistItem = { ...previous, ...incoming };
+    for (const field of PRESERVE_WHEN_MISSING) {
+      if (isMissingRefreshValue(incoming[field])) preserveField(merged, previous, field);
+    }
+    for (const field of PRESERVE_WHEN_ZERO) {
+      const prior = previous[field];
+      if (incoming[field] === 0 && typeof prior === 'number' && prior > 0) {
+        preserveField(merged, previous, field);
+      }
+    }
+
+    const incomingCompany = incoming.company_name?.trim().toUpperCase();
+    const incomingTicker = incoming.ticker.trim().toUpperCase();
+    if (incomingCompany === incomingTicker && previous.company_name.trim().toUpperCase() !== incomingTicker) {
+      merged.company_name = previous.company_name;
+    }
+    if (incoming.security_type === 'UNKNOWN' && previous.security_type && previous.security_type !== 'UNKNOWN') {
+      merged.security_type = previous.security_type;
+    }
+    if (incoming.recommendation_key === 'N/A' && previous.recommendation_key !== 'N/A') {
+      merged.recommendation_key = previous.recommendation_key;
+    }
+
+    merged.etf_data = incoming.etf_data == null
+      ? previous.etf_data
+      : previous.etf_data == null
+        ? incoming.etf_data
+        : mergeEtfData(previous.etf_data, incoming.etf_data);
+
+    return merged;
+  });
+}
+
+export function getWatchlistDisplayPrice(item: WatchlistItem, live?: LiveQuote): number | null {
+  const value = live?.price ?? item.current_price;
+  return isFiniteWatchlistNumber(value) && value > 0 ? value : null;
+}
+
 export function getWatchlistChange(item: WatchlistItem, live?: LiveQuote): number | null {
   if (live?.change_percent != null && Number.isFinite(live.change_percent)) return live.change_percent;
   const price = live?.price ?? item.current_price;
   const previousClose = live?.previous_close ?? item.previous_close;
-  return previousClose > 0 ? ((price - previousClose) / previousClose) * 100 : null;
+  if (!isFiniteWatchlistNumber(price) || !isFiniteWatchlistNumber(previousClose) || previousClose <= 0) {
+    return null;
+  }
+  return ((price - previousClose) / previousClose) * 100;
 }
 
 export function presentWatchlist(
@@ -30,7 +200,7 @@ export function presentWatchlist(
   if (sort === 'custom') return filtered;
   return [...filtered].sort((a, b) => {
     if (sort === 'ticker') return a.ticker.localeCompare(b.ticker);
-    if (sort === 'market-cap') return b.market_cap - a.market_cap;
+    if (sort === 'market-cap') return sortableMarketCap(b.market_cap) - sortableMarketCap(a.market_cap);
     return (getWatchlistChange(b, livePrices[b.ticker]) ?? -Infinity) - (getWatchlistChange(a, livePrices[a.ticker]) ?? -Infinity);
   });
 }

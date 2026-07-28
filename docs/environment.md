@@ -22,7 +22,7 @@ Complete reference for all environment variables across every service in this mo
 ```
 Cloudflare Pages (Frontend)
   ↓ HTTPS API calls
-Railway (FastAPI Backend)
+Render (FastAPI Backend)
   ↓ PostgreSQL
 Supabase (Database)
   ↓ REST API
@@ -48,15 +48,15 @@ All backend variables are managed through `apps/stocks/backend/config/settings.p
 
 | Variable | Description | Required When | Default | Local Value | Production Value |
 |----------|-------------|---------------|---------|-------------|------------------|
-| `OPENAI_API_KEY` | OpenAI API key | `AI_PROVIDER=openai` | — | — | Set in Railway |
+| `OPENAI_API_KEY` | OpenAI API key | `AI_PROVIDER=openai` | — | — | Set in Render |
 
 ### Optional Variables (Recommended)
 
 | Variable | Description | Default | Local Value | Production Value |
 |----------|-------------|---------|-------------|------------------|
 | `SUPABASE_URL` | Supabase project URL for image proxy | — | Local Supabase URL | Production Supabase URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key for server-side operations | — | Local service key | Production service key (Railway) |
-| `FINNHUB_API_KEY` | Finnhub API key for market data + news | — | Your Finnhub key | Set in Railway |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key for server-side operations | — | Local service key | Production service key (Render) |
+| `FINNHUB_API_KEY` | Finnhub API key for market data + news | — | Your Finnhub key | Set in Render |
 
 ### AI Provider Configuration
 
@@ -111,6 +111,10 @@ Production defaults include:
 | `AI_WORKER_POLL_INTERVAL_S` | How often to poll for jobs (seconds) | `5-10` |
 | `AI_WORKER_MAX_CONCURRENT` | Max concurrent AI jobs | `2` |
 | `AI_WORKER_QUEUE_TIMEOUT_S` | Job timeout (seconds) | `1800` |
+| `AI_JOB_LEASE_SECONDS` | Worker lease duration | `120` |
+| `AI_JOB_HEARTBEAT_SECONDS` | Lease heartbeat interval | `30` |
+| `AI_STALE_JOB_THRESHOLD_SECONDS` | Minimum processing age before recovery | `3600` |
+| `AI_STALE_JOB_RECOVERY_ENABLED` | Enable verified stale-job state transitions | `false` |
 
 ### WebSocket Market Data
 
@@ -130,8 +134,8 @@ Managed through Next.js `.env` files in `apps/stocks/frontend/`.
 
 | Variable | Description | Required | Local Value | Production Value |
 |----------|-------------|----------|-------------|------------------|
-| `NEXT_PUBLIC_API_URL` | Backend API base URL | ✅ Yes | `http://localhost:8000` | Railway API URL |
-| `NEXT_PUBLIC_WS_URL` | WebSocket connection URL | ✅ Yes | `ws://localhost:8000` | Railway WebSocket URL |
+| `NEXT_PUBLIC_API_BASE` | Backend API base URL | ✅ Yes | `http://localhost:8000` | `https://yapvibes-stocks-api.onrender.com` |
+| `NEXT_PUBLIC_WS_URL` | Optional WebSocket override | No | `ws://localhost:8000/ws` | Derived from API base |
 
 ### Optional Variables
 
@@ -187,7 +191,7 @@ Managed through `apps/website/backend/ai-generator-backend/.env`.
 apps/stocks/
   .env.example          # ✅ Committed - template
   .env                  # ❌ Local dev (gitignored)
-  .env.production       # ✅ Production values for Railway
+  .env.production       # ✅ Production values for Render
 
 apps/stocks/frontend/
   .env.example          # ✅ Committed - template
@@ -230,9 +234,9 @@ from backend.config.settings import settings
 db_url = settings.DATABASE_URL
 ```
 
-#### Railway Deployment
+#### Render Deployment
 
-Railway reads environment variables directly from the dashboard. No `.env` file is mounted. All variables configured in Railway's environment settings take precedence.
+Render reads environment variables directly from the dashboard. No `.env` file is mounted. All variables configured in Render's environment settings take precedence.
 
 #### Cloudflare Pages (Frontend)
 
@@ -242,9 +246,9 @@ Cloudflare Pages reads environment variables from the Pages project settings. On
 
 ## Deployment Configuration
 
-### Railway (Backend)
+### Render (Backend)
 
-Configure these variables in Railway's project settings:
+Configure these variables in Render's project settings:
 
 ```
 DATABASE_URL=postgresql://...
@@ -261,8 +265,8 @@ CORS_ORIGINS=https://stocks.yapvibes.com,https://yapvibes-stocks.pages.dev
 Configure these in Cloudflare Pages environment settings:
 
 ```
-NEXT_PUBLIC_API_URL=https://api.yapvibes.com
-NEXT_PUBLIC_WS_URL=wss://api.yapvibes.com
+NEXT_PUBLIC_API_BASE=https://yapvibes-stocks-api.onrender.com
+# NEXT_PUBLIC_WS_URL is optional and derived from NEXT_PUBLIC_API_BASE
 ```
 
 ### Docker
@@ -295,7 +299,7 @@ The following hardcoded values were replaced with environment variables:
 
 | Original | Replacement Variable | Location |
 |----------|---------------------|----------|
-| `http://localhost:8000` in frontend | `NEXT_PUBLIC_API_URL` | Frontend API calls |
+| `http://localhost:8000` in frontend | `NEXT_PUBLIC_API_BASE` | Frontend API calls |
 | `ws://localhost:8000` in frontend | `NEXT_PUBLIC_WS_URL` | WebSocket connections |
 | Inline CORS list in `main.py` | `CORS_ORIGINS` env var | Backend CORS middleware |
 
@@ -304,7 +308,7 @@ The following hardcoded values were replaced with environment variables:
 ## Security Notes
 
 1. **Never commit `.env` files** containing secrets to git
-2. **Use Railway dashboard** for production secret management
+2. **Use Render dashboard** for production secret management
 3. **Use Cloudflare Pages settings** for frontend production variables
 4. **`.env.example`** files serve as templates and should include all variable names with placeholder values
 5. **Supabase service role key** is a high-privilege key — only use server-side, never expose to the browser
@@ -323,6 +327,6 @@ The following hardcoded values were replaced with environment variables:
 
 ### Production Deployment
 
-1. Set Railway environment variables in dashboard
+1. Set Render environment variables in dashboard
 2. Set Cloudflare Pages environment variables in project settings
 3. Deploy via GitHub Actions or manual trigger

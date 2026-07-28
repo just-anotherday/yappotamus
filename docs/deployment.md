@@ -38,7 +38,7 @@ YapVibes Monorepo
 | `yapvibes.com` | Website frontend | Static SPA | Cloudflare Pages |
 | `projects.yapvibes.com` | Projects app | Static SPA | Cloudflare Pages |
 | `stocks.yapvibes.com` | Stocks frontend | Next.js (SSR/SSG hybrid) | Cloudflare Pages or Vercel |
-| `api.yapvibes.com` | FastAPI backend | Python API | Render / Railway / Fly.io |
+| `yapvibes-stocks-api.onrender.com` | Stocks FastAPI backend | Python API | Render |
 
 ### DNS Configuration
 
@@ -46,7 +46,7 @@ YapVibes Monorepo
 yapvibes.com           → CNAME → Cloudflare Pages (website)
 projects.yapvibes.com  → CNAME → Cloudflare Pages (projects)
 stocks.yapvibes.com    → CNAME → Cloudflare Pages/Vercel (stocks frontend)
-api.yapvibes.com       → CNAME → Backend provider (Render/Railway/Fly.io)
+yapvibes-stocks-api.onrender.com → Render-hosted stocks backend
 ```
 
 ---
@@ -148,7 +148,7 @@ pip install -r requirements.txt   # No compilation needed for FastAPI
 |----------|----------|-------------|
 | (inferred from backend CORS) | No | Next.js frontend calls backend via API routes or direct CORS |
 
-> **Note:** The stocks frontend currently has no `.env` file. If it needs to call the backend directly, configure `NEXT_PUBLIC_API_URL`.
+> **Note:** The stocks frontend uses `apps/stocks/frontend/.env.production`; mirror its `NEXT_PUBLIC_API_BASE` value in the Cloudflare production build environment.
 
 ### Stocks Backend (`apps/stocks/.env`)
 
@@ -326,7 +326,7 @@ Add to each app's `package.json`:
 - [ ] `yapvibes.com` loads website frontend
 - [ ] `projects.yapvibes.com` loads projects app with Supabase auth
 - [ ] `stocks.yapvibes.com` loads stocks dashboard
-- [ ] `api.yapvibes.com` responds to API requests
+- [ ] `yapvibes-stocks-api.onrender.com` responds to stocks API requests
 - [ ] CORS is configured correctly between all origins
 - [ ] HTTPS works on all subdomains
 

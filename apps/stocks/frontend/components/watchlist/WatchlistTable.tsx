@@ -9,11 +9,20 @@ import Link from 'next/link';
 import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { formatCurrency, formatLargeNumber, formatShares, formatPercent, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
+import { formatLargeNumber, formatShares, formatPercent, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
 import type { WatchlistItem, LiveQuote } from '@/types/stock';
 import TickerTooltip from './TickerTooltip';
 import { useExtendedHours } from '@/hooks/useExtendedHours';
-import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from '@/lib/watchlistPresentation';
+import {
+  canReorderWatchlist,
+  formatWatchlistCurrency,
+  formatWatchlistNumber,
+  formatWatchlistRecommendation,
+  getWatchlistDisplayPrice,
+  getWatchlistChange,
+  presentWatchlist,
+  watchlistColumnCount,
+} from '@/lib/watchlistPresentation';
 import type { WatchlistDirectionFilter, WatchlistSort } from '@/lib/watchlistPresentation';
 
 interface WatchlistTableProps {
@@ -128,6 +137,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
 
   // Market cap classification per financial standards
   function marketCapLabel(mc: number): { label: string; color: string } {
+    if (!Number.isFinite(mc) || mc <= 0) return { label: 'Unknown Cap', color: 'bg-gray-100 text-gray-700' };
     if (mc >= 200_000_000_000) return { label: 'Mega Cap', color: 'bg-purple-100 text-purple-700' };
     if (mc >= 10_000_000_000) return { label: 'Large Cap', color: 'bg-emerald-100 text-emerald-700' };
     if (mc >= 2_000_000_000) return { label: 'Mid Cap', color: 'bg-cyan-100 text-cyan-700' };
@@ -251,7 +261,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                 const isExpanded = expandedTickers.has(item.ticker);
 
                 // Use live price if available, fall back to static fundamental data
-                const displayPrice = live?.price ?? item.current_price;
+                const displayPrice = getWatchlistDisplayPrice(item, live);
 
                 const displayChangePct = getWatchlistChange(item, live) ?? undefined;
 
@@ -279,7 +289,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                           ? 'bg-red-200'
                           : ''
                       }`} onClick={() => safeToggleExpand(item.ticker)}>
-                        {formatCurrency(displayPrice)}
+                        {formatWatchlistCurrency(displayPrice)}
                       </td>
                       <td className={`px-3 py-2.5 text-right font-medium ${
                         displayChangePct != null && displayChangePct > 0 ? 'text-green-600'
@@ -300,7 +310,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                             : 'text-gray-400'
                         }`} onClick={() => safeToggleExpand(item.ticker)}>
                           {item.post_market_price != null && item.post_market_price > 0 
-                            ? formatCurrency(item.post_market_price)
+                            ? formatWatchlistCurrency(item.post_market_price)
                             : '\u2014'}
                         </td>
                       )}
@@ -378,8 +388,8 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${capInfo.color}`}>
                                          {capInfo.label}
                                        </span>
-                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${recommendationBadgeClass(item.recommendation_key)}`}>
-                                          {item.recommendation_key.replace('_', ' ').toUpperCase()}
+                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${recommendationBadgeClass(typeof item.recommendation_key === 'string' ? item.recommendation_key : 'N/A')}`}>
+                                          {formatWatchlistRecommendation(item.recommendation_key)}
                                         </span>
                                       </>
                                     );
@@ -429,23 +439,23 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Open</span>
-                                  <span className="font-semibold text-gray-900">{formatCurrency(item.open_price)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.open_price)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Prev Close</span>
-                                  <span className="font-semibold text-gray-900">{formatCurrency(item.previous_close)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.previous_close)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Day Low</span>
-                                  <span className="font-semibold text-gray-900">{formatCurrency(item.day_low)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.day_low)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Day High</span>
-                                  <span className="font-semibold text-gray-900">{formatCurrency(item.day_high)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.day_high)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>52W Range</span>
-                                  <span className="font-semibold text-gray-900">{formatCurrency(item.fifty_two_week_low)} - {formatCurrency(item.fifty_two_week_high)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.fifty_two_week_low)} - {formatWatchlistCurrency(item.fifty_two_week_high)}</span>
                                 </div>
                               </div>
                             </div>
@@ -466,33 +476,33 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-green-200 shadow-sm">
                                   <span className="text-green-600 font-medium" style={{ fontSize: '10px' }}>▲ High Target</span>
                                   <span className={`font-semibold ${item.target_high_price != null ? 'text-green-700' : 'text-gray-400'}`}>
-                                    {item.target_high_price ? formatCurrency(item.target_high_price) : 'N/A'}
+                                    {formatWatchlistCurrency(item.target_high_price)}
                                   </span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-blue-200 shadow-sm">
                                   <span className="text-blue-600 font-medium" style={{ fontSize: '10px' }}>◆ Mean Target</span>
                                   <span className={`font-semibold ${
-                                    item.target_mean_price != null && displayPrice > 0
+                                    item.target_mean_price != null && displayPrice != null && displayPrice > 0
                                       ? (item.target_mean_price > displayPrice ? 'text-green-600' : item.target_mean_price < displayPrice ? 'text-red-600' : 'text-gray-500')
                                       : 'text-gray-400'
                                   }`}>
-                                    {item.target_mean_price ? formatCurrency(item.target_mean_price) : 'N/A'}
+                                    {formatWatchlistCurrency(item.target_mean_price)}
                                   </span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-blue-200 shadow-sm">
                                   <span className="text-blue-600 font-medium" style={{ fontSize: '10px' }}>◆ Median Target</span>
                                   <span className={`font-semibold ${
-                                    item.target_median_price != null && displayPrice > 0
+                                    item.target_median_price != null && displayPrice != null && displayPrice > 0
                                       ? (item.target_median_price > displayPrice ? 'text-green-600' : item.target_median_price < displayPrice ? 'text-red-600' : 'text-gray-500')
                                       : 'text-gray-400'
                                   }`}>
-                                    {item.target_median_price ? formatCurrency(item.target_median_price) : 'N/A'}
+                                    {formatWatchlistCurrency(item.target_median_price)}
                                   </span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-red-200 shadow-sm">
                                   <span className="text-red-600 font-medium" style={{ fontSize: '10px' }}>▼ Low Target</span>
                                   <span className={`font-semibold ${item.target_low_price != null ? 'text-red-700' : 'text-gray-400'}`}>
-                                    {item.target_low_price ? formatCurrency(item.target_low_price) : 'N/A'}
+                                    {formatWatchlistCurrency(item.target_low_price)}
                                   </span>
                                 </div>
                               </div>
@@ -638,7 +648,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Beta</span>
-                                  <span className="font-semibold text-gray-900">{item.beta.toFixed(2)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistNumber(item.beta)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Short % of Float</span>
@@ -647,7 +657,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Overall Risk</span>
                                   <span className={`font-semibold ${riskBadgeClass(item.overall_risk).replace('bg-*', '').split(' ').pop() || ''}`}>
-                                    {item.overall_risk} / 10
+                                    {formatWatchlistNumber(item.overall_risk, 1)} / 10
                                   </span>
                                 </div>
                               </div>

@@ -4,40 +4,42 @@
 
 ```
 Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
-├── Cloudflare Worker   ──▶   Railway / Self-hosted Docker
+├── Cloudflare Worker   ──▶   Render / Self-hosted Docker
 └── Vercel (optional)         Supabase PostgreSQL (DB)
                               OpenAI API (production AI)
 ```
 
 ---
 
-## Backend Deployment (Railway)
+## Backend Deployment (Render)
 
 ### Prerequisites
-- Railway account + project created
+- Render account + web service created
 - Supabase PostgreSQL instance running
 - OpenAI API key for production AI analysis
 
-### Environment Variables (set in Railway dashboard)
+### Environment Variables (set in Render dashboard)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | **Yes** | Supabase PostgreSQL connection string |
 | `APP_ACCESS_TOKEN` | **Yes** | Private token used by the frontend for authenticated API/WebSocket access |
 | `FINNHUB_API_KEY` | **Yes** | Market data API key |
+| `YFINANCE_CACHE_DIR` | No | Writable yfinance SQLite cache path. Defaults to OS temp; it is an optimization and can remain ephemeral on Render. |
 | `OPENAI_API_KEY` | **Yes** (prod) | OpenAI API key for AI analysis |
 | `AI_PROVIDER` | No | Set to `openai` (default: `ollama`) |
 | `OPENAI_MODEL` | No | Model name (default: `gpt-4o-mini`) |
 | `OPENAI_ALLOWED_MODELS` | **Yes** when OpenAI is used | Must include `OPENAI_MODEL` (for example `gpt-4o-mini`) |
 | `CORS_ORIGINS` | **Yes** | Include `https://stocks.yapvibes.com` and the Worker preview domain |
+| `AI_STALE_JOB_RECOVERY_ENABLED` | No | Keep `false` until protected queue timestamps are verified |
 | `PORT` | No | Override default port 8000 |
 
 ### Deployment Steps
 
-1. Connect Railway to the GitHub repository and set the service root directory to `apps/stocks`
-2. Set environment variables in Railway dashboard
+1. Connect Render to the GitHub repository and set the service root directory to `apps/stocks`
+2. Set environment variables in the Render dashboard
 3. Keep the service at one replica because the news scheduler runs inside FastAPI
-4. Deploy → Railway builds the Dockerfile and runs `python -m alembic upgrade head` before starting Uvicorn
+4. Configure `/health/live` as the health-check path. Run `python -m alembic upgrade head` as an explicit pre-deploy step only after the target database is positively identified.
 
 ### Manual Deployment (Docker Compose)
 
@@ -70,8 +72,8 @@ causes the custom domain to return a 404 instead of invoking Next.js.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NEXT_PUBLIC_API_BASE` | **Yes** | Backend origin without a trailing slash (e.g., `https://stocks-api.up.railway.app`) |
-| `NEXT_PUBLIC_WS_URL` | **Yes** | Complete WebSocket endpoint (e.g., `wss://stocks-api.up.railway.app/ws`) |
+| `NEXT_PUBLIC_API_BASE` | **Yes** | `https://yapvibes-stocks-api.onrender.com` |
+| `NEXT_PUBLIC_WS_URL` | No | Optional override; normally derived as `wss://yapvibes-stocks-api.onrender.com/ws` |
 
 ### Manual Deployment
 
@@ -96,7 +98,7 @@ as **build variables before building**. They are not secrets.
 ### Start and Verify Article Collection
 
 The collector runs in the FastAPI lifespan and starts its first cycle immediately,
-then repeats every 15 minutes. After the Railway deployment:
+then repeats every 15 minutes. After the Render deployment:
 
 ```bash
 # Process and dependency checks
@@ -108,7 +110,7 @@ curl -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" \
   https://YOUR-BACKEND/api/news/ingest
 ```
 
-Confirm Railway logs contain `NewsScheduler Started` and `Cycle complete`, and
+Confirm Render logs contain `NewsScheduler Started` and `Cycle complete`, and
 confirm `news_articles` rows appear in PostgreSQL. The production watchlist must
 contain tickers; startup seeds defaults when its migration tables are available.
 
@@ -168,7 +170,7 @@ Override with the `CORS_ORIGINS` environment variable.
 
 ### Backend Connection Issues
 1. Verify Supabase connection string includes the `+asyncpg` driver prefix
-2. Check Railway firewall allows outbound connections to Supabase
+2. Check Render firewall allows outbound connections to Supabase
 3. Test with `curl https://your-railway-url/health`
 
 ### AI Provider Errors

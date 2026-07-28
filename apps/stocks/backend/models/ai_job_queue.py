@@ -81,6 +81,22 @@ class AIJobQueue(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP, server_default=func.now(), onupdate=func.now()
+    )
+
+    # Worker ownership and lease. Nullable values identify legacy jobs created
+    # before lease-based recovery was introduced.
+    worker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
+
+    # Recovery audit metadata. Retry counts are intentionally separate:
+    # recovering an interrupted attempt does not consume an application retry.
+    recovery_count: Mapped[int] = mapped_column(
+        Integer, server_default="0", default=0, nullable=False
+    )
+    last_recovery_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Indexes: the worker polls for pending jobs ordered by priority + scheduled_for
     __table_args__ = (
@@ -89,6 +105,7 @@ class AIJobQueue(Base):
         Index("idx_ai_job_queue_target", "target_type", "target_id"),
         Index("idx_ai_job_queue_job_type", "job_type"),
         Index("idx_ai_job_queue_dedupe", "job_type", "dedupe_key", "status"),
+        Index("idx_ai_job_queue_status_lease", "status", "lease_expires_at"),
     )
 
     def __repr__(self):

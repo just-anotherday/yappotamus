@@ -6,7 +6,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchDbNews } from '@/lib/api';
 import { getAppWebSocketProtocols, invalidateAppToken } from '@/lib/apiFetch';
-import { WS_URL } from '@/types/stock';
+import { NEWS_WS_URL } from '@/lib/serviceUrls';
+import { ReconnectingWebSocket } from '@/lib/reconnectingWebSocket';
 import type { NewsArticle } from '@/types/stock';
 
 interface UseNewsReturn {
@@ -64,57 +65,53 @@ export function useNews(
     [ticker, limit, startDate, endDate],
   );
 
-  // Initial load when dependencies change
+  // Schedule the initial load so React Strict Mode can cancel the first
+  // development-only effect pass without causing a state update.
   useEffect(() => {
-    loadData(1);
+    const initialLoadTimer = setTimeout(() => {
+      void loadData(1);
+    }, 0);
+    return () => clearTimeout(initialLoadTimer);
   }, [loadData]);
 
   // WebSocket: listen for "news_refresh" events from backend after ingestion cycles
-  const wsRef = useRef<WebSocket | null>(null);
   const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pageRef = useRef(page);
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
   useEffect(() => {
     const protocols = getAppWebSocketProtocols();
     if (!protocols) return;
 
-    const ws = new WebSocket(WS_URL, protocols);
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'news_refresh') {
-          // Backend just finished an ingestion cycle.
-          // Wait a short delay so the DB commit settles, then refetch.
-          if (refetchTimerRef.current) clearTimeout(refetchTimerRef.current);
-          refetchTimerRef.current = setTimeout(() => {
-            loadData(page);
-          }, 3000); // 3s delay after ingestion completes
+    const connection = new ReconnectingWebSocket({
+      createSocket: () => new WebSocket(NEWS_WS_URL, protocols),
+      onUnauthorized: invalidateAppToken,
+      onMessage: (event) => {
+        try {
+          const msg = JSON.parse(String(event.data));
+          if (msg.type === 'news_refresh') {
+            // Backend just finished an ingestion cycle. Delay briefly so the
+            // transaction is visible before reloading the current page.
+            if (refetchTimerRef.current) clearTimeout(refetchTimerRef.current);
+            refetchTimerRef.current = setTimeout(() => {
+              loadData(pageRef.current);
+            }, 3000);
+          }
+        } catch {
+          // Price messages share this socket and are handled by useLivePrices.
         }
-      } catch (err) {
-        // Ignore parse errors for price-update messages (they're handled by useLivePrices)
-      }
-    };
-
-    ws.onclose = (event) => {
-      if (event.code === 4401) {
-        invalidateAppToken();
-        return;
-      }
-
-      // Attempt reconnect after 5s if not intentionally closed
-      setTimeout(() => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.CLOSED) {
-          wsRef.current = null;
-          // Effect will re-run on next render, but we can also trigger a gentle reload
-        }
-      }, 5000);
-    };
+      },
+    });
+    connection.start();
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      connection.stop();
       if (refetchTimerRef.current) clearTimeout(refetchTimerRef.current);
+      refetchTimerRef.current = null;
     };
-  }, [page, loadData]);
+  }, [loadData]);
 
   const setPage = useCallback(
     async (targetPage: number) => {

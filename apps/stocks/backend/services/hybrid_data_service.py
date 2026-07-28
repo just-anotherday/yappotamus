@@ -25,6 +25,12 @@ from backend.services.finnhub_service import get_stock_price as finnhub_get_stoc
 from backend.services.yfinance_fallback import get_stock_price_yf
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.error_fallback import create_error_fallback
+from backend.lib.market_data_normalization import normalize_market_data_payload
+from backend.services.market_data_observability import (
+    current_correlation_id,
+    log_collection_result,
+    run_provider_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,8 @@ _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="yf-fallback")
 # Bounded TTL cache: stores (data, timestamp) tuples. Entries older than
 # _CACHE_TTL seconds are evicted on access. Max size limits memory growth.
 _CACHE_TTL = settings.HYBRID_CACHE_TTL_S  # default 5 minutes
+_STALE_CACHE_TTL = settings.HYBRID_STALE_CACHE_TTL_S
+_PROVIDER_TIMEOUT_S = settings.MARKET_DATA_PROVIDER_TIMEOUT_S
 _CACHE_MAX_SIZE = settings.HYBRID_CACHE_MAX_SIZE
 _cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
@@ -44,10 +52,27 @@ def _cache_get(ticker: str) -> Optional[Dict[str, Any]]:
     if entry is None:
         return None
     data, ts = entry
-    if time.time() - ts > _CACHE_TTL:
-        del _cache[ticker]
+    age = time.time() - ts
+    if age > _STALE_CACHE_TTL:
+        _cache.pop(ticker, None)
         return None
-    return data
+    if age > _CACHE_TTL:
+        return None
+    return data.copy()
+
+
+def _cache_get_stale(ticker: str) -> Optional[Dict[str, Any]]:
+    """Return expired-but-bounded data only after provider failure."""
+    entry = _cache.get(ticker)
+    if entry is None:
+        return None
+    data, ts = entry
+    age = time.time() - ts
+    if age <= _CACHE_TTL or age > _STALE_CACHE_TTL:
+        if age > _STALE_CACHE_TTL:
+            _cache.pop(ticker, None)
+        return None
+    return data.copy()
 
 
 def _cache_set(ticker: str, data: Dict[str, Any]) -> None:
@@ -56,7 +81,7 @@ def _cache_set(ticker: str, data: Dict[str, Any]) -> None:
         # Remove the oldest entry by timestamp
         oldest_key = min(_cache, key=lambda k: _cache[k][1])
         del _cache[oldest_key]
-    _cache[ticker] = (data, time.time())
+    _cache[ticker] = (data.copy(), time.time())
 
 
 # Fields that Finnhub free tier cannot provide (return 0/None/N/A).
@@ -84,7 +109,7 @@ FUNDAMENTAL_GAP_FIELDS: Set[str] = {
     "long_business_summary",  # Business description
     "ceo_name",              # CEO name
     "full_time_employees",    # Employee count
-    "regularMarketVolume",   # Volume data
+    "volume",                # Normalized volume data
     "market_cap",            # Market capitalization
     "beta",                  # Beta coefficient
     "security_type",         # Security classification (STOCK/ETF/INDEX/etc.)
@@ -204,7 +229,7 @@ def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tu
     return merged, enriched_fields
 
 
-async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
+async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     """Fetch stock data: Finnhub first, enrich with yfinance fundamentals for gaps."""
     ticker_upper = ticker.upper()
 
@@ -217,12 +242,22 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     # ETFs / indices → skip Finnhub, go straight to yfinance
     if ticker_upper in KNOWN_NON_STOCK_SYMBOLS:
         logger.debug("[Hybrid] %s is an ETF/index → routing to yfinance.", ticker_upper)
-        data = await _yf_async(ticker_upper)
+        data, _ = await run_provider_attempt(
+            ticker=ticker_upper,
+            provider="yf",
+            timeout_s=_PROVIDER_TIMEOUT_S,
+            operation=lambda: _yf_async(ticker_upper),
+        )
         return data
 
     # Try Finnhub
     try:
-        data = await finnhub_get_stock_price(ticker_upper)
+        data, _ = await run_provider_attempt(
+            ticker=ticker_upper,
+            provider="fh",
+            timeout_s=_PROVIDER_TIMEOUT_S,
+            operation=lambda: finnhub_get_stock_price(ticker_upper),
+        )
         if data and data.get("current_price", 0) > 0:
             logger.debug("[Hybrid] %s served by Finnhub.", ticker_upper)
             data["data_source"] = "fh"
@@ -244,7 +279,12 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
                 # Fetch yfinance data in background to fill gaps
                 logger.debug("[Hybrid] Enriching %s from yfinance (gaps=%s, bad_name=%s).", ticker_upper, has_gaps, bad_company_name)
                 try:
-                    yf_data = await _yf_async(ticker_upper)
+                    yf_data, _ = await run_provider_attempt(
+                        ticker=ticker_upper,
+                        provider="yf_enrichment",
+                        timeout_s=_PROVIDER_TIMEOUT_S,
+                        operation=lambda: _yf_async(ticker_upper),
+                    )
                     if yf_data:
                         data, enriched_fields = _enrich_with_yf(data, yf_data)
                         data["yf_enriched_fields"] = enriched_fields
@@ -262,7 +302,108 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
 
     # Fallback to yfinance
     logger.debug("[Hybrid] Falling back to yfinance for %s.", ticker_upper)
-    return await _yf_async(ticker_upper)
+    data, _ = await run_provider_attempt(
+        ticker=ticker_upper,
+        provider="yf",
+        timeout_s=_PROVIDER_TIMEOUT_S,
+        operation=lambda: _yf_async(ticker_upper),
+    )
+    return data
+
+
+async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
+    """Collect, normalize, cache, and diagnose one watchlist symbol."""
+    ticker_upper = ticker.strip().upper()
+    started = time.monotonic()
+    selected_provider = "yf" if ticker_upper in KNOWN_NON_STOCK_SYMBOLS else "fh"
+
+    cached = _cache_get(ticker_upper)
+    if cached is not None:
+        normalized = normalize_market_data_payload(
+            ticker_upper,
+            cached,
+            default_source=str(cached.get("data_source") or selected_provider),
+        )
+        log_collection_result(
+            ticker=ticker_upper,
+            selected_provider=str(normalized.get("data_source") or selected_provider),
+            fallback_provider=None,
+            started=started,
+            payload=normalized,
+            cache_state="fresh",
+            failure_reason=None,
+        )
+        return normalized
+
+    try:
+        data = await _collect_hybrid_stock_price(ticker_upper)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "[MarketData] event=collection_exception correlation_id=%s "
+            "symbol=%s exception_type=%s",
+            current_correlation_id(),
+            ticker_upper,
+            type(exc).__name__,
+        )
+        data = None
+        failure_reason = type(exc).__name__
+    else:
+        failure_reason = None if data is not None else "providers_exhausted"
+
+    if data is not None:
+        normalized = normalize_market_data_payload(
+            ticker_upper,
+            data,
+            default_source=selected_provider,
+        )
+        _cache_set(ticker_upper, normalized)
+        fallback_provider = None
+        if selected_provider == "fh":
+            if normalized.get("data_source") == "yf":
+                fallback_provider = "yf"
+            elif normalized.get("yf_enriched_fields"):
+                fallback_provider = "yf_enrichment"
+        log_collection_result(
+            ticker=ticker_upper,
+            selected_provider=selected_provider,
+            fallback_provider=fallback_provider,
+            started=started,
+            payload=normalized,
+            cache_state="none",
+            failure_reason=failure_reason,
+        )
+        return normalized
+
+    stale = _cache_get_stale(ticker_upper)
+    if stale is not None:
+        normalized = normalize_market_data_payload(
+            ticker_upper,
+            stale,
+            default_source=str(stale.get("data_source") or selected_provider),
+        )
+        log_collection_result(
+            ticker=ticker_upper,
+            selected_provider=selected_provider,
+            fallback_provider=None,
+            started=started,
+            payload=normalized,
+            cache_state="stale",
+            failure_reason=failure_reason,
+        )
+        return normalized
+
+    log_collection_result(
+        ticker=ticker_upper,
+        selected_provider=selected_provider,
+        fallback_provider="yf" if selected_provider == "fh" else None,
+        started=started,
+        payload=None,
+        cache_state="miss",
+        failure_reason=failure_reason,
+    )
+    return None
 
 
 async def _fetch_one(ticker: str) -> Tuple[str, Optional[Dict[str, Any]]]:

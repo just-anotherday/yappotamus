@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import logging
 
@@ -31,8 +30,17 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
+    requested_channel = websocket.query_params.get("channel", "").strip().lower()
+    channel = requested_channel if requested_channel in {"prices", "news"} else "unspecified"
+
     connection_manager = app.state.connection_manager
-    await connection_manager.connect(websocket, subprotocol="yapvibes")
+    connection_id = await connection_manager.connect(
+        websocket,
+        subprotocol="yapvibes",
+        channel=channel,
+    )
+    close_code: int | None = None
+    close_reason: str | None = None
 
     try:
         # Send cached quotes immediately on connect
@@ -40,12 +48,30 @@ async def websocket_endpoint(websocket: WebSocket):
         for quote in market_data.latest_quotes.values():
             await websocket.send_json(quote)
 
-        # Idle loop to keep the connection alive
+        # Consume ASGI events so client disconnects are observed immediately.
+        # A sleep-only loop leaves closed sockets in active_connections until a
+        # later broadcast happens to fail.
         while True:
-            await asyncio.sleep(60)
-    except WebSocketDisconnect:
-        logger.debug("[WS] Client disconnected")
-    except Exception as e:
-        logger.debug("[WS] Connection closed for %s: %s", websocket.client_host, e)
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                close_code = message.get("code", 1000)
+                close_reason = message.get("reason") or None
+                logger.debug("[WS] Client disconnected id=%s", connection_id)
+                break
+    except WebSocketDisconnect as exc:
+        close_code = exc.code
+        close_reason = exc.reason or None
+        logger.debug("[WS] Client disconnected id=%s", connection_id)
+    except Exception as exc:
+        close_reason = f"server_error:{type(exc).__name__}"
+        logger.debug(
+            "[WS] Connection closed id=%s error=%s",
+            connection_id,
+            type(exc).__name__,
+        )
     finally:
-        await connection_manager.disconnect(websocket)
+        await connection_manager.disconnect(
+            websocket,
+            code=close_code,
+            reason=close_reason,
+        )

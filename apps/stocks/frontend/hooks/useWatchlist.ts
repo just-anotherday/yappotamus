@@ -7,6 +7,7 @@ import { useWatchlistConfig } from '@/lib/WatchlistConfigContext';
 import { fetchWatchlistData, fetchPostMarketPrices, apiAddToWatchlist, apiRemoveFromWatchlist, apiUpdateWatchlistOrder } from '@/lib/api';
 import type { WatchlistItem } from '@/types/stock';
 import { useExtendedHours } from '@/hooks/useExtendedHours';
+import { mergeWatchlistRefresh } from '@/lib/watchlistPresentation';
 
 const EXTENDED_HOURS_REFRESH_MS = 15_000;
 const PRICE_FLASH_MS = 1_000;
@@ -77,7 +78,7 @@ export function useWatchlist() {
       });
 
       postMarketPricesRef.current = nextPrices;
-      setWatchlist(data);
+      setWatchlist(previous => mergeWatchlistRefresh(previous, data));
       setLastRefreshedAt(new Date());
     } catch (err) {
       if (!quiet) showToast(err instanceof Error ? err.message : 'Failed to load watchlist', true);

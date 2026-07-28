@@ -2,12 +2,12 @@
 // API CLIENT
 // ==============================================================================
 
-import { API_BASE } from '@/types/stock';
+import { API_BASE } from '@/lib/serviceUrls';
 import { apiFetch } from '@/lib/apiFetch';
+import { requireOk } from '@/lib/apiError';
 import type {
   StockData,
   WatchlistItem,
-  StockNews,
   WatchlistConfig,
   NewsArticle,
   CachedCompanyReport,
@@ -21,15 +21,11 @@ import type {
   AdvancedRiskMetrics,
   MarketRefreshResponse,
   UnifiedReportEntry,
-  UnifiedReportFilters,
 } from '@/types/stock';
 
 export const fetchStock = async (ticker: string): Promise<StockData> => {
   const res = await apiFetch(`${API_BASE}/api/stock/${ticker.toUpperCase()}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch stock data');
-  }
+  await requireOk(res, 'Failed to fetch stock data');
   return res.json();
 };
 
@@ -38,10 +34,7 @@ export const fetchWatchlistData = async (tickers?: string): Promise<WatchlistIte
     ? `${API_BASE}/api/watchlist?tickers=${tickers}`
     : `${API_BASE}/api/watchlist`;
   const res = await apiFetch(url);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch watchlist');
-  }
+  await requireOk(res, 'Failed to fetch watchlist');
   return res.json();
 };
 
@@ -59,10 +52,7 @@ export interface WatchlistMutationResponse {
 
 export const fetchPostMarketPrices = async (): Promise<Record<string, PostMarketQuote>> => {
   const res = await apiFetch(`${API_BASE}/api/watchlist/post-market`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch after-hours prices');
-  }
+  await requireOk(res, 'Failed to fetch after-hours prices');
   return res.json();
 };
 
@@ -72,10 +62,7 @@ export const apiAddToWatchlist = async (ticker: string): Promise<WatchlistMutati
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticker: ticker.toUpperCase() }),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to add to watchlist');
-  }
+  await requireOk(res, 'Failed to add to watchlist');
   return res.json();
 };
 
@@ -83,10 +70,7 @@ export const apiRemoveFromWatchlist = async (ticker: string): Promise<void> => {
   const res = await apiFetch(`${API_BASE}/api/watchlist/${ticker.toUpperCase()}`, {
     method: 'DELETE',
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to remove from watchlist');
-  }
+  await requireOk(res, 'Failed to remove from watchlist');
 };
 
 /** Fetch persisted news articles from PostgreSQL (GET /news) */
@@ -113,10 +97,7 @@ export const fetchDbNews = async (
   if (endDate) params.set('end_date', endDate);
 
   const res = await apiFetch(`${API_BASE}/news?${params.toString()}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch news from database');
-  }
+  await requireOk(res, 'Failed to fetch news from database');
   return res.json();
 };
 
@@ -126,28 +107,19 @@ export const apiUpdateWatchlistOrder = async (tickers: string[]): Promise<void> 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tickers }),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to update watchlist order');
-  }
+  await requireOk(res, 'Failed to update watchlist order');
 };
 
 export const getWatchlistConfig = async (): Promise<WatchlistConfig> => {
   const res = await apiFetch(`${API_BASE}/api/watchlist/config`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch watchlist config');
-  }
+  await requireOk(res, 'Failed to fetch watchlist config');
   return res.json();
 };
 
 /** Fetch all distinct tickers from the news database (GET /news/tickers) */
 export const fetchNewsTickers = async (): Promise<string[]> => {
   const res = await apiFetch(`${API_BASE}/news/tickers`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch news tickers');
-  }
+  await requireOk(res, 'Failed to fetch news tickers');
   const data = await res.json();
   return data.tickers || [];
 };
@@ -159,10 +131,7 @@ export const fetchNewsTickers = async (): Promise<string[]> => {
 /** Get the latest cached AI intelligence report for a company */
 export const fetchCompanyReport = async (ticker: string): Promise<CachedCompanyReport> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to fetch cached report for ${ticker}`);
-  }
+  await requireOk(res, `Failed to fetch cached report for ${ticker}`);
   return res.json();
 };
 
@@ -185,10 +154,7 @@ export const fetchCompanyReportsBatch = async (tickers: string[]): Promise<Cache
 /** Get the latest cached daily market-wide intelligence report */
 export const fetchMarketReport = async (): Promise<CachedMarketReport> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/latest`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch market report');
-  }
+  await requireOk(res, 'Failed to fetch market report');
   return res.json();
 };
 
@@ -201,10 +167,7 @@ export const triggerCompanyReportRegeneration = async (ticker: string, model?: s
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to trigger regeneration for ${ticker}`);
-  }
+  await requireOk(res, `Failed to trigger regeneration for ${ticker}`);
   return res.json();
 };
 
@@ -221,20 +184,14 @@ export interface OllamaConfig {
 }
 export const fetchOllamaConfig = async (): Promise<OllamaConfig> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/config`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch Ollama config');
-  }
+  await requireOk(res, 'Failed to fetch Ollama config');
   return res.json();
 };
 
 /** Get current AI job queue status */
 export const fetchAIQueueStatus = async (): Promise<AIQueueStatus> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/queue/status`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch queue status');
-  }
+  await requireOk(res, 'Failed to fetch queue status');
   return res.json();
 };
 
@@ -243,10 +200,7 @@ export const triggerSectorReportRegeneration = async (sector: string): Promise<{
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/sector/${encodeURIComponent(sector)}/regenerate`, {
     method: 'POST',
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to trigger sector regeneration for ${sector}`);
-  }
+  await requireOk(res, `Failed to trigger sector regeneration for ${sector}`);
   return res.json();
 };
 
@@ -255,10 +209,7 @@ export const triggerMarketReportRegeneration = async (): Promise<{ status: strin
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/regenerate`, {
     method: 'POST',
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to trigger market regeneration');
-  }
+  await requireOk(res, 'Failed to trigger market regeneration');
   return res.json();
 };
 
@@ -272,10 +223,7 @@ export const triggerAllCompanyReports = async (tickers: string[], model?: string
 /** Get comprehensive pipeline status */
 export const fetchPipelineStatus = async (): Promise<PipelineStatus> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/pipeline/status`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch pipeline status');
-  }
+  await requireOk(res, 'Failed to fetch pipeline status');
   return res.json();
 };
 
@@ -301,10 +249,7 @@ export interface ReportHistoryResponse {
 }
 export const fetchCompanyReportHistory = async (ticker: string, page = 1, limit = 20): Promise<ReportHistoryResponse> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/history?page=${page}&limit=${limit}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to fetch report history for ${ticker}`);
-  }
+  await requireOk(res, `Failed to fetch report history for ${ticker}`);
   return res.json();
 };
 
@@ -315,30 +260,21 @@ export const fetchCompanyReportHistory = async (ticker: string, page = 1, limit 
 /** Get all market trackers (GET /api/markets/) */
 export const fetchMarketTrackers = async (): Promise<MarketTracker[]> => {
   const res = await apiFetch(`${API_BASE}/api/markets/`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch market trackers');
-  }
+  await requireOk(res, 'Failed to fetch market trackers');
   return res.json();
 };
 
 /** Get single market tracker detail with risk signal (GET /api/markets/{ticker}) */
 export const fetchMarketTrackerDetail = async (ticker: string): Promise<MarketTrackerDetail> => {
   const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to fetch detail for ${ticker}`);
-  }
+  await requireOk(res, `Failed to fetch detail for ${ticker}`);
   return res.json();
 };
 
 /** Get overall market regime (GET /api/markets/regime) */
 export const fetchMarketRegime = async (): Promise<MarketRegime> => {
   const res = await apiFetch(`${API_BASE}/api/markets/regime`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch market regime');
-  }
+  await requireOk(res, 'Failed to fetch market regime');
   return res.json();
 };
 
@@ -371,10 +307,7 @@ export const fetchMarketPrices = async (
 ): Promise<OhlcvPoint[]> => {
   const days = periodToDays[period];
   const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/prices?days=${days}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to fetch prices for ${ticker}`);
-  }
+  await requireOk(res, `Failed to fetch prices for ${ticker}`);
   const data: MarketPricesResponse = await res.json();
   // Backend returns {dates: string[], prices: [{open,high,low,close,volume}]}
   // Flatten to OhlcvPoint[] for frontend consumption
@@ -388,36 +321,6 @@ export const fetchMarketPrices = async (
   }));
 };
 
-/** Get price statistics (GET /api/markets/{ticker}/stats) */
-export const fetchMarketPriceStats = async (ticker: string): Promise<Record<string, any>> => {
-  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/stats`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to fetch stats for ${ticker}`);
-  }
-  return res.json();
-};
-
-/** Compute risk signal on demand (POST /api/markets/{ticker}/risk-signal) */
-export const computeRiskSignal = async (ticker: string): Promise<Record<string, any>> => {
-  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/risk-signal`, { method: 'POST' });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to compute risk signal for ${ticker}`);
-  }
-  return res.json();
-};
-
-/** Backfill historical price data (POST /api/markets/{ticker}/backfill) */
-export const backfillMarketPrices = async (ticker: string): Promise<{ message: string; records_added: number }> => {
-  const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/backfill`, { method: 'POST' });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to backfill prices for ${ticker}`);
-  }
-  return res.json();
-};
-
 /** Get full risk signal + advanced metrics (GET /api/markets/{ticker}/risk) */
 export interface RiskSignalResponse {
   ticker: string;
@@ -427,20 +330,14 @@ export interface RiskSignalResponse {
 }
 export const fetchRiskSignal = async (ticker: string): Promise<RiskSignalResponse> => {
   const res = await apiFetch(`${API_BASE}/api/markets/${ticker.toUpperCase()}/risk`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to fetch risk signal for ${ticker}`);
-  }
+  await requireOk(res, `Failed to fetch risk signal for ${ticker}`);
   return res.json();
 };
 
 /** Refresh all market tracker price data (POST /api/markets/refresh) */
 export const refreshMarketTrackers = async (): Promise<MarketRefreshResponse> => {
   const res = await apiFetch(`${API_BASE}/api/markets/refresh`, { method: 'POST' });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to refresh market trackers');
-  }
+  await requireOk(res, 'Failed to refresh market trackers');
   return res.json();
 };
 
@@ -480,10 +377,7 @@ export const fetchUnifiedReports = async (
   if (date_to) params.set('to', date_to);
 
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/unified?${params.toString()}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch unified intelligence reports');
-  }
+  await requireOk(res, 'Failed to fetch unified intelligence reports');
   return res.json();
 };
 
@@ -513,19 +407,13 @@ export const fetchMarketReportHistory = async (
   limit: number = 20,
 ): Promise<MarketReportHistoryResponse> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/history?page=${page}&limit=${limit}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Failed to fetch market report history');
-  }
+  await requireOk(res, 'Failed to fetch market report history');
   return res.json();
 };
 
 /** Fetch a specific market report by ID */
 export const fetchMarketReportById = async (reportId: number): Promise<CachedMarketReport> => {
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/${reportId}`);
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || `Failed to fetch market report #${reportId}`);
-  }
+  await requireOk(res, `Failed to fetch market report #${reportId}`);
   return res.json();
 };

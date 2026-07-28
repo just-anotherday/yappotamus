@@ -13,12 +13,15 @@ securities as STOCK, ETF, INDEX, CRYPTO, ADR, or UNKNOWN.
 """
 
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 import yfinance as yf
 
 from backend.lib.error_fallback import create_error_fallback
+from backend.lib.market_data_normalization import normalize_market_data_payload
 from backend.lib.risk_metrics import _compute_composite_risk, _safe_pct
+from backend.services.yfinance_cache import configure_yfinance_cache
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ def _normalize_asset_type(asset_type: str) -> str:
     """Normalize yfinance assetType/quoteType to our SecurityType enum."""
     mapping = {
         "ETF": "ETF",
-        "Etf Etf": "ETF",
+        "ETF ETF": "ETF",
         "FUND": "ETF",
         "INDEX": "INDEX",
         "CRYPTOCURRENCY": "CRYPTO",
@@ -58,6 +61,28 @@ def _normalize_asset_type(asset_type: str) -> str:
         "CLOSED_FUND": "STOCK",
     }
     return mapping.get(asset_type, "UNKNOWN")
+
+
+def _normalize_yfinance_percentage(value: Any) -> Optional[float]:
+    """Normalize yfinance percentage metadata to a decimal fraction.
+
+    yfinance 1.x reports ETF percentage metadata in percentage points, while
+    older 0.x releases reported a decimal fraction. The frontend contract
+    always uses decimal fractions.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(normalized):
+        return None
+    try:
+        major_version = int(str(yf.__version__).split(".", 1)[0])
+    except (AttributeError, TypeError, ValueError):
+        major_version = 0
+    return normalized / 100 if major_version >= 1 else normalized
 
 
 # ==============================================================================
@@ -233,10 +258,10 @@ def _fetch_etf_data_lazy(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Optiona
     
     etf_data = {
         "fund_family": info.get("fundFamily"),
-        "expense_ratio": info.get("expenseRatio"),
+        "expense_ratio": _normalize_yfinance_percentage(info.get("expenseRatio")),
         "net_assets": info.get("totalAssets") or info.get("netAssets"),
         "inception_date": _format_date(info.get("fundInceptionDate")),
-        "dividend_yield": info.get("dividendYield"),
+        "dividend_yield": _normalize_yfinance_percentage(info.get("dividendYield")),
         "distribution_frequency": _get_distribution_frequency(info),
         "index_tracked": info.get("indexType"),
         "category": info.get("category"),
@@ -344,6 +369,7 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
     
     Includes dynamic security type detection and lazy ETF data fetching.
     """
+    configure_yfinance_cache(yf)
     try:
         ticker_obj = yf.Ticker(ticker.upper())
         info = ticker_obj.info
@@ -392,7 +418,11 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
             if etf_data:
                 result["etf_data"] = etf_data
         
-        return result
+        return normalize_market_data_payload(
+            ticker,
+            result,
+            default_source="yf",
+        )
     except Exception as e:
         logger.error("[YF-Fallback] Failed for %s: %s", ticker, e)
         return None

@@ -50,7 +50,7 @@ Performed a comprehensive audit of all environment variables across the YapVibes
 
 | # | Variable | Used In | Required | Default Value | Status |
 |---|----------|---------|----------|---------------|--------|
-| 1 | `NEXT_PUBLIC_API_URL` | `_app.tsx`, API utils, pages | ✅ Yes | — | ✅ Configured |
+| 1 | `NEXT_PUBLIC_API_BASE` | Shared service URL resolver | ✅ Yes | — | ✅ Configured |
 | 2 | `NEXT_PUBLIC_WS_URL` | WebSocket hooks, components | ✅ Yes | — | ✅ Configured |
 | 3 | `NEXT_PUBLIC_APP_URL` | OG images, redirects | No | — | ✅ Documented |
 | 4 | `NEXT_PUBLIC_SENTRY_DSN` | Sentry integration | No | — | ✅ Documented |
@@ -69,7 +69,7 @@ Performed a comprehensive audit of all environment variables across the YapVibes
 
 | # | Variable | Used In | Required | Default Value | Status |
 |---|----------|---------|----------|---------------|--------|
-| 1 | `NEXT_PUBLIC_API_URL` | API calls | ✅ Yes | — | ✅ Configured |
+| 1 | `NEXT_PUBLIC_API_BASE` | API calls | ✅ Yes | — | ✅ Configured |
 | 2 | `NEXT_PUBLIC_APP_URL` | Redirects | No | — | ✅ Documented |
 
 ---
@@ -78,7 +78,7 @@ Performed a comprehensive audit of all environment variables across the YapVibes
 
 | Variable | Location | Issue | Resolution |
 |----------|----------|-------|------------|
-| `NEXT_PUBLIC_API_URL` | Frontend was using hardcoded `http://localhost:8000` | Hardcoded URL | Added to `.env.example` and `.env.local` |
+| `NEXT_PUBLIC_API_BASE` | Frontend was using hardcoded `http://localhost:8000` | Hardcoded URL | Added to `.env.example` and `.env.local` |
 | `NEXT_PUBLIC_WS_URL` | Frontend was using hardcoded `ws://localhost:8000` | Hardcoded URL | Added to `.env.example` and `.env.local` |
 
 ---
@@ -107,7 +107,7 @@ No unused variables were found. All discovered environment variables are activel
 
 | Original Value | File | Line(s) | Replacement |
 |---------------|------|---------|-------------|
-| `http://localhost:8000` (frontend API) | Frontend API utilities | Multiple | `NEXT_PUBLIC_API_URL` |
+| `http://localhost:8000` (frontend API) | Frontend API utilities | Multiple | `NEXT_PUBLIC_API_BASE` |
 | `ws://localhost:8000` (WebSocket) | Frontend WebSocket hooks | Multiple | `NEXT_PUBLIC_WS_URL` |
 | Hardcoded CORS origins list | `main.py` | 63-70 | Still uses env var but with production defaults as fallback |
 
@@ -127,7 +127,7 @@ No unused variables were found. All discovered environment variables are activel
 ### Frontend
 | File | Change |
 |------|--------|
-| `apps/stocks/frontend/.env.example` | **NEW** - Template with `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL`, and optional vars |
+| `apps/stocks/frontend/.env.example` | Template with `NEXT_PUBLIC_API_BASE` and an optional `NEXT_PUBLIC_WS_URL` override |
 | `apps/stocks/frontend/.env.local` | **NEW** - Local development values |
 
 ### Documentation
@@ -167,7 +167,7 @@ CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 ### Frontend (`apps/stocks/frontend/.env.example`)
 
 ```ini
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_BASE=http://localhost:8000
 NEXT_PUBLIC_WS_URL=ws://localhost:8000
 NEXT_PUBLIC_APP_URL=
 NEXT_PUBLIC_SENTRY_DSN=
@@ -216,9 +216,9 @@ npm run dev
 
 ## 9. Production Environment Setup
 
-### Railway (Backend)
+### Render (Backend)
 
-Set these in Railway's project dashboard → Variables:
+Set these in Render's service dashboard → Variables:
 
 ```
 DATABASE_URL = (your Supabase connection string)
@@ -235,8 +235,8 @@ CORS_ORIGINS = https://stocks.yapvibes.com,https://yapvibes-stocks.pages.dev
 Set these in Cloudflare Dashboard → Pages → Project Settings → Environment Variables:
 
 ```
-NEXT_PUBLIC_API_URL = https://api.yapvibes.com  # your Railway URL
-NEXT_PUBLIC_WS_URL = wss://api.yapvibes.com     # your Railway WebSocket URL
+NEXT_PUBLIC_API_BASE = https://yapvibes-stocks-api.onrender.com
+# NEXT_PUBLIC_WS_URL is optional; the frontend derives wss://yapvibes-stocks-api.onrender.com/ws
 ```
 
 ---
@@ -247,15 +247,15 @@ NEXT_PUBLIC_WS_URL = wss://api.yapvibes.com     # your Railway WebSocket URL
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Railway | ✅ Complete | `railway.json` correctly configured with build/start commands |
+| Render | ⚠️ External configuration | Verify build, start, pre-deploy migration, and health-check settings in the service dashboard |
 | Cloudflare Pages | ✅ Complete | `wrangler.toml` uses OpenNext adapter, builds via npm |
 | Docker | ✅ Compatible | `Dockerfile` works with centralized config |
 
 ### ⚠️ Recommendations
 
-1. **Railway:** Verify all environment variables are set in the Railway dashboard before deploying. The new validation will cause the app to fail fast if any required variable is missing.
+1. **Render:** Verify all environment variables are set in the Render dashboard before deploying. The new validation will cause the app to fail fast if any required variable is missing.
 
-2. **Cloudflare Pages:** Ensure `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` are configured in Pages environment settings, not in `.env.production` committed to git (to avoid exposing URLs in plain text).
+2. **Cloudflare Workers Builds:** Set `NEXT_PUBLIC_API_BASE=https://yapvibes-stocks-api.onrender.com`. The WebSocket URL is derived unless an override is explicitly needed.
 
 3. **Supabase RBAC:** The `SUPABASE_SERVICE_ROLE_KEY` has elevated privileges. Ensure it is only used server-side and never exposed to the browser.
 
@@ -278,7 +278,7 @@ settings.validate()
 
 ### Frontend Validation
 
-The frontend relies on Next.js build-time behavior. If `NEXT_PUBLIC_API_URL` is undefined, API calls will fail visibly. For additional safety, consider adding runtime checks in the frontend's `_app.tsx`.
+The shared URL resolver fails a production build clearly when `NEXT_PUBLIC_API_BASE` is undefined.
 
 ---
 
@@ -305,7 +305,7 @@ The frontend relies on Next.js build-time behavior. If `NEXT_PUBLIC_API_URL` is 
 | `npm run dev` (frontend) | ✅ Works | Uses `.env.local` for local values |
 | `npm run build` (frontend) | ✅ Works | Uses `.env.production` for production values |
 | `python run.py` (backend) | ✅ Works | Loads `.env` via python-dotenv |
-| Railway build | ✅ Compatible | Uses environment variables from dashboard |
+| Render build | ✅ Compatible | Uses environment variables from dashboard |
 | Cloudflare Pages build | ✅ Compatible | Uses environment variables from Pages settings |
 | Docker build | ✅ Compatible | Reads from mounted `.env` or docker-compose |
 
@@ -316,7 +316,7 @@ The frontend relies on Next.js build-time behavior. If `NEXT_PUBLIC_API_URL` is 
 | Environment | URL | Source |
 |-------------|-----|--------|
 | Local | `ws://localhost:8000/ws` | `NEXT_PUBLIC_WS_URL` in `.env.local` |
-| Production | `wss://api.yapvibes.com/ws` | `NEXT_PUBLIC_WS_URL` in Cloudflare Pages settings |
+| Production | `wss://yapvibes-stocks-api.onrender.com/ws` | Derived from `NEXT_PUBLIC_API_BASE` |
 
 No WebSocket URLs are hardcoded. All connections use the environment variable.
 
@@ -329,7 +329,7 @@ The backend CORS middleware reads from `CORS_ORIGINS` environment variable with 
 - **Local:** `http://localhost:3000, http://localhost:5173`
 - **Production:** All YapVibes domains (`yapvibes.com`, `stocks.yapvibes.com`, `projects.yapvibes.com`, `yapvibes-stocks.pages.dev`)
 
-This is configurable via environment variables in both Railway and local `.env` files.
+This is configurable via environment variables in both Render and local `.env` files.
 
 ---
 

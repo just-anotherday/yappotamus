@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { API_BASE } from '@/types/stock';
+import { API_BASE } from '@/lib/serviceUrls';
 import { apiFetch } from '@/lib/apiFetch';
+import { requireOk } from '@/lib/apiError';
 import type { ReportSummary, ReportPaginationResponse, OllamaConfigStatus } from '@/types/stock';
 import { useAnalysisStatus } from '@/hooks/useAnalysisStatus';
 import ArticleSelectionMeter from '@/components/ArticleSelectionMeter';
@@ -118,7 +119,7 @@ export default function ReportsPage() {
       if (tf) params.set('ticker', tf.toUpperCase());
 
       const res = await apiFetch(`${API_BASE}/api/analysis/reports/?${params}`, { signal: controller.signal });
-      if (!res.ok) throw new Error(`Failed to fetch reports (${res.status})`);
+      await requireOk(res, 'Failed to fetch reports');
       const data: ReportPaginationResponse = await res.json();
       setReports(data.items);
       setTotal(data.total);
@@ -161,7 +162,7 @@ export default function ReportsPage() {
           `${API_BASE}/api/analysis/articles/${selectedTicker.toUpperCase()}?days_back=${daysBack}`,
           { signal: controller.signal }
         );
-        if (!res.ok) throw new Error('Failed to fetch articles');
+        await requireOk(res, 'Failed to fetch articles');
         const data = await res.json();
         setAvailableArticles(data.articles || []);
         // Auto-select up to the current max by default
@@ -228,10 +229,7 @@ export default function ReportsPage() {
           }),
       });
 
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || 'Analysis failed');
-      }
+      await requireOk(response, 'Analysis failed');
 
       // Analysis generated — refresh reports list so the new report appears at #1
       setPage(1);
@@ -249,7 +247,7 @@ export default function ReportsPage() {
     if (!confirm('Are you sure you want to delete this report?')) return;
     try {
       const res = await apiFetch(`${API_BASE}/api/analysis/reports/${reportId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete');
+      await requireOk(res, 'Failed to delete report');
       // Re-fetch reports to trigger numbering recalculation
       await doFetch(page, limit, sort, tickerFilter);
     } catch (e) {

@@ -16,6 +16,7 @@ from typing import AsyncGenerator
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.auth import verify_app_access_token
 from backend.config.settings import settings
@@ -28,6 +29,11 @@ from backend.services.ai_worker import AIWorker, enqueue_job, _daily_market_repo
 from backend.services.asset_sync import sync_watchlist_to_assets
 from backend.services.post_market_service import _post_market_fetch_loop
 from backend.services.ticker_extractor import ticker_extractor
+from backend.services.yfinance_cache import configure_yfinance_cache
+from backend.services.market_data_observability import (
+    market_data_correlation,
+    normalize_correlation_id,
+)
 from backend.exceptions import register_exception_handlers
 
 from backend.routers import stock as stock_router
@@ -66,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan context manager for startup/shutdown."""
 
     # ---- Startup ----
+    configure_yfinance_cache()
     set_event_loop(asyncio.get_running_loop())
 
     # Initialize PostgreSQL tables
@@ -214,7 +221,8 @@ def create_app() -> FastAPI:
         allow_origins=allow_origins_list,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["Authorization", "Content-Type", "Accept"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
     app.state.started_at = time.time()
 
@@ -257,12 +265,19 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
         """Log every request with method, path, status code, and latency."""
+        correlation_id = normalize_correlation_id(request.headers.get("X-Request-ID"))
         start = time.perf_counter()
-        response = await call_next(request)
+        with market_data_correlation(correlation_id):
+            response = await call_next(request)
         elapsed = time.perf_counter() - start
+        response.headers["X-Request-ID"] = correlation_id
         logger.info(
-            "[Request] %s %s -> %s (%.0fms)",
-            request.method, request.url.path, response.status_code, elapsed * 1000,
+            "[Request] correlation_id=%s %s %s -> %s (%.0fms)",
+            correlation_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed * 1000,
         )
         return response
 
@@ -275,7 +290,37 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["health"])
     @app.get("/health/ready", tags=["health"])
     async def health_check():
-        """Bounded readiness and dependency diagnostics without secret values."""
+        """Minimal public readiness probe for hosting health checks."""
+        from sqlalchemy import text
+
+        database_reachable = False
+        try:
+            async with asyncio.timeout(2):
+                async with async_session_factory() as session:
+                    await session.execute(text("SELECT 1"))
+            database_reachable = True
+        except Exception:
+            logger.warning(
+                "[Health] readiness database check failed",
+                extra={"event": "readiness_failed", "dependency": "database"},
+            )
+
+        payload = {
+            "status": "ready" if database_reachable else "not_ready",
+            "database": "reachable" if database_reachable else "unreachable",
+        }
+        return JSONResponse(
+            status_code=200 if database_reachable else 503,
+            content=payload,
+        )
+
+    @app.get(
+        "/api/operations/status",
+        tags=["operations"],
+        dependencies=[Depends(verify_app_access_token)],
+    )
+    async def operations_status():
+        """Authenticated operational diagnostics without secret values."""
         from sqlalchemy import func, select, text
         from backend.models.ai_job_queue import AIJobQueue
         from backend.services.ai import ProviderRegistry

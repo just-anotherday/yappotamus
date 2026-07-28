@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 
 from backend.config.polling_settings import polling_settings as settings
+from backend.services.yfinance_cache import configure_yfinance_cache
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("US/Eastern")
@@ -200,6 +201,7 @@ class MarketDataService:
             self._stop_event.wait(self._next_delay(started, success))
 
     def _download_batch(self, tickers: List[str]):
+        configure_yfinance_cache(yf)
         return yf.download(tickers=tickers if len(tickers) > 1 else tickers[0], period="1d", interval="1m", group_by="column", auto_adjust=False, prepost=False, progress=False, threads=True, timeout=10)
 
     def _do_poll(self) -> bool:

@@ -339,6 +339,28 @@ class Settings:
     def AI_WORKER_MAX_CONCURRENT(self) -> int:
         return int(os.getenv("AI_WORKER_MAX_CONCURRENT", "2"))
 
+    @property
+    def AI_JOB_LEASE_SECONDS(self) -> int:
+        """Duration of a worker-owned job lease between heartbeats."""
+        return self._number("AI_JOB_LEASE_SECONDS", "120", int, minimum=30)
+
+    @property
+    def AI_JOB_HEARTBEAT_SECONDS(self) -> int:
+        """Heartbeat interval for extending an active job lease."""
+        return self._number("AI_JOB_HEARTBEAT_SECONDS", "30", int, minimum=5)
+
+    @property
+    def AI_STALE_JOB_THRESHOLD_SECONDS(self) -> int:
+        """Minimum processing age before an expired legacy/leased job is recoverable."""
+        return self._number("AI_STALE_JOB_THRESHOLD_SECONDS", "3600", int, minimum=1800)
+
+    @property
+    def AI_STALE_JOB_RECOVERY_ENABLED(self) -> bool:
+        """Explicit production safety gate for stale-job state transitions."""
+        return os.getenv("AI_STALE_JOB_RECOVERY_ENABLED", "false").strip().lower() in {
+            "1", "true", "yes"
+        }
+
     # ----- Analysis Timeout -----
     @property
     def ANALYSIS_TIMEOUT_S(self) -> float:
@@ -347,11 +369,36 @@ class Settings:
     # ----- Hybrid Data Cache -----
     @property
     def HYBRID_CACHE_TTL_S(self) -> float:
-        return float(os.getenv("HYBRID_CACHE_TTL_S", "300"))
+        return self._number("HYBRID_CACHE_TTL_S", "300", float, minimum=1)
+
+    @property
+    def HYBRID_STALE_CACHE_TTL_S(self) -> float:
+        """Maximum age for stale data used only after provider failure."""
+        return self._number(
+            "HYBRID_STALE_CACHE_TTL_S",
+            "3600",
+            float,
+            minimum=self.HYBRID_CACHE_TTL_S,
+        )
 
     @property
     def HYBRID_CACHE_MAX_SIZE(self) -> int:
-        return int(os.getenv("HYBRID_CACHE_MAX_SIZE", "1000"))
+        return self._number("HYBRID_CACHE_MAX_SIZE", "1000", int, minimum=1)
+
+    @property
+    def MARKET_DATA_PROVIDER_TIMEOUT_S(self) -> float:
+        """Per-provider timeout before the hybrid layer tries its fallback."""
+        return self._number(
+            "MARKET_DATA_PROVIDER_TIMEOUT_S",
+            "20",
+            float,
+            minimum=0.1,
+        )
+
+    @property
+    def YFINANCE_CACHE_DIR(self) -> Optional[str]:
+        """Optional writable yfinance cache directory."""
+        return (os.getenv("YFINANCE_CACHE_DIR") or "").strip() or None
 
     # ----- Startup Validation -----
     def validate(self) -> None:

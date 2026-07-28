@@ -3,7 +3,7 @@
 // ==============================================================================
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { WS_URL } from '@/types/stock';
+import { LIVE_PRICES_WS_URL } from '@/lib/serviceUrls';
 import type { LiveQuote } from '@/types/stock';
 import { getAppWebSocketProtocols, invalidateAppToken } from '@/lib/apiFetch';
 
@@ -48,7 +48,7 @@ export function useLivePrices() {
     if (Object.keys(flashes).length > 0) setPriceFlash(prev => ({ ...prev, ...flashes }));
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(function connectSocket() {
     const protocols = getAppWebSocketProtocols();
     if (!protocols || stoppedRef.current) return;
     // Clear any pending reconnect attempt
@@ -62,7 +62,7 @@ export function useLivePrices() {
       wsRef.current.close();
     }
 
-    const ws = new WebSocket(WS_URL, protocols);
+    const ws = new WebSocket(LIVE_PRICES_WS_URL, protocols);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -102,7 +102,7 @@ export function useLivePrices() {
         const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
         console.log(`[WS] Reconnecting in ${delay}ms (attempt ${attempts + 1})`);
         reconnectAttemptsRef.current = attempts + 1;
-        reconnectTimeoutRef.current = setTimeout(connect, delay);
+        reconnectTimeoutRef.current = setTimeout(connectSocket, delay);
       }
     };
   }, [flushQuotes]);
@@ -110,6 +110,7 @@ export function useLivePrices() {
   useEffect(() => {
     stoppedRef.current = false;
     connect();
+    const flashTimeouts = flashTimeoutsRef.current;
 
     return () => {
       // Cleanup on unmount
@@ -118,7 +119,7 @@ export function useLivePrices() {
         clearTimeout(reconnectTimeoutRef.current);
       }
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-      Object.values(flashTimeoutsRef.current).forEach(clearTimeout);
+      Object.values(flashTimeouts).forEach(clearTimeout);
       if (wsRef.current) {
         wsRef.current.close(1000, 'Component unmounted');
       }

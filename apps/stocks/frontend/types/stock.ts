@@ -56,7 +56,7 @@ export interface WatchlistItem {
   forward_pe?: number | null;
 
   // Security Classification
-  security_type?: SecurityType;
+  security_type?: SecurityType | null;
 
   // Price Data
   current_price: number;
@@ -69,17 +69,18 @@ export interface WatchlistItem {
   change: number;
   change_percent: number;
   market_cap: number;
+  volume: number;
 
   // Share Structure (STOCK only)
-  shares_outstanding?: number;
-  float_shares?: number;
-  insider_percent?: number;
-  institution_percent?: number;
+  shares_outstanding?: number | null;
+  float_shares?: number | null;
+  insider_percent?: number | null;
+  institution_percent?: number | null;
 
   // Risk & Demand Signals (computed heuristic, 0-10 scale)
   beta: number;
-  short_percent_of_float?: number;
-  shares_short?: number;
+  short_percent_of_float?: number | null;
+  shares_short?: number | null;
   overall_risk: number;
 
   // Analyst Targets (STOCK only)
@@ -88,10 +89,10 @@ export interface WatchlistItem {
   target_high_price?: number | null;
   target_low_price?: number | null;
   recommendation_key: string;
-  number_of_analysts?: number;
+  number_of_analysts?: number | null;
 
   // ETF-Specific Data (optional)
-  etf_data?: ETFData;
+  etf_data?: ETFData | null;
 
   // After-Hours Price (from yfinance, only during after-hours trading)
   post_market_price?: number | null;
@@ -205,8 +206,6 @@ export interface AsyncDataState<T> {
 // ==============================================================================
 
 // Environment-variable-based API configuration for production deployment
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000';
-export const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws';
 
 // ==============================================================================
 // AI RESEARCH PROFILE (for Bull/Bear case generation)
@@ -446,7 +445,24 @@ export interface PipelineStatus {
     failed: number;
     total: number;
     by_type: Record<string, Record<string, number>>;
-    processing_tasks?: Array<{ job_type: string; target_id: number; started_at: string | null }>;
+    processing_tasks?: Array<{
+      id: number;
+      status: string;
+      job_type: string;
+      target_type: string;
+      target_id: number;
+      created_at: string | null;
+      started_at: string | null;
+      updated_at: string | null;
+      attempt_count: number;
+      retry_count: number;
+      max_retries: number;
+      worker_id: string | null;
+      heartbeat_at: string | null;
+      lease_expires_at: string | null;
+      recovery_count: number;
+      last_recovery_reason: string | null;
+    }>;
   };
   watchlist: {
     tickers: number;

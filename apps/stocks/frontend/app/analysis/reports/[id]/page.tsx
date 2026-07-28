@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { API_BASE } from '@/types/stock';
+import { API_BASE } from '@/lib/serviceUrls';
 import { apiFetch } from '@/lib/apiFetch';
+import { requireOk } from '@/lib/apiError';
 import type { ReportDetail, KeyRisk, FinancialAnalysisReport, ArticleReference } from '@/types/stock';
 import { formatReportDateTime, getPromptBadge } from '@/lib/reportPresentation';
 
@@ -17,10 +18,7 @@ export default function ReportDetailPage() {
   useEffect(() => {
     apiFetch(`${API_BASE}/api/analysis/reports/${id}`)
       .then(async res => {
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || 'Failed to load report');
-        }
+        await requireOk(res, 'Failed to load report');
         return res.json();
       })
       .then(data => setReport(data))
@@ -32,7 +30,7 @@ export default function ReportDetailPage() {
     if (!confirm('Are you sure you want to delete this report?')) return;
     try {
       const res = await apiFetch(`${API_BASE}/api/analysis/reports/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete');
+      await requireOk(res, 'Failed to delete report');
       router.push('/analysis/reports');
     } catch (e) {
       console.error(e);

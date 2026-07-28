@@ -735,15 +735,45 @@ async def get_pipeline_status(
     processing_tasks = []
     try:
         proc_row = await session.execute(
-            select(AIJobQueue.job_type, AIJobQueue.target_id, AIJobQueue.updated_at)
+            select(
+                AIJobQueue.id,
+                AIJobQueue.status,
+                AIJobQueue.job_type,
+                AIJobQueue.target_type,
+                AIJobQueue.target_id,
+                AIJobQueue.created_at,
+                AIJobQueue.started_at,
+                AIJobQueue.updated_at,
+                AIJobQueue.retry_count,
+                AIJobQueue.max_retries,
+                AIJobQueue.worker_id,
+                AIJobQueue.heartbeat_at,
+                AIJobQueue.lease_expires_at,
+                AIJobQueue.recovery_count,
+                AIJobQueue.last_recovery_reason,
+            )
             .where(AIJobQueue.status == "processing")
-            .order_by(AIJobQueue.updated_at.desc())
+            .order_by(AIJobQueue.started_at.asc(), AIJobQueue.id.asc())
+            .limit(100)
         )
         for r in proc_row.fetchall():
             processing_tasks.append({
-                "job_type": r[0],
-                "target_id": r[1],
-                "started_at": r[2].isoformat() if r[2] else None,
+                "id": r[0],
+                "status": r[1],
+                "job_type": r[2],
+                "target_type": r[3],
+                "target_id": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+                "started_at": r[6].isoformat() if r[6] else None,
+                "updated_at": r[7].isoformat() if r[7] else None,
+                "attempt_count": (r[8] or 0) + 1,
+                "retry_count": r[8] or 0,
+                "max_retries": r[9] or 0,
+                "worker_id": r[10],
+                "heartbeat_at": r[11].isoformat() if r[11] else None,
+                "lease_expires_at": r[12].isoformat() if r[12] else None,
+                "recovery_count": r[13] or 0,
+                "last_recovery_reason": r[14],
             })
     except Exception:
         pass
@@ -774,6 +804,7 @@ async def get_pipeline_status(
             "failed": queue_failed,
             "total": queue_pending + queue_processing + queue_completed + queue_failed,
             "by_type": job_type_breakdown,
+            "processing_tasks": processing_tasks,
         },
         "watchlist": {
             "tickers": watchlist_count,

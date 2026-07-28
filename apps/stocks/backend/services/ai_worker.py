@@ -16,10 +16,12 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Callable, Awaitable
+from uuid import uuid4
 
-from sqlalchemy import select, update, and_, text
+from sqlalchemy import select, update, and_, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config.settings import settings
 from backend.models.analysis import (
     FinancialAnalysisRequest,
     NewsArticleRequest,
@@ -36,6 +38,168 @@ from backend.services.ollama_service import CURRENT_PROMPT_VERSION
 logger = logging.getLogger(__name__)
 
 
+def _append_job_error(existing: Optional[str], message: str) -> str:
+    """Append bounded operational history without discarding prior failures."""
+    entry = f"[{datetime.utcnow().isoformat()}] {message}"
+    history = f"{existing}\n{entry}" if existing else entry
+    return history[-8000:]
+
+
+def _job_is_recoverable(job, *, now: datetime, stale_threshold_seconds: int) -> bool:
+    """Double-check recovery eligibility while the database row is locked."""
+    if job.status != "processing" or job.started_at is None:
+        return False
+    if job.started_at > now - timedelta(seconds=stale_threshold_seconds):
+        return False
+    if job.lease_expires_at is not None:
+        return job.lease_expires_at <= now
+    # A migration backfills updated_at for legacy rows. Waiting for that
+    # timestamp to become stale prevents a newly migrated, still-running
+    # legacy worker from being reclaimed during a rolling restart.
+    return job.updated_at <= now - timedelta(seconds=stale_threshold_seconds)
+
+
+def _stale_job_query(
+    *,
+    now: datetime,
+    stale_threshold_seconds: int,
+    limit: int,
+    job_type: Optional[str] = None,
+    target_type: Optional[str] = None,
+    target_id: Optional[int] = None,
+    dedupe_key: Optional[str] = None,
+    filter_dedupe_key: bool = False,
+):
+    """Build the lock-safe PostgreSQL query used by startup and enqueue recovery."""
+    from backend.models.ai_job_queue import AIJobQueue
+
+    cutoff = now - timedelta(seconds=stale_threshold_seconds)
+    conditions = [
+        AIJobQueue.status == "processing",
+        AIJobQueue.started_at.is_not(None),
+        AIJobQueue.started_at <= cutoff,
+        or_(
+            and_(
+                AIJobQueue.lease_expires_at.is_(None),
+                AIJobQueue.updated_at <= cutoff,
+            ),
+            AIJobQueue.lease_expires_at <= now,
+        )
+    ]
+    if job_type is not None:
+        conditions.append(AIJobQueue.job_type == job_type)
+    if target_type is not None:
+        conditions.append(AIJobQueue.target_type == target_type)
+    if target_id is not None:
+        conditions.append(AIJobQueue.target_id == target_id)
+    if filter_dedupe_key:
+        conditions.append(AIJobQueue.dedupe_key == dedupe_key)
+
+    return (
+        select(AIJobQueue)
+        .where(and_(*conditions))
+        .order_by(AIJobQueue.started_at.asc(), AIJobQueue.id.asc())
+        .with_for_update(skip_locked=True)
+        .limit(limit)
+    )
+
+
+async def recover_stale_jobs(
+    session: AsyncSession,
+    *,
+    stale_threshold_seconds: int,
+    recovery_worker_id: str,
+    now: Optional[datetime] = None,
+    limit: int = 100,
+    commit: bool = True,
+    job_type: Optional[str] = None,
+    target_type: Optional[str] = None,
+    target_id: Optional[int] = None,
+    dedupe_key: Optional[str] = None,
+    filter_dedupe_key: bool = False,
+) -> list[int]:
+    """Recover abandoned processing jobs whose worker lease has expired.
+
+    Recovery is idempotent: rows are locked with ``SKIP LOCKED`` and changed
+    away from ``processing`` in the same transaction. Retry counts are
+    preserved because an interrupted process is not an application failure.
+    """
+    recovery_time = now or datetime.utcnow()
+    result = await session.execute(
+        _stale_job_query(
+            now=recovery_time,
+            stale_threshold_seconds=stale_threshold_seconds,
+            limit=limit,
+            job_type=job_type,
+            target_type=target_type,
+            target_id=target_id,
+            dedupe_key=dedupe_key,
+            filter_dedupe_key=filter_dedupe_key,
+        )
+    )
+    candidates = list(result.unique().scalars().all())
+    recoverable = [
+        job
+        for job in candidates
+        if _job_is_recoverable(
+            job,
+            now=recovery_time,
+            stale_threshold_seconds=stale_threshold_seconds,
+        )
+    ]
+    logger.info(
+        "[AIWorker] event=stale_recovery_scan worker_id=%s detected=%d threshold_seconds=%d",
+        recovery_worker_id,
+        len(recoverable),
+        stale_threshold_seconds,
+    )
+
+    recovered_ids: list[int] = []
+    for job in recoverable:
+        previous_state = job.status
+        previous_worker = job.worker_id
+        reason = (
+            "processing lease expired"
+            if job.lease_expires_at is not None
+            else "legacy processing job exceeded stale threshold without a lease"
+        )
+        new_state = "pending" if job.retry_count < job.max_retries else "failed"
+
+        job.status = new_state
+        job.recovery_count = (job.recovery_count or 0) + 1
+        job.last_recovery_reason = reason
+        job.updated_at = recovery_time
+        job.error_message = _append_job_error(
+            job.error_message,
+            (
+                f"Interrupted attempt recovered by {recovery_worker_id}; "
+                f"reason={reason}; previous_worker={previous_worker or 'legacy'}"
+            ),
+        )
+        if new_state == "pending":
+            job.scheduled_for = recovery_time
+            job.completed_at = None
+        else:
+            job.completed_at = recovery_time
+        # Keep the previous worker/lease timestamps until the next claim so
+        # protected diagnostics retain ownership evidence for the interruption.
+        recovered_ids.append(job.id)
+        logger.info(
+            "[AIWorker] event=stale_job_recovered job_id=%d previous_state=%s "
+            "new_state=%s previous_worker_id=%s recovery_worker_id=%s reason=%s",
+            job.id,
+            previous_state,
+            new_state,
+            previous_worker or "legacy",
+            recovery_worker_id,
+            reason,
+        )
+
+    if commit and recovered_ids:
+        await session.commit()
+    return recovered_ids
+
+
 class AIWorker:
     """Background worker that processes AI enrichment jobs from the queue."""
 
@@ -45,6 +209,12 @@ class AIWorker:
         self.max_concurrent = max_concurrent
         self._running = False
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        self.worker_id = f"worker-{uuid4()}"
+        self.lease_seconds = settings.AI_JOB_LEASE_SECONDS
+        self.heartbeat_seconds = settings.AI_JOB_HEARTBEAT_SECONDS
+        self.stale_threshold_seconds = settings.AI_STALE_JOB_THRESHOLD_SECONDS
+        self.recovery_enabled = settings.AI_STALE_JOB_RECOVERY_ENABLED
+        self._active_tasks: set[asyncio.Task] = set()
         # Registry of job_type -> handler method
         self._handlers = {
             "article_intelligence": self._handle_article_intelligence,
@@ -56,7 +226,35 @@ class AIWorker:
     async def start(self):
         """Start the background polling loop."""
         self._running = True
-        logger.info("[AIWorker] Started, polling every %.1fs (max_concurrent=%d)", self.poll_interval, self.max_concurrent)
+        logger.info(
+            "[AIWorker] event=worker_start worker_id=%s poll_seconds=%.1f "
+            "max_concurrent=%d lease_seconds=%d heartbeat_seconds=%d "
+            "stale_threshold_seconds=%d",
+            self.worker_id,
+            self.poll_interval,
+            self.max_concurrent,
+            self.lease_seconds,
+            self.heartbeat_seconds,
+            self.stale_threshold_seconds,
+        )
+        if self.recovery_enabled:
+            try:
+                async with self.get_session_factory() as session:
+                    await recover_stale_jobs(
+                        session,
+                        stale_threshold_seconds=self.stale_threshold_seconds,
+                        recovery_worker_id=self.worker_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "[AIWorker] event=startup_recovery_failed worker_id=%s",
+                    self.worker_id,
+                )
+        else:
+            logger.info(
+                "[AIWorker] event=stale_recovery_disabled worker_id=%s",
+                self.worker_id,
+            )
 
         while self._running:
             try:
@@ -67,40 +265,58 @@ class AIWorker:
 
     def stop(self):
         self._running = False
-        logger.info("[AIWorker] Stop requested")
+        logger.info(
+            "[AIWorker] event=worker_stop_requested worker_id=%s active_jobs=%d",
+            self.worker_id,
+            len(self._active_tasks),
+        )
 
     # ------------------------------------------------------------------
     # Polling cycle
     # ------------------------------------------------------------------
     async def _poll_cycle(self):
         """Claim pending jobs and dispatch them."""
+        available_slots = self.max_concurrent - len(self._active_tasks)
+        if available_slots <= 0:
+            return
         async with self.get_session_factory() as session:
             try:
-                jobs = await self._claim_pending_jobs(session)
+                jobs = await self._claim_pending_jobs(session, limit=available_slots)
             except Exception:
-                logger.exception("[AIWorker] Error claiming jobs")
+                logger.exception(
+                    "[AIWorker] event=job_claim_failed worker_id=%s",
+                    self.worker_id,
+                )
                 return
 
             for job in jobs:
                 await self._semaphore.acquire()
-                asyncio.create_task(self._process_job(job))
+                task = asyncio.create_task(self._process_job(job))
+                self._active_tasks.add(task)
+                task.add_done_callback(self._active_tasks.discard)
 
-    async def _claim_pending_jobs(self, session: AsyncSession) -> list:
+    async def _claim_pending_jobs(
+        self, session: AsyncSession, *, limit: Optional[int] = None
+    ) -> list:
         """Atomically claim up to max_concurrent pending jobs."""
         from backend.models.ai_job_queue import AIJobQueue
 
+        claim_limit = self.max_concurrent if limit is None else max(0, limit)
+        if claim_limit == 0:
+            return []
+        claim_time = datetime.utcnow()
         stmt = (
             select(AIJobQueue)
             .where(
                 and_(
                     AIJobQueue.status == "pending",
-                    AIJobQueue.scheduled_for <= datetime.utcnow(),
+                    AIJobQueue.scheduled_for <= claim_time,
                     AIJobQueue.retry_count < AIJobQueue.max_retries,
                 )
             )
             .order_by(AIJobQueue.priority.asc(), AIJobQueue.scheduled_for.asc())
             .with_for_update(skip_locked=True)
-            .limit(self.max_concurrent)
+            .limit(claim_limit)
         )
 
         result = await session.execute(stmt)
@@ -108,14 +324,23 @@ class AIWorker:
 
         for job in jobs:
             job.status = "processing"
-            job.started_at = datetime.utcnow()
-            job.error_message = None
+            job.started_at = claim_time
+            job.updated_at = claim_time
+            job.worker_id = self.worker_id
+            job.heartbeat_at = claim_time
+            job.lease_expires_at = claim_time + timedelta(seconds=self.lease_seconds)
 
         if jobs:
             # The row locks and status transition are committed together. A
             # concurrent PostgreSQL worker skips these locked rows and cannot
             # claim the same job.
             await session.commit()
+            logger.info(
+                "[AIWorker] event=jobs_claimed worker_id=%s count=%d job_ids=%s",
+                self.worker_id,
+                len(jobs),
+                [job.id for job in jobs],
+            )
         return jobs
 
     async def _process_job(self, job):
@@ -127,67 +352,201 @@ class AIWorker:
             "market_report": 10,
         }
         timeout_seconds = TIMEOUT_MINUTES.get(job.job_type, 10) * 60
+        heartbeat_task = asyncio.create_task(self._heartbeat_job(job.id))
+        logger.info(
+            "[AIWorker] event=job_start worker_id=%s job_id=%d job_type=%s "
+            "attempt=%d timeout_seconds=%d",
+            self.worker_id,
+            job.id,
+            job.job_type,
+            job.retry_count + 1,
+            timeout_seconds,
+        )
 
         try:
             handler = self._handlers.get(job.job_type)
             if not handler:
-                logger.warning("[AIWorker] Unknown job type %r, marking failed", job.job_type)
+                logger.warning(
+                    "[AIWorker] event=unknown_job_type worker_id=%s job_id=%d "
+                    "job_type=%s",
+                    self.worker_id,
+                    job.id,
+                    job.job_type,
+                )
                 await self._fail_job(job, f"Unknown job type: {job.job_type}")
                 return
 
             result_data = await asyncio.wait_for(handler(job), timeout=timeout_seconds)
             await self._complete_job(job, result_data)
         except asyncio.TimeoutError:
-            logger.error("[AIWorker] Job %d (%s) timed out after %ds", job.id, job.job_type, timeout_seconds)
+            logger.error(
+                "[AIWorker] event=job_timeout worker_id=%s job_id=%d "
+                "job_type=%s timeout_seconds=%d",
+                self.worker_id,
+                job.id,
+                job.job_type,
+                timeout_seconds,
+            )
             job.retry_count += 1
+            job.error_message = _append_job_error(
+                job.error_message,
+                f"Attempt {job.retry_count} timed out after {timeout_seconds}s",
+            )
             if job.retry_count >= job.max_retries:
                 job.status = "failed"
-                job.error_message = f"Timed out after {timeout_seconds}s"
+                job.completed_at = datetime.utcnow()
             else:
                 from datetime import timedelta
                 job.scheduled_for = datetime.utcnow() + timedelta(minutes=2**job.retry_count)
                 job.status = "pending"
+            job.updated_at = datetime.utcnow()
             try:
                 async with self.get_session_factory() as session:
                     await session.merge(job)
                     await session.commit()
+                logger.warning(
+                    "[AIWorker] event=job_failure_recorded worker_id=%s "
+                    "job_id=%d job_type=%s new_state=%s attempt=%d",
+                    self.worker_id,
+                    job.id,
+                    job.job_type,
+                    job.status,
+                    job.retry_count,
+                )
             except Exception:
-                logger.exception("[AIWorker] Error updating job %d", job.id)
+                logger.exception(
+                    "[AIWorker] event=job_failure_persist_failed worker_id=%s "
+                    "job_id=%d",
+                    self.worker_id,
+                    job.id,
+                )
         except Exception:
-            logger.exception("[AIWorker] Job %d failed", job.id)
+            logger.exception(
+                "[AIWorker] event=job_execution_failed worker_id=%s job_id=%d "
+                "job_type=%s",
+                self.worker_id,
+                job.id,
+                job.job_type,
+            )
             job.retry_count += 1
+            job.error_message = _append_job_error(
+                job.error_message,
+                f"Attempt {job.retry_count} failed; see structured worker logs",
+            )
             if job.retry_count >= job.max_retries:
                 job.status = "failed"
+                job.completed_at = datetime.utcnow()
             else:
                 # Reschedule with exponential backoff
                 from datetime import timedelta
                 job.scheduled_for = datetime.utcnow() + timedelta(minutes=2**job.retry_count)
                 job.status = "pending"
+            job.updated_at = datetime.utcnow()
             try:
                 async with self.get_session_factory() as session:
                     await session.merge(job)
                     await session.commit()
+                logger.warning(
+                    "[AIWorker] event=job_failure_recorded worker_id=%s "
+                    "job_id=%d job_type=%s new_state=%s attempt=%d",
+                    self.worker_id,
+                    job.id,
+                    job.job_type,
+                    job.status,
+                    job.retry_count,
+                )
             except Exception:
-                logger.exception("[AIWorker] Error updating job %d", job.id)
+                logger.exception(
+                    "[AIWorker] event=job_failure_persist_failed worker_id=%s "
+                    "job_id=%d",
+                    self.worker_id,
+                    job.id,
+                )
         finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
             self._semaphore.release()
+
+    async def _heartbeat_job(self, job_id: int) -> None:
+        """Extend the lease only while this worker still owns the job."""
+        from backend.models.ai_job_queue import AIJobQueue
+
+        while self._running:
+            await asyncio.sleep(self.heartbeat_seconds)
+            heartbeat_time = datetime.utcnow()
+            async with self.get_session_factory() as session:
+                result = await session.execute(
+                    update(AIJobQueue)
+                    .where(
+                        and_(
+                            AIJobQueue.id == job_id,
+                            AIJobQueue.status == "processing",
+                            AIJobQueue.worker_id == self.worker_id,
+                        )
+                    )
+                    .values(
+                        heartbeat_at=heartbeat_time,
+                        lease_expires_at=heartbeat_time
+                        + timedelta(seconds=self.lease_seconds),
+                        updated_at=heartbeat_time,
+                    )
+                )
+                await session.commit()
+                if result.rowcount != 1:
+                    logger.warning(
+                        "[AIWorker] event=heartbeat_ownership_lost worker_id=%s job_id=%d",
+                        self.worker_id,
+                        job_id,
+                    )
+                    return
+            logger.debug(
+                "[AIWorker] event=job_heartbeat worker_id=%s job_id=%d "
+                "lease_expires_at=%s",
+                self.worker_id,
+                job_id,
+                heartbeat_time + timedelta(seconds=self.lease_seconds),
+            )
 
     async def _complete_job(self, job, result_data: Optional[dict] = None):
         job.status = "completed"
         job.completed_at = datetime.utcnow()
+        job.updated_at = job.completed_at
+        job.lease_expires_at = job.completed_at
         if result_data:
             job.result = result_data
         async with self.get_session_factory() as session:
             await session.merge(job)
             await session.commit()
+        logger.info(
+            "[AIWorker] event=job_complete worker_id=%s job_id=%d "
+            "job_type=%s attempts=%d",
+            self.worker_id,
+            job.id,
+            job.job_type,
+            job.retry_count + 1,
+        )
 
     async def _fail_job(self, job, error_msg: str):
         job.status = "failed"
-        job.error_message = error_msg
+        job.error_message = _append_job_error(job.error_message, error_msg)
         job.completed_at = datetime.utcnow()
+        job.updated_at = job.completed_at
+        job.lease_expires_at = job.completed_at
         async with self.get_session_factory() as session:
             await session.merge(job)
             await session.commit()
+        logger.error(
+            "[AIWorker] event=job_failed worker_id=%s job_id=%d "
+            "job_type=%s attempts=%d reason=%s",
+            self.worker_id,
+            job.id,
+            job.job_type,
+            job.retry_count + 1,
+            error_msg,
+        )
 
     # ------------------------------------------------------------------
     # Job Handlers
@@ -761,6 +1120,23 @@ async def enqueue_job(session: AsyncSession, job_type: str, target_type: str, ta
             "target_key": dedupe_key or f"{target_type}:{target_id}",
         },
     )
+
+    # Recover an abandoned attempt for this logical target inside the same
+    # advisory-lock transaction before deduplication. The recovered row becomes
+    # pending and remains the single source of work; no duplicate row is added.
+    if settings.AI_STALE_JOB_RECOVERY_ENABLED:
+        await recover_stale_jobs(
+            session,
+            stale_threshold_seconds=settings.AI_STALE_JOB_THRESHOLD_SECONDS,
+            recovery_worker_id=f"enqueue-{uuid4()}",
+            limit=1,
+            commit=False,
+            job_type=job_type,
+            target_type=target_type,
+            target_id=target_id,
+            dedupe_key=dedupe_key,
+            filter_dedupe_key=True,
+        )
 
     # Deduplicate pending/processing work after acquiring the target lock.
     exists_stmt = (

@@ -45,7 +45,7 @@
 
 ## 2. Render Configuration (Backend)
 
-### FastAPI Service (`api.yapvibes.com`)
+### FastAPI Service (`yapvibes-stocks-api.onrender.com`)
 
 | Setting | Value |
 |---------|-------|
@@ -85,6 +85,7 @@
 | `DATABASE_URL` | Render PostgreSQL / Supabase | Async connection string |
 | `CORS_ORIGINS` | Manual | `https://stocks.yapvibes.com,http://localhost:3000` |
 | `FINNHUB_API_KEY` | Finnhub account | Market data API key |
+| `AI_STALE_JOB_RECOVERY_ENABLED` | Manual | Keep `false` until protected queue timestamps are reviewed |
 | `OLLAMA_BASE_URL` | Optional | Local LLM endpoint (omit in prod if not using) |
 | `OLLAMA_MODEL` | Optional | Model name |
 
@@ -92,8 +93,8 @@
 
 | Variable | Source | Description |
 |----------|--------|-------------|
-| `NEXT_PUBLIC_API_BASE` | Manual | `https://api.yapvibes.com` |
-| `NEXT_PUBLIC_WS_URL` | Manual | `wss://api.yapvibes.com/ws` |
+| `NEXT_PUBLIC_API_BASE` | Manual | `https://yapvibes-stocks-api.onrender.com` |
+| `NEXT_PUBLIC_WS_URL` | Derived | `wss://yapvibes-stocks-api.onrender.com/ws` |
 
 ---
 
@@ -123,7 +124,7 @@
 - [ ] `https://yapvibes.com` loads website frontend
 - [ ] `https://projects.yapvibes.com` loads projects app + Supabase auth works
 - [ ] `https://stocks.yapvibes.com` loads stocks dashboard
-- [ ] API calls from stocks frontend reach `api.yapvibes.com`
+- [ ] API calls from stocks frontend reach `yapvibes-stocks-api.onrender.com`
 - [ ] WebSocket connections work for live data
 - [ ] HTTPS certificates active on all subdomains
 

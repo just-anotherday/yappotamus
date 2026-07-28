@@ -5,6 +5,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { WatchlistItem } from "@/types/stock";
 import { formatCurrency, formatLargeNumber } from "@/lib/formatters";
+import { formatWatchlistNumber } from "@/lib/watchlistPresentation";
 
 interface Props {
   item: WatchlistItem;
@@ -103,7 +104,7 @@ export default function TickerTooltip({ item }: Props) {
             {item.forward_pe != null && (
               <>
                 <span className="text-gray-500 font-medium">Forward P/E</span>
-                <span className="text-gray-900 font-semibold text-right">{item.forward_pe.toFixed(1)}</span>
+                <span className="text-gray-900 font-semibold text-right">{formatWatchlistNumber(item.forward_pe, 1)}</span>
               </>
             )}
 

@@ -18,6 +18,8 @@ from typing import Any, Dict, Optional
 import yfinance as yf
 
 from backend.config.polling_settings import polling_settings as settings
+from backend.services.yfinance_cache import configure_yfinance_cache
+from backend.services.market_data_observability import normalize_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -113,28 +115,37 @@ class PostMarketService:
         self,
         ticker: str,
         now_et: datetime | None = None,
+        correlation_id: str = "none",
     ) -> tuple[float | None, float | None]:
         """Fetch extended-hours and regular-market prices for a single ticker.
 
         Returns (extended_price, regular_price) or (None, regular_price) when no
         valid quote exists for the current pre-market/post-market session.
         """
+        configure_yfinance_cache(yf)
         try:
             tkr = yf.Ticker(ticker)
             info = tkr.info  # dict-based .info is more stable than .fast_info
             effective_now = now_et or datetime.now(tz=ZoneInfo("US/Eastern"))
             return self._extract_extended_hours_prices(info, effective_now)
         except Exception as e:
-            logger.warning("[PostMarket] yfinance info fetch failed for %s: %s", ticker, e)
+            logger.warning(
+                "[PostMarket] event=provider_attempt correlation_id=%s symbol=%s "
+                "provider=yf success=false exception_type=%s",
+                correlation_id,
+                ticker,
+                type(e).__name__,
+            )
             return None, None
 
     def fetch_all(self, tickers: list[str]) -> None:
         """Fetch extended-hours metadata with conservative bounded concurrency."""
         started = time.monotonic()
+        correlation_id = normalize_correlation_id(None)
         updated = failed = missing = 0
 
         def fetch(ticker: str):
-            return ticker, self._get_post_market_data_for_ticker(ticker)
+            return ticker, self._get_post_market_data_for_ticker(ticker, correlation_id=correlation_id)
 
         with ThreadPoolExecutor(max_workers=settings.PM_MAX_CONCURRENCY, thread_name_prefix="extended-hours") as executor:
             futures = {executor.submit(fetch, ticker): ticker for ticker in tickers}
@@ -146,7 +157,12 @@ class PostMarketService:
                     definitive = last_price is not None
                 except Exception as e:
                     failed += 1
-                    logger.warning("[PostMarket] provider_failure=%s ticker=%s", type(e).__name__, ticker)
+                    logger.warning(
+                        "[PostMarket] correlation_id=%s provider_failure=%s ticker=%s",
+                        correlation_id,
+                        type(e).__name__,
+                        ticker,
+                    )
                     continue
 
                 if not pm_price or not last_price:
@@ -169,7 +185,8 @@ class PostMarketService:
                 updated += 1
 
         logger.info(
-            "[PostMarket] cycle=extended duration_ms=%.1f requested=%d valid=%d missing=%d failures=%d concurrency=%d",
+            "[PostMarket] cycle=extended correlation_id=%s duration_ms=%.1f requested=%d valid=%d missing=%d failures=%d concurrency=%d",
+            correlation_id,
             (time.monotonic() - started) * 1000, len(tickers), updated, missing, failed,
             settings.PM_MAX_CONCURRENCY,
         )
