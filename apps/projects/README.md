@@ -1,32 +1,35 @@
-# React + TypeScript + Vite
+# YapVibes Project Directory
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A personal directory for several project formats:
 
-Currently, two official plugins are available:
+- **Board** — the existing task workflow with status, priority, due dates, pinning, archiving, and manual ordering.
+- **Shopping List** — categorized items with quantities, units, completion, editing, and checked-item cleanup.
+- **Recipe Book** — searchable recipes with timing, servings, ingredient checklists, and numbered instructions.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Projects and entries remain attached to the signed-in Supabase user. Existing projects default to the `board` type.
 
-## React Compiler
+## Local development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The app reads `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from the appropriate Vite environment file.
+
+## Database migration
+
+Apply `migrations/004_add_project_kinds_and_task_metadata.sql` to the correctly identified Supabase project before using Shopping List or Recipe Book projects. It adds:
+
+- `projects.kind`, defaulting existing rows to `board`
+- `tasks.metadata`, a JSON object used for shopping and recipe fields
+- an index for a user's projects by kind
+
+The migration does not replace or weaken existing row-level security policies. A rollback script is provided beside it.
+
+## Validation
+
+```bash
+npm run lint
+npm run build
+```

@@ -1,13 +1,28 @@
+export type ProjectKind = 'board' | 'shopping' | 'recipes'
+
 export interface Project {
   id: string
   name: string
   description?: string
+  kind: ProjectKind
   user_id: string
   created_at: string
 }
 
 export type TaskStatus = 'TODO' | 'IN_PROGRESS' | 'COMPLETED'
 export type TaskPriority = 'LOW' | 'MEDIUM' | 'HIGH'
+
+export interface TaskMetadata {
+  content_type?: 'shopping' | 'recipe'
+  quantity?: string
+  unit?: string
+  category?: string
+  prep_minutes?: number
+  cook_minutes?: number
+  servings?: number
+  ingredients?: string[]
+  steps?: string[]
+}
 
 export interface Task {
   id: string
@@ -25,6 +40,7 @@ export interface Task {
   is_pinned: boolean
   is_archived: boolean
   updated_at: string
+  metadata: TaskMetadata
   
   order: number
   user_id: string

@@ -1,8 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import type { Task, TaskStatus, TaskPriority } from '../lib/types/database.types'
+import type {
+  Task,
+  TaskMetadata,
+  TaskPriority,
+  TaskStatus,
+} from '../lib/types/database.types'
 
-interface AddTaskOptions {
+export interface AddTaskOptions {
   title: string
   description?: string
   status?: TaskStatus
@@ -10,9 +15,10 @@ interface AddTaskOptions {
   due_date?: string | null
   is_pinned?: boolean
   is_archived?: boolean
+  metadata?: TaskMetadata
 }
 
-interface UpdateTaskOptions {
+export interface UpdateTaskOptions {
   title?: string
   description?: string
   completed?: boolean
@@ -22,145 +28,150 @@ interface UpdateTaskOptions {
   is_pinned?: boolean
   is_archived?: boolean
   order?: number
+  metadata?: TaskMetadata
+}
+
+function normalizeTask(task: Omit<Task, 'metadata'> & { metadata?: TaskMetadata }): Task {
+  return { ...task, metadata: task.metadata ?? {} }
 }
 
 export function useTasks(projectId: string | null) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const fetchTasks = async () => {
+  const fetchTasks = useCallback(async () => {
     if (!projectId) {
       setTasks([])
       setLoading(false)
       return
     }
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { setLoading(false); return }
 
-    const { data, error } = await supabase
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setLoading(false)
+      return
+    }
+
+    const { data, error: fetchError } = await supabase
       .from('tasks')
       .select('*')
       .eq('project_id', projectId)
       .eq('user_id', user.id)
       .order('order', { ascending: true })
-    if (!error && data) setTasks(data)
+
+    if (fetchError) {
+      setError(fetchError.message)
+    } else if (data) {
+      setTasks(data.map(normalizeTask))
+      setError(null)
+    }
     setLoading(false)
-  }
+  }, [projectId])
 
   useEffect(() => {
+    setLoading(true)
     fetchTasks()
 
-    // Real-time subscription for changes
-    if (projectId) {
-      const channel = supabase
-        .channel(`tasks-${projectId}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
-          fetchTasks()
-        })
-        .subscribe()
+    if (!projectId) return
 
-      return () => {
-        supabase.removeChannel(channel)
-      }
+    const channel = supabase
+      .channel(`tasks-${projectId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, fetchTasks)
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
     }
-  }, [projectId])
+  }, [fetchTasks, projectId])
 
   const addTask = async (options: AddTaskOptions | string, description?: string) => {
     if (!projectId) return
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    // Support both old signature (title, description?) and new signature (options)
-    let title: string
-    let taskDescription: string = ''
-    let taskStatus: TaskStatus | undefined
-    let taskPriority: TaskPriority | undefined
-    let taskDueDate: string | null | undefined
-    let taskPinned: boolean | undefined
-    let taskArchived: boolean | undefined
+    const normalizedOptions: AddTaskOptions = typeof options === 'string'
+      ? { title: options, description }
+      : options
+    const maxOrder = tasks.length > 0 ? Math.max(...tasks.map(task => task.order)) : -1
 
-    if (typeof options === 'string') {
-      title = options
-      taskDescription = description || ''
-    } else {
-      title = options.title
-      taskDescription = options.description || ''
-      taskStatus = options.status
-      taskPriority = options.priority
-      taskDueDate = options.due_date
-      taskPinned = options.is_pinned
-      taskArchived = options.is_archived
-    }
-
-    const maxOrder = tasks.length > 0 ? Math.max(...tasks.map(i => i.order)) : -1
-    
-    const insertData: Record<string, any> = {
+    const insertData: Record<string, unknown> = {
       project_id: projectId,
-      title,
-      description: taskDescription,
+      title: normalizedOptions.title,
+      description: normalizedOptions.description || '',
       order: maxOrder + 1,
       user_id: user.id,
     }
 
-    if (taskStatus) insertData.status = taskStatus
-    if (taskPriority) insertData.priority = taskPriority
-    if (taskDueDate !== undefined) insertData.due_date = taskDueDate
-    if (taskPinned !== undefined) insertData.is_pinned = taskPinned
-    if (taskArchived !== undefined) insertData.is_archived = taskArchived
+    if (normalizedOptions.status !== undefined) insertData.status = normalizedOptions.status
+    if (normalizedOptions.priority !== undefined) insertData.priority = normalizedOptions.priority
+    if (normalizedOptions.due_date !== undefined) insertData.due_date = normalizedOptions.due_date
+    if (normalizedOptions.is_pinned !== undefined) insertData.is_pinned = normalizedOptions.is_pinned
+    if (normalizedOptions.is_archived !== undefined) insertData.is_archived = normalizedOptions.is_archived
+    if (normalizedOptions.metadata !== undefined) insertData.metadata = normalizedOptions.metadata
 
-    await supabase.from('tasks').insert(insertData)
+    const { error: insertError } = await supabase.from('tasks').insert(insertData)
+    if (insertError) setError(insertError.message)
     await fetchTasks()
   }
 
-  const toggleTask = async (id: string, nextCompleted: boolean) => {
-    // Optimistic update for immediate UI feedback
-    setTasks(prev => prev.map(task => task.id === id ? { ...task, completed: nextCompleted } : task))
-    
-    // Sync with server
-    await supabase.from('tasks').update({ completed: nextCompleted }).eq('id', id)
-    await fetchTasks()
-  }
-
-  const updateTask = async (id: string, options: UpdateTaskOptions | string, description?: string) => {
-    // Build updates object
-    const updates: Record<string, any> = {}
+  const updateTask = async (
+    id: string,
+    options: UpdateTaskOptions | string,
+    description?: string,
+  ) => {
+    const updates: Record<string, unknown> = {}
 
     if (typeof options === 'string') {
-      // Legacy signature: updateTask(id, title, description?)
-      if (options !== undefined) updates.title = options
+      updates.title = options
       if (description !== undefined) updates.description = description
     } else {
-      // New signature: updateTask(id, options)
-      if (options.title !== undefined) updates.title = options.title
-      if (options.description !== undefined) updates.description = options.description
-      if (options.completed !== undefined) updates.completed = options.completed
-      if (options.status !== undefined) updates.status = options.status
-      if (options.priority !== undefined) updates.priority = options.priority
-      if (options.due_date !== undefined) updates.due_date = options.due_date
-      if (options.is_pinned !== undefined) updates.is_pinned = options.is_pinned
-      if (options.is_archived !== undefined) updates.is_archived = options.is_archived
-      if (options.order !== undefined) updates.order = options.order
+      for (const [key, value] of Object.entries(options)) {
+        if (value !== undefined) updates[key] = value
+      }
     }
 
-    // Optimistic update - only if there are changes to apply
-    if (Object.keys(updates).length > 0) {
-      setTasks(prev => prev.map(task => task.id === id ? { ...task, ...updates } : task))
-      
-      // Sync with server
-      await supabase.from('tasks').update(updates).eq('id', id)
-    }
-    
+    if (Object.keys(updates).length === 0) return
+
+    setTasks(previous => previous.map(task => (
+      task.id === id ? { ...task, ...updates } as Task : task
+    )))
+
+    const { error: updateError } = await supabase.from('tasks').update(updates).eq('id', id)
+    if (updateError) setError(updateError.message)
     await fetchTasks()
+  }
+
+  const toggleTask = async (id: string, completed: boolean) => {
+    await updateTask(id, {
+      completed,
+      status: completed ? 'COMPLETED' : 'TODO',
+    })
   }
 
   const deleteTask = async (id: string) => {
-    // Optimistic update for immediate UI feedback
-    setTasks(prev => prev.filter(task => task.id !== id))
-    
-    // Sync with server
-    await supabase.from('tasks').delete().eq('id', id)
+    setTasks(previous => previous.filter(task => task.id !== id))
+    const { error: deleteError } = await supabase.from('tasks').delete().eq('id', id)
+    if (deleteError) setError(deleteError.message)
     await fetchTasks()
   }
 
-  return { tasks, loading, addTask, toggleTask, updateTask, deleteTask }
+  const deleteTasks = async (ids: string[]) => {
+    if (ids.length === 0) return
+    setTasks(previous => previous.filter(task => !ids.includes(task.id)))
+    const { error: deleteError } = await supabase.from('tasks').delete().in('id', ids)
+    if (deleteError) setError(deleteError.message)
+    await fetchTasks()
+  }
+
+  return {
+    tasks,
+    loading,
+    error,
+    addTask,
+    toggleTask,
+    updateTask,
+    deleteTask,
+    deleteTasks,
+  }
 }

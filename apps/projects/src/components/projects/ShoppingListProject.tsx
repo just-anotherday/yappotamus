@@ -1,0 +1,294 @@
+import { useMemo, useState } from 'react'
+import type { AddTaskOptions, UpdateTaskOptions } from '../../hooks/useTasks'
+import type { Task, TaskMetadata } from '../../lib/types/database.types'
+
+const categories = ['Produce', 'Dairy', 'Pantry', 'Meat & Seafood', 'Frozen', 'Household', 'Other']
+const units = ['', 'pcs', 'lb', 'oz', 'kg', 'g', 'bag', 'box', 'can', 'bottle']
+
+interface ShoppingListProjectProps {
+  tasks: Task[]
+  onAddTask: (options: AddTaskOptions | string, description?: string) => Promise<void>
+  onToggleTask: (id: string, completed: boolean) => Promise<void>
+  onUpdateTask: (id: string, options: UpdateTaskOptions | string, description?: string) => Promise<void>
+  onDeleteTask: (id: string) => Promise<void>
+  onDeleteTasks: (ids: string[]) => Promise<void>
+}
+
+interface ShoppingDraft {
+  title: string
+  quantity: string
+  unit: string
+  category: string
+}
+
+const emptyDraft: ShoppingDraft = {
+  title: '',
+  quantity: '',
+  unit: '',
+  category: 'Produce',
+}
+
+function shoppingMetadata(draft: ShoppingDraft): TaskMetadata {
+  return {
+    content_type: 'shopping',
+    quantity: draft.quantity.trim(),
+    unit: draft.unit,
+    category: draft.category,
+  }
+}
+
+export function ShoppingListProject({
+  tasks,
+  onAddTask,
+  onToggleTask,
+  onUpdateTask,
+  onDeleteTask,
+  onDeleteTasks,
+}: ShoppingListProjectProps) {
+  const [draft, setDraft] = useState<ShoppingDraft>(emptyDraft)
+  const [query, setQuery] = useState('')
+  const [hideChecked, setHideChecked] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState<ShoppingDraft>(emptyDraft)
+  const [confirmClear, setConfirmClear] = useState(false)
+
+  const visibleTasks = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase()
+    return tasks.filter(task => {
+      if (hideChecked && task.completed) return false
+      if (!normalizedQuery) return true
+      const category = task.metadata.category ?? ''
+      return `${task.title} ${category}`.toLowerCase().includes(normalizedQuery)
+    })
+  }, [hideChecked, query, tasks])
+
+  const groupedTasks = useMemo(() => {
+    const groups = new Map<string, Task[]>()
+    for (const category of categories) groups.set(category, [])
+    for (const task of visibleTasks) {
+      const category = task.metadata.category || 'Other'
+      const group = groups.get(category) ?? groups.get('Other')
+      group?.push(task)
+    }
+    return [...groups.entries()].filter(([, items]) => items.length > 0)
+  }, [visibleTasks])
+
+  const checkedIds = tasks.filter(task => task.completed).map(task => task.id)
+
+  const addItem = async () => {
+    if (!draft.title.trim()) return
+    await onAddTask({
+      title: draft.title.trim(),
+      status: 'TODO',
+      priority: 'MEDIUM',
+      metadata: shoppingMetadata(draft),
+    })
+    setDraft(previous => ({ ...emptyDraft, category: previous.category }))
+  }
+
+  const startEditing = (task: Task) => {
+    setEditingId(task.id)
+    setEditDraft({
+      title: task.title,
+      quantity: task.metadata.quantity ?? '',
+      unit: task.metadata.unit ?? '',
+      category: task.metadata.category ?? 'Other',
+    })
+  }
+
+  const saveEdit = async () => {
+    if (!editingId || !editDraft.title.trim()) return
+    await onUpdateTask(editingId, {
+      title: editDraft.title.trim(),
+      metadata: shoppingMetadata(editDraft),
+    })
+    setEditingId(null)
+  }
+
+  const clearChecked = async () => {
+    if (checkedIds.length === 0) return
+    if (!confirmClear) {
+      setConfirmClear(true)
+      return
+    }
+    await onDeleteTasks(checkedIds)
+    setConfirmClear(false)
+  }
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-[21rem_minmax(0,1fr)]">
+      <aside className="h-fit rounded-2xl border border-amber-200 bg-amber-50/70 p-5 dark:border-amber-900/60 dark:bg-amber-950/20">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800 dark:text-amber-300">Quick add</p>
+        <h3 className="mt-1 text-xl font-semibold text-stone-950 dark:text-white">What do you need?</h3>
+
+        <div className="mt-4 space-y-3">
+          <input
+            value={draft.title}
+            onChange={event => setDraft({ ...draft, title: event.target.value })}
+            onKeyDown={event => event.key === 'Enter' && addItem()}
+            placeholder="Milk, tomatoes, olive oil…"
+            className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-600/15 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              value={draft.quantity}
+              onChange={event => setDraft({ ...draft, quantity: event.target.value })}
+              placeholder="Quantity"
+              className="min-w-0 rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
+            />
+            <select
+              value={draft.unit}
+              onChange={event => setDraft({ ...draft, unit: event.target.value })}
+              className="min-w-0 rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
+            >
+              {units.map(unit => <option key={unit || 'none'} value={unit}>{unit || 'No unit'}</option>)}
+            </select>
+          </div>
+          <select
+            value={draft.category}
+            onChange={event => setDraft({ ...draft, category: event.target.value })}
+            className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
+          >
+            {categories.map(category => <option key={category}>{category}</option>)}
+          </select>
+          <button
+            type="button"
+            onClick={addItem}
+            disabled={!draft.title.trim()}
+            className="w-full rounded-lg bg-amber-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Add to list
+          </button>
+        </div>
+
+        <div className="mt-5 border-t border-amber-200 pt-4 text-sm text-stone-700 dark:border-amber-900 dark:text-stone-300">
+          <div className="flex items-center justify-between">
+            <span>Still needed</span>
+            <strong>{tasks.length - checkedIds.length}</strong>
+          </div>
+          <div className="mt-2 flex items-center justify-between">
+            <span>Checked off</span>
+            <strong>{checkedIds.length}</strong>
+          </div>
+        </div>
+      </aside>
+
+      <section className="min-w-0">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row">
+          <input
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="Search this list…"
+            className="h-10 min-w-0 flex-1 rounded-lg border border-stone-300 bg-white px-3 text-sm outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-600/15 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
+          />
+          <button
+            type="button"
+            onClick={() => setHideChecked(value => !value)}
+            className={`h-10 rounded-lg border px-3 text-sm font-semibold ${
+              hideChecked
+                ? 'border-amber-700 bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200'
+                : 'border-stone-300 text-stone-600 dark:border-stone-700 dark:text-stone-300'
+            }`}
+          >
+            {hideChecked ? 'Show checked' : 'Hide checked'}
+          </button>
+          <button
+            type="button"
+            onClick={clearChecked}
+            disabled={checkedIds.length === 0}
+            className="h-10 rounded-lg border border-stone-300 px-3 text-sm font-semibold text-stone-600 hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40 dark:border-stone-700 dark:text-stone-300"
+          >
+            {confirmClear ? 'Confirm clear' : `Clear checked (${checkedIds.length})`}
+          </button>
+        </div>
+
+        <div className="space-y-6">
+          {groupedTasks.map(([category, items]) => (
+            <div key={category}>
+              <div className="mb-2 flex items-center gap-3">
+                <h3 className="text-sm font-bold uppercase tracking-[0.13em] text-stone-500 dark:text-stone-400">{category}</h3>
+                <div className="h-px flex-1 bg-stone-200 dark:bg-stone-800" />
+                <span className="text-xs text-stone-400">{items.length}</span>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">
+                {items.map((task, index) => (
+                  <div
+                    key={task.id}
+                    className={`flex items-center gap-3 px-4 py-3 ${index > 0 ? 'border-t border-stone-100 dark:border-stone-800' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={task.completed}
+                      onChange={() => onToggleTask(task.id, !task.completed)}
+                      className="size-5 accent-amber-700"
+                      aria-label={`Mark ${task.title} ${task.completed ? 'needed' : 'complete'}`}
+                    />
+
+                    {editingId === task.id ? (
+                      <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[minmax(8rem,1fr)_6rem_6rem_9rem_auto]">
+                        <input
+                          value={editDraft.title}
+                          onChange={event => setEditDraft({ ...editDraft, title: event.target.value })}
+                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                        />
+                        <input
+                          value={editDraft.quantity}
+                          onChange={event => setEditDraft({ ...editDraft, quantity: event.target.value })}
+                          placeholder="Qty"
+                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                        />
+                        <select
+                          value={editDraft.unit}
+                          onChange={event => setEditDraft({ ...editDraft, unit: event.target.value })}
+                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                        >
+                          {units.map(unit => <option key={unit || 'none'} value={unit}>{unit || '—'}</option>)}
+                        </select>
+                        <select
+                          value={editDraft.category}
+                          onChange={event => setEditDraft({ ...editDraft, category: event.target.value })}
+                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                        >
+                          {categories.map(item => <option key={item}>{item}</option>)}
+                        </select>
+                        <div className="flex gap-1">
+                          <button type="button" onClick={saveEdit} className="rounded bg-emerald-700 px-2 text-xs font-semibold text-white">Save</button>
+                          <button type="button" onClick={() => setEditingId(null)} className="px-2 text-xs text-stone-500">Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="min-w-0 flex-1">
+                          <p className={`font-medium ${task.completed ? 'text-stone-400 line-through' : 'text-stone-900 dark:text-stone-100'}`}>
+                            {task.title}
+                          </p>
+                        </div>
+                        {(task.metadata.quantity || task.metadata.unit) && (
+                          <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+                            {[task.metadata.quantity, task.metadata.unit].filter(Boolean).join(' ')}
+                          </span>
+                        )}
+                        <button type="button" onClick={() => startEditing(task)} className="text-xs font-semibold text-stone-500 hover:text-amber-700">Edit</button>
+                        <button type="button" onClick={() => onDeleteTask(task.id)} className="text-xs font-semibold text-stone-400 hover:text-red-700">Remove</button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {visibleTasks.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-stone-300 px-6 py-16 text-center dark:border-stone-700">
+            <p className="font-semibold text-stone-800 dark:text-stone-100">
+              {tasks.length === 0 ? 'Your shopping list is empty.' : 'Nothing matches this view.'}
+            </p>
+            <p className="mt-1 text-sm text-stone-500">Add an item and it will be grouped by category.</p>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
