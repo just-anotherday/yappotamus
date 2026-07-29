@@ -25,6 +25,7 @@ env/
 !.env.example
 
 # IDE / Editor
+.vs/
 .vscode/
 .idea/
 *.swp

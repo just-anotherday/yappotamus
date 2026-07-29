@@ -71,6 +71,7 @@ export function useProjects() {
     description?: string,
     kind?: ProjectKind,
   ) => {
+    const previousProjects = projects
     const updates = { name, description, ...(kind ? { kind } : {}) }
     setProjects(previous => previous.map(project => (
       project.id === id ? { ...project, ...updates } : project
@@ -81,15 +82,25 @@ export function useProjects() {
       .update(updates)
       .eq('id', id)
 
-    if (updateError) setError(updateError.message)
+    if (updateError) {
+      setProjects(previousProjects)
+      setError(updateError.message)
+      return false
+    }
+
     await fetchProjects()
+    return true
   }
 
   const deleteProject = async (id: string) => {
-    await supabase.from('tasks').delete().eq('project_id', id)
     const { error: deleteError } = await supabase.from('projects').delete().eq('id', id)
-    if (deleteError) setError(deleteError.message)
+    if (deleteError) {
+      setError(deleteError.message)
+      return false
+    }
+
     await fetchProjects()
+    return true
   }
 
   return { projects, loading, error, addProject, updateProject, deleteProject }
