@@ -400,6 +400,13 @@ class Settings:
         """Optional writable yfinance cache directory."""
         return (os.getenv("YFINANCE_CACHE_DIR") or "").strip() or None
 
+    # ----- Memory Diagnostics (local testing only) -----
+    @property
+    def MEMORY_DIAGNOSTICS_ENABLED(self) -> bool:
+        return os.getenv("MEMORY_DIAGNOSTICS_ENABLED", "false").strip().lower() in {
+            "1", "true", "yes"
+        }
+
     # ----- Startup Validation -----
     def validate(self) -> None:
         """Fail fast if required environment variables are missing."""

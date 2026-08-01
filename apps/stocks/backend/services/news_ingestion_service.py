@@ -16,6 +16,7 @@ Free tier limits:
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,7 @@ from backend.services.finnhub_service import get_finnhub_client, _rate_limiter
 from backend.services.ticker_extractor import ticker_extractor
 from backend.services.asset_sync import get_asset_id_by_ticker
 from backend.services.ai_worker import enqueue_job
+from backend.services.memory_diagnostics import log_memory
 from backend.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -103,14 +105,34 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
 	that are missing them.
 	"""
 	while True:
+		# Observability-only locals — safe defaults for failure / cancellation paths
+		cycle_started_at = time.monotonic()
+		ticker_count = 0
+		tickers_processed = 0
+		articles_ingested = 0
+		recovered_thumbnail_count = 0
+		outcome = "cancelled"
+
 		try:
 			tickers = await tickers_fn()
+			ticker_count = len(tickers)
+
+			if settings.MEMORY_DIAGNOSTICS_ENABLED:
+				log_memory(
+					"news_ingestion_cycle_start",
+					logger_to_use=logger,
+					enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
+					extra={"ticker_count": ticker_count},
+				)
+
 			async with session_factory() as session:
 				if not tickers:
 					logger.info("[NewsScheduler] No tickers in watchlist; skipping cycle.")
 				else:
 					results = await fetch_and_ingest_many(tickers, session, limit=25)
 					total = sum(results.values())
+					tickers_processed = len(results)
+					articles_ingested = total
 					logger.info(
 						f"[NewsScheduler] Cycle complete – ingested {total} articles "
 						f"across {len(results)} tickers: {results}"
@@ -121,6 +143,7 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
 					rec = await _recover_thumbnails(session)
 					if rec > 0:
 						logger.info(f"[NewsScheduler] Thumbnail recovery: +{rec} images recovered.")
+						recovered_thumbnail_count = rec
 				except Exception as e:
 					logger.error(f"[NewsScheduler] Thumbnail recovery failed: {e}")
 
@@ -130,8 +153,27 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
 				logger.info("[NewsScheduler] Broadcast news_refresh to all clients.")
 			except Exception as e:
 				logger.error(f"[NewsScheduler] Failed to broadcast news_refresh: {e}")
+
+			outcome = "completed"
+
 		except Exception as e:
+			outcome = "failed"
 			logger.error(f"[NewsScheduler] Error during ingestion cycle: {e}")
+		finally:
+			if settings.MEMORY_DIAGNOSTICS_ENABLED:
+				log_memory(
+					"news_ingestion_cycle_end",
+					logger_to_use=logger,
+					enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
+					extra={
+						"ticker_count": ticker_count,
+						"tickers_processed": tickers_processed,
+						"articles_ingested": articles_ingested,
+						"recovered_thumbnail_count": recovered_thumbnail_count,
+						"outcome": outcome,
+						"duration_seconds": round(time.monotonic() - cycle_started_at, 3),
+					},
+				)
 
 		await asyncio.sleep(_scheduler_interval_seconds)
 

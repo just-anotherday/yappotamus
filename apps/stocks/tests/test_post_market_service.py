@@ -113,3 +113,178 @@ def test_extended_start_to_start_delay_backoff_jitter_and_recovery(monkeypatch):
         assert _next_poll_delay(100.0, True, 10.0) == (27.0, 0.0)
         assert _next_poll_delay(100.0, False, 0.0) == (2.0, 5.0)
         assert _next_poll_delay(100.0, False, 5.0) == (7.0, 10.0)
+
+
+# ---------------------------------------------------------------------------
+# Focused memory-boundary instrumentation tests for _post_market_fetch_loop
+# ---------------------------------------------------------------------------
+import asyncio
+from datetime import datetime
+from unittest.mock import AsyncMock, Mock, call
+
+import pytest
+
+from backend.services import post_market_service, watchlist_service
+
+
+class SaturdayDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        value = cls(2026, 8, 1, 10, 0, 0)
+        return value.replace(tzinfo=tz) if tz is not None else value
+
+
+class FakeSessionContext:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def fake_session_factory():
+    return FakeSessionContext()
+
+
+class FakeLoop:
+    def __init__(self, *, result=None, error=None):
+        if error is None:
+            self.run_in_executor = AsyncMock(return_value=result)
+        else:
+            self.run_in_executor = AsyncMock(side_effect=error)
+
+
+@pytest.mark.asyncio
+async def test_post_market_loop_logs_memory_boundaries_for_successful_cycle(
+    monkeypatch,
+):
+    """Verify that a controlled after-hours cycle emits start/complete memory checkpoints."""
+    log_mock = Mock()
+    sleep_mock = AsyncMock(side_effect=asyncio.CancelledError())
+    ticker_mock = AsyncMock(return_value=["AAPL", "MSFT", "NVDA"])
+    fake_loop = FakeLoop(result=None)
+
+    monkeypatch.setattr(post_market_service, "datetime", SaturdayDateTime)
+    monkeypatch.setattr(post_market_service, "log_memory", log_mock)
+    monkeypatch.setattr(
+        post_market_service.asyncio,
+        "get_running_loop",
+        Mock(return_value=fake_loop),
+    )
+    monkeypatch.setattr(post_market_service.asyncio, "sleep", sleep_mock)
+    monkeypatch.setattr(
+        watchlist_service,
+        "get_all_tickers",
+        ticker_mock,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await post_market_service._post_market_fetch_loop(
+            fake_session_factory
+        )
+
+    assert log_mock.call_args_list == [
+        call(
+            "post_market_cycle_start",
+            logger_to_use=post_market_service.logger,
+            enabled=post_market_service.app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+            extra={"symbol_count": 3},
+        ),
+        call(
+            "post_market_cycle_complete",
+            logger_to_use=post_market_service.logger,
+            enabled=post_market_service.app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+            extra={"symbol_count": 3},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_market_loop_logs_completion_when_fetch_fails(
+    monkeypatch,
+):
+    """Verify completion checkpoint fires even when the executor fetch raises."""
+    log_mock = Mock()
+    sleep_mock = AsyncMock(side_effect=asyncio.CancelledError())
+    ticker_mock = AsyncMock(return_value=["AAPL", "MSFT"])
+    fake_loop = FakeLoop(error=RuntimeError("test failure"))
+
+    monkeypatch.setattr(post_market_service, "datetime", SaturdayDateTime)
+    monkeypatch.setattr(post_market_service, "log_memory", log_mock)
+    monkeypatch.setattr(
+        post_market_service.asyncio,
+        "get_running_loop",
+        Mock(return_value=fake_loop),
+    )
+    monkeypatch.setattr(post_market_service.asyncio, "sleep", sleep_mock)
+    monkeypatch.setattr(
+        watchlist_service,
+        "get_all_tickers",
+        ticker_mock,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await post_market_service._post_market_fetch_loop(
+            fake_session_factory
+        )
+
+    assert log_mock.call_args_list == [
+        call(
+            "post_market_cycle_start",
+            logger_to_use=post_market_service.logger,
+            enabled=post_market_service.app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+            extra={"symbol_count": 2},
+        ),
+        call(
+            "post_market_cycle_complete",
+            logger_to_use=post_market_service.logger,
+            enabled=post_market_service.app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+            extra={"symbol_count": 2},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_market_loop_propagates_executor_cancellation(
+    monkeypatch,
+):
+    """Verify that CancelledError propagates and the inner finally still fires."""
+    log_mock = Mock()
+    sleep_mock = AsyncMock()
+    ticker_mock = AsyncMock(return_value=["AAPL"])
+    fake_loop = FakeLoop(error=asyncio.CancelledError())
+
+    monkeypatch.setattr(post_market_service, "datetime", SaturdayDateTime)
+    monkeypatch.setattr(post_market_service, "log_memory", log_mock)
+    monkeypatch.setattr(
+        post_market_service.asyncio,
+        "get_running_loop",
+        Mock(return_value=fake_loop),
+    )
+    monkeypatch.setattr(post_market_service.asyncio, "sleep", sleep_mock)
+    monkeypatch.setattr(
+        watchlist_service,
+        "get_all_tickers",
+        ticker_mock,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await post_market_service._post_market_fetch_loop(
+            fake_session_factory
+        )
+
+    assert log_mock.call_args_list == [
+        call(
+            "post_market_cycle_start",
+            logger_to_use=post_market_service.logger,
+            enabled=post_market_service.app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+            extra={"symbol_count": 1},
+        ),
+        call(
+            "post_market_cycle_complete",
+            logger_to_use=post_market_service.logger,
+            enabled=post_market_service.app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+            extra={"symbol_count": 1},
+        ),
+    ]
+    sleep_mock.assert_not_awaited()

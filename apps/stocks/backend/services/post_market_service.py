@@ -17,32 +17,34 @@ from typing import Any, Dict, Optional
 
 import yfinance as yf
 
-from backend.config.polling_settings import polling_settings as settings
+from backend.config.polling_settings import polling_settings
+from backend.config.settings import settings as app_settings
 from backend.services.yfinance_cache import configure_yfinance_cache
 from backend.services.market_data_observability import normalize_correlation_id
+from backend.services.memory_diagnostics import log_memory
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["PostMarketService", "_post_market_fetch_loop"]
 
 # Rate limiting: delay between individual ticker fetches (heavy .info endpoint)
-PM_FETCH_INTERVAL_S = settings.PM_FETCH_INTERVAL_S
+PM_FETCH_INTERVAL_S = polling_settings.PM_FETCH_INTERVAL_S
 
 
 def _next_poll_delay(cycle_started: float, success: bool, current_backoff: float) -> tuple[float, float]:
     """Return start-to-start delay and updated backoff for extended polling."""
     if success:
         backoff = 0.0
-        target = float(settings.PM_FETCH_INTERVAL_S)
+        target = float(polling_settings.PM_FETCH_INTERVAL_S)
     else:
         backoff = min(
-            settings.MARKET_DATA_BACKOFF_MAX_S,
-            current_backoff * 2 if current_backoff else settings.MARKET_DATA_BACKOFF_INITIAL_S,
+            polling_settings.MARKET_DATA_BACKOFF_MAX_S,
+            current_backoff * 2 if current_backoff else polling_settings.MARKET_DATA_BACKOFF_INITIAL_S,
         )
         target = backoff
     delay = max(
         0.0,
-        target + random.uniform(0, settings.MARKET_DATA_JITTER_S) - (time.monotonic() - cycle_started),
+        target + random.uniform(0, polling_settings.MARKET_DATA_JITTER_S) - (time.monotonic() - cycle_started),
     )
     return delay, backoff
 
@@ -147,7 +149,7 @@ class PostMarketService:
         def fetch(ticker: str):
             return ticker, self._get_post_market_data_for_ticker(ticker, correlation_id=correlation_id)
 
-        with ThreadPoolExecutor(max_workers=settings.PM_MAX_CONCURRENCY, thread_name_prefix="extended-hours") as executor:
+        with ThreadPoolExecutor(max_workers=polling_settings.PM_MAX_CONCURRENCY, thread_name_prefix="extended-hours") as executor:
             futures = {executor.submit(fetch, ticker): ticker for ticker in tickers}
             for future in as_completed(futures):
                 ticker = futures[future]
@@ -188,7 +190,7 @@ class PostMarketService:
             "[PostMarket] cycle=extended correlation_id=%s duration_ms=%.1f requested=%d valid=%d missing=%d failures=%d concurrency=%d",
             correlation_id,
             (time.monotonic() - started) * 1000, len(tickers), updated, missing, failed,
-            settings.PM_MAX_CONCURRENCY,
+            polling_settings.PM_MAX_CONCURRENCY,
         )
 
     # ------------------------------------------------------------------
@@ -237,12 +239,29 @@ async def _post_market_fetch_loop(get_session_factory) -> None:
         cycle_started = time.monotonic()
         success = True
         if is_after_hours:
+            tickers_list = []
             try:
                 async with get_session_factory() as session:
                     from backend.services.watchlist_service import get_all_tickers
-                    tickers = await get_all_tickers(session)
-                if tickers:
-                    await asyncio.get_running_loop().run_in_executor(None, pm_service.fetch_all, tickers)
+                    tickers_list = await get_all_tickers(session)
+                if tickers_list:
+                    log_memory(
+                        "post_market_cycle_start",
+                        logger_to_use=logger,
+                        enabled=app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+                        extra={"symbol_count": len(tickers_list)},
+                    )
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(
+                            None, pm_service.fetch_all, tickers_list
+                        )
+                    finally:
+                        log_memory(
+                            "post_market_cycle_complete",
+                            logger_to_use=logger,
+                            enabled=app_settings.MEMORY_DIAGNOSTICS_ENABLED,
+                            extra={"symbol_count": len(tickers_list)},
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as e:

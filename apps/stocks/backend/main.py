@@ -34,6 +34,7 @@ from backend.services.market_data_observability import (
     market_data_correlation,
     normalize_correlation_id,
 )
+from backend.services.memory_diagnostics import log_memory
 from backend.exceptions import register_exception_handlers
 
 from backend.routers import stock as stock_router
@@ -166,6 +167,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("[Startup] Post-market price fetch loop started.")
     except Exception as e:
         logger.warning("[Startup] Failed to start post-market fetch loop: %s", e)
+
+    # ---- Memory diagnostic at startup completion ----
+    if settings.MEMORY_DIAGNOSTICS_ENABLED:
+        log_memory(
+            "application_startup_complete",
+            logger_to_use=logger,
+            enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
+        )
 
     yield
 

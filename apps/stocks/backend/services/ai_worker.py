@@ -14,6 +14,7 @@ Job Types:
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Callable, Awaitable
 from uuid import uuid4
@@ -28,6 +29,8 @@ from backend.models.analysis import (
     PriceDataRequest,
 )
 from backend.models.ai_reports import AICompanyReport
+
+from backend.services.memory_diagnostics import log_memory
 from backend.models.asset import Asset, AssetTicker
 from backend.models.news import NewsArticle
 from backend.services.finnhub_service import get_finnhub_client
@@ -363,7 +366,25 @@ class AIWorker:
             timeout_seconds,
         )
 
+        # Observability lifecycle state
+        job_started_at = time.monotonic()
+        attempt = job.retry_count + 1
+        outcome = "cancelled"
+
         try:
+            # Emit ai_job_start right before handler dispatch
+            if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                log_memory(
+                    "ai_job_start",
+                    logger_to_use=logger,
+                    enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
+                    extra={
+                        "job_id": job.id,
+                        "job_type": job.job_type,
+                        "attempt": attempt,
+                    },
+                )
+
             handler = self._handlers.get(job.job_type)
             if not handler:
                 logger.warning(
@@ -374,11 +395,14 @@ class AIWorker:
                     job.job_type,
                 )
                 await self._fail_job(job, f"Unknown job type: {job.job_type}")
+                outcome = "failed"
                 return
 
             result_data = await asyncio.wait_for(handler(job), timeout=timeout_seconds)
             await self._complete_job(job, result_data)
+            outcome = "completed"
         except asyncio.TimeoutError:
+            outcome = "failed"
             logger.error(
                 "[AIWorker] event=job_timeout worker_id=%s job_id=%d "
                 "job_type=%s timeout_seconds=%d",
@@ -421,6 +445,7 @@ class AIWorker:
                     job.id,
                 )
         except Exception:
+            outcome = "failed"
             logger.exception(
                 "[AIWorker] event=job_execution_failed worker_id=%s job_id=%d "
                 "job_type=%s",
@@ -463,6 +488,23 @@ class AIWorker:
                     job.id,
                 )
         finally:
+            if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                log_memory(
+                    "ai_job_end",
+                    logger_to_use=logger,
+                    enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
+                    extra={
+                        "job_id": job.id,
+                        "job_type": job.job_type,
+                        "attempt": attempt,
+                        "outcome": outcome,
+                        "duration_seconds": round(
+                            time.monotonic() - job_started_at,
+                            3,
+                        ),
+                    },
+                )
+
             heartbeat_task.cancel()
             try:
                 await heartbeat_task
@@ -618,6 +660,20 @@ class AIWorker:
             # 2b. Rank by relevance (ticker mentions, recency, summary quality, source)
             ranked = rank_articles(all_candidates, ticker.upper(), now=datetime.utcnow())
             articles = ranked[:max_articles]
+
+            # Observability: log candidates before they're consumed by Ollama
+            if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                log_memory(
+                    "company_report_candidates_loaded",
+                    logger_to_use=logger,
+                    enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
+                    extra={
+                        "ticker": ticker,
+                        "window_days": window_days,
+                        "candidate_count": len(all_candidates),
+                        "selected_count": len(articles),
+                    },
+                )
 
             if not articles:
                 logger.info("[AIWorker] No recent articles for %s, skipping report", ticker)
@@ -968,6 +1024,18 @@ class AIWorker:
                 if r.asset_id not in latest_by_asset:
                     latest_by_asset[r.asset_id] = r
             company_reports = list(latest_by_asset.values())
+
+            # Observability: log rows before aggregation / persistence
+            if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                log_memory(
+                    "market_report_rows_loaded",
+                    logger_to_use=logger,
+                    enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
+                    extra={
+                        "total_rows_loaded": len(rows),
+                        "unique_asset_count": len(latest_by_asset),
+                    },
+                )
 
             if not company_reports:
                 logger.info("[AIWorker] No company reports available, skipping market report")
