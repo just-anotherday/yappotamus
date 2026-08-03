@@ -257,6 +257,7 @@ def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tu
         "long_business_summary": "long_business_summary",
         "ceo_name": "ceo_name",
         "full_time_employees": "full_time_employees",
+        "market_cap": "market_cap",
         "beta": "beta",
         "security_type": "security_type",
     }

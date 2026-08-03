@@ -18,10 +18,25 @@ export function getMarketSizeLabel(item: WatchlistItem): string {
   return item.market_size_type === 'fund_assets' ? 'Fund Assets' : 'Market Cap';
 }
 
+export function getMarketSizeValue(item: WatchlistItem): number | null {
+  if (isFiniteWatchlistNumber(item.market_size_value) && item.market_size_value > 0) {
+    return item.market_size_value;
+  }
+  if (
+    item.security_type !== 'ETF'
+    && item.market_size_type !== 'fund_assets'
+    && isFiniteWatchlistNumber(item.market_cap)
+    && item.market_cap > 0
+  ) {
+    return item.market_cap;
+  }
+  return null;
+}
+
 export function formatMarketSize(item: WatchlistItem): string {
   if (item.market_size_status === 'provider_failed') return 'Unavailable';
-  const value = item.market_size_value;
-  if (!isFiniteWatchlistNumber(value) || value <= 0) return 'N/A';
+  const value = getMarketSizeValue(item);
+  if (value === null) return item.security_type === 'ETF' ? 'Not applicable' : 'N/A';
   const currency = typeof item.market_size_currency === 'string'
     ? item.market_size_currency.trim().toUpperCase()
     : '';
@@ -30,6 +45,20 @@ export function formatMarketSize(item: WatchlistItem): string {
   if (value >= 1e9) return `${prefix}${(value / 1e9).toFixed(2)}B`;
   if (value >= 1e6) return `${prefix}${(value / 1e6).toFixed(2)}M`;
   return `${prefix}${value.toLocaleString()}`;
+}
+
+export function getCompanySize(item: WatchlistItem): { label: string; color: string } {
+  if (item.security_type === 'ETF' || item.market_size_type === 'fund_assets') {
+    return { label: 'Not applicable', color: 'bg-gray-100 text-gray-700' };
+  }
+  const marketCap = getMarketSizeValue(item);
+  if (marketCap === null) return { label: 'Unavailable', color: 'bg-gray-100 text-gray-700' };
+  if (marketCap >= 200_000_000_000) return { label: 'Mega Cap', color: 'bg-purple-100 text-purple-700' };
+  if (marketCap >= 10_000_000_000) return { label: 'Large Cap', color: 'bg-emerald-100 text-emerald-700' };
+  if (marketCap >= 2_000_000_000) return { label: 'Mid Cap', color: 'bg-cyan-100 text-cyan-700' };
+  if (marketCap >= 300_000_000) return { label: 'Small Cap', color: 'bg-orange-100 text-orange-700' };
+  if (marketCap >= 50_000_000) return { label: 'Micro Cap', color: 'bg-yellow-100 text-yellow-700' };
+  return { label: 'Nano Cap', color: 'bg-red-100 text-red-700' };
 }
 export function formatWatchlistNumber(value: unknown, decimals = 2): string {
   return isFiniteWatchlistNumber(value) ? value.toFixed(decimals) : 'N/A';
@@ -223,7 +252,7 @@ export function presentWatchlist(
   if (sort === 'custom') return filtered;
   return [...filtered].sort((a, b) => {
     if (sort === 'ticker') return a.ticker.localeCompare(b.ticker);
-    if (sort === 'market-cap') return sortableMarketCap(b.market_size_value) - sortableMarketCap(a.market_size_value);
+    if (sort === 'market-cap') return sortableMarketCap(getMarketSizeValue(b)) - sortableMarketCap(getMarketSizeValue(a));
     return (getWatchlistChange(b, livePrices[b.ticker]) ?? -Infinity) - (getWatchlistChange(a, livePrices[a.ticker]) ?? -Infinity);
   });
 }

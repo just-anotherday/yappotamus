@@ -316,6 +316,7 @@ async def get_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
         "change": round(current_price - previous_close, 2) if current_price and previous_close else 0,
         "change_percent": round(info.get("regularMarketChangePercent", 0) or 0, 2),
         "market_cap": info.get("marketCap", 0) or 0,
+        "market_size_currency": info.get("currency"),
 
         # Share Structure
         "shares_outstanding": int(info.get("sharesOutstanding", 0) or 0),

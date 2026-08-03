@@ -19,6 +19,7 @@ import {
   formatWatchlistNumber,
   formatWatchlistRecommendation,
   formatMarketSize,
+  getCompanySize,
   getWatchlistDisplayPrice,
   getWatchlistChange,
   presentWatchlist,
@@ -135,17 +136,6 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
     () => presentWatchlist(watchlist, watchlistOrder, livePrices, search, sort, direction),
     [watchlist, watchlistOrder, livePrices, search, sort, direction],
   );
-
-  // Market cap classification per financial standards
-  function marketCapLabel(mc: number): { label: string; color: string } {
-    if (!Number.isFinite(mc) || mc <= 0) return { label: 'Unknown Cap', color: 'bg-gray-100 text-gray-700' };
-    if (mc >= 200_000_000_000) return { label: 'Mega Cap', color: 'bg-purple-100 text-purple-700' };
-    if (mc >= 10_000_000_000) return { label: 'Large Cap', color: 'bg-emerald-100 text-emerald-700' };
-    if (mc >= 2_000_000_000) return { label: 'Mid Cap', color: 'bg-cyan-100 text-cyan-700' };
-    if (mc >= 300_000_000) return { label: 'Small Cap', color: 'bg-orange-100 text-orange-700' };
-    if (mc >= 50_000_000) return { label: 'Micro Cap', color: 'bg-yellow-100 text-yellow-700' };
-    return { label: 'Nano Cap', color: 'bg-red-100 text-red-700' };
-  }
 
   return (
     <div className="w-full px-6 mt-12">
@@ -383,7 +373,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                {/* Badges: Market Cap Size, Analyst Rec */}
                                <div className="flex gap-2 items-center flex-wrap">
                                  {(() => {
-                                   const capInfo = marketCapLabel(item.market_size_value ?? 0);
+                                   const capInfo = getCompanySize(item);
                                    return (
                                      <>
                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${capInfo.color}`}>

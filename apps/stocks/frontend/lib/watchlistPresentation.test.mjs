@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from './watchlistPresentation.ts';
-import { formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistRecommendation, getWatchlistDisplayPrice, mergeWatchlistRefresh } from './watchlistPresentation.ts';
+import { formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistRecommendation, getCompanySize, getWatchlistDisplayPrice, mergeWatchlistRefresh } from './watchlistPresentation.ts';
 
 const item = (ticker, company_name, current_price, previous_close, market_cap) => ({ ticker, company_name, current_price, previous_close, market_cap });
 const items = [item('BBB', 'Beta', 90, 100, 20), item('AAA', 'Alpha', 110, 100, 10)];
@@ -176,6 +176,26 @@ test('renders fund assets and non-USD market sizes without a dollar prefix', () 
   assert.equal(formatMarketSize({ market_size_type: 'fund_assets', market_size_value: 10_000_000_000, market_size_currency: 'USD' }), '$10.00B');
   assert.equal(formatMarketSize({ market_size_type: 'market_cap', market_size_value: 62_890_000_000_000, market_size_currency: 'TWD' }), 'TWD 62.89T');
   assert.equal(formatMarketSize({ market_size_status: 'provider_failed' }), 'Unavailable');
+});
+
+test('maps legacy market_cap responses and distinguishes missing equity from ETFs', () => {
+  const equity = { security_type: 'STOCK', market_cap: 10_523_970_132 };
+  assert.equal(formatMarketSize(equity), 'Unknown currency 10.52B');
+  assert.equal(getCompanySize(equity).label, 'Large Cap');
+  assert.equal(formatMarketSize({ security_type: 'STOCK', market_cap: null }), 'N/A');
+  assert.equal(getCompanySize({ security_type: 'STOCK', market_cap: null }).label, 'Unavailable');
+  assert.equal(formatMarketSize({ security_type: 'ETF', market_cap: null }), 'Not applicable');
+  assert.equal(getCompanySize({ security_type: 'ETF', market_cap: null }).label, 'Not applicable');
+});
+
+test('classifies company size at each market-cap boundary', () => {
+  const size = market_cap => getCompanySize({ security_type: 'STOCK', market_cap }).label;
+  assert.equal(size(200_000_000_000), 'Mega Cap');
+  assert.equal(size(10_000_000_000), 'Large Cap');
+  assert.equal(size(2_000_000_000), 'Mid Cap');
+  assert.equal(size(300_000_000), 'Small Cap');
+  assert.equal(size(50_000_000), 'Micro Cap');
+  assert.equal(size(49_999_999), 'Nano Cap');
 });
 test('provider failure retains the complete prior market-size identity as stale cache', () => {
   const prior = { ticker: 'SPY', company_name: 'SPDR', market_cap: null, fund_assets: 100, market_size_value: 100, market_size_type: 'fund_assets', market_size_currency: 'USD', market_size_status: 'available' };

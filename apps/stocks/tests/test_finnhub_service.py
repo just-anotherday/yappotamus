@@ -46,6 +46,26 @@ async def test_ticker_info_converts_finnhub_market_cap_millions_to_absolute_unit
     assert info["sharesOutstanding"] == 125_250_000
     assert info["regularMarketChangePercent"] == 2.0
 
+
+@pytest.mark.asyncio
+async def test_stock_price_preserves_market_cap_currency(monkeypatch):
+    async def ticker_info(_ticker):
+        return {
+            "symbol": "ORI",
+            "shortName": "Old Republic International Corporation",
+            "currentPrice": 43.33,
+            "previousClose": 43.0,
+            "marketCap": 10_523_970_132,
+            "currency": "USD",
+        }
+
+    monkeypatch.setattr(finnhub_service, "get_ticker_info", ticker_info)
+
+    result = await finnhub_service.get_stock_price("ORI")
+
+    assert result["market_cap"] == 10_523_970_132
+    assert result["market_size_currency"] == "USD"
+
 @pytest.mark.asyncio
 async def test_blocked_quotes_are_offloaded_and_do_not_serialize(monkeypatch):
     started = []

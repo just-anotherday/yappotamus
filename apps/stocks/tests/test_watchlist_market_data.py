@@ -861,6 +861,31 @@ def test_equity_market_cap_and_currency_are_preserved():
     assert normalized["market_size_currency"] == "TWD"
 
 
+def test_watchlist_response_serializes_market_cap_contract():
+    item = WatchlistItem.model_validate(normalize_market_data_payload(
+        "ORI",
+        {"ticker": "ORI", "security_type": "STOCK", "market_cap": 10_523_970_132, "currency": "USD"},
+        default_source="fh",
+    ))
+
+    response = item.model_dump(mode="json")
+
+    assert response["market_cap"] == 10_523_970_132
+    assert response["market_size_value"] == 10_523_970_132
+    assert response["market_size_type"] == "market_cap"
+    assert response["market_size_status"] == "available"
+
+
+def test_yfinance_market_cap_fills_missing_finnhub_profile_value():
+    merged, enriched = hybrid_data_service._enrich_with_yf(
+        {"ticker": "ORI", "security_type": "STOCK", "market_cap": 0},
+        {"ticker": "ORI", "security_type": "STOCK", "market_cap": 10_523_970_132},
+    )
+
+    assert merged["market_cap"] == 10_523_970_132
+    assert "market_cap" in enriched
+
+
 def test_equity_price_times_shares_fallback_is_not_used_for_etfs():
     assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 10, "currency": "USD"}, "STOCK", 5) == (50, True)
     assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 10, "currency": "USD"}, "ETF", 5) == (None, False)
