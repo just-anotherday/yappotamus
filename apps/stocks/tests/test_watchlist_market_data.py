@@ -218,6 +218,244 @@ async def test_finnhub_market_cap_is_preserved_during_yfinance_enrichment(monkey
     assert result["market_size_status"] == "available"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("yf_payload", "primary_updates"),
+    [
+        (None, {}),
+        ({}, {}),
+        ({"ticker": "AMZN"}, {}),
+        (
+            {
+                "ticker": "AMZN",
+                "long_business_summary": None,
+                "ceo_name": None,
+                "forward_pe": None,
+            },
+            {},
+        ),
+        (
+            {
+                "ticker": "AMZN",
+                "company_name": "Unknown",
+                "long_business_summary": " N/A ",
+                "ceo_name": "null",
+            },
+            {},
+        ),
+        ({"ticker": "AMZN", "long_business_summary": "Existing summary"}, {"long_business_summary": "Existing summary"}),
+        (
+            {
+                "ticker": "AMZN",
+                "current_price": 0,
+                "open_price": 0,
+                "volume": 0,
+                "forward_pe": 0,
+                "beta": 0,
+            },
+            {},
+        ),
+        ({"ticker": "AMZN", "market_cap": 1_000_000_000_000}, {}),
+    ],
+    ids=[
+        "none",
+        "empty-dict",
+        "ticker-only",
+        "all-null",
+        "placeholder-only",
+        "duplicate",
+        "zero-filled-quote-shell",
+        "market-cap-only",
+    ],
+)
+async def test_unusable_yfinance_enrichment_does_not_count_as_success(
+    monkeypatch, caplog, yf_payload, primary_updates
+):
+    calls: list[str] = []
+    finnhub_market_cap = 2_000_000_000_000
+
+    async def finnhub_result(ticker):
+        calls.append(f"fh:{ticker}")
+        result = {
+            "ticker": ticker,
+            "symbol": ticker,
+            "company_name": ticker,
+            "current_price": 200,
+            "market_cap": finnhub_market_cap,
+            "market_size_value": finnhub_market_cap,
+            "market_size_type": "market_cap",
+            "market_size_currency": "USD",
+            "market_size_fallback_used": False,
+            "market_size_status": "available",
+            "industry": "Internet Retail",
+            "sector": None,
+            "long_business_summary": None,
+            "ceo_name": None,
+            "beta": 2,
+            "security_type": "STOCK",
+            "data_source": "fh",
+        }
+        result.update(primary_updates)
+        return result
+
+    async def yfinance_enrichment(ticker):
+        calls.append(f"yf:{ticker}")
+        return yf_payload
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub_result)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yfinance_enrichment)
+
+    with caplog.at_level("INFO"):
+        result = await hybrid_data_service.get_hybrid_stock_price("AMZN")
+
+    assert calls == ["fh:AMZN", "yf:AMZN"]
+    assert "provider=yf_enrichment success=false" in caplog.text
+    assert result["yf_enriched_fields"] == []
+    assert result["market_cap"] == finnhub_market_cap
+    assert result["market_size_value"] == finnhub_market_cap
+    assert result["market_size_type"] == "market_cap"
+    assert result["market_size_currency"] == "USD"
+    assert result["market_size_fallback_used"] is False
+    assert result["market_size_status"] == "available"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("yf_payload", "field", "expected_value"),
+    [
+        (
+            {"ticker": "AMZN", "long_business_summary": "Online retail and cloud computing company."},
+            "long_business_summary",
+            "Online retail and cloud computing company.",
+        ),
+        (
+            {"ticker": "AMZN", "sector": "Consumer Cyclical"},
+            "sector",
+            "Consumer Cyclical",
+        ),
+        (
+            {
+                "ticker": "AMZN",
+                "market_cap": 1_000_000_000_000,
+                "forward_pe": float("nan"),
+                "company_name": "Unknown",
+                "long_business_summary": "Online retail and cloud computing company.",
+            },
+            "long_business_summary",
+            "Online retail and cloud computing company.",
+        ),
+    ],
+    ids=["long-business-summary", "sector", "invalid-fields-plus-summary"],
+)
+async def test_meaningful_yfinance_enrichment_merges_only_valid_fields(
+    monkeypatch, yf_payload, field, expected_value
+):
+    calls: list[str] = []
+    finnhub_market_cap = 2_000_000_000_000
+
+    async def finnhub_result(ticker):
+        calls.append(f"fh:{ticker}")
+        return {
+            "ticker": ticker,
+            "symbol": ticker,
+            "company_name": "Amazon.com, Inc.",
+            "current_price": 200,
+            "market_cap": finnhub_market_cap,
+            "market_size_value": finnhub_market_cap,
+            "market_size_type": "market_cap",
+            "market_size_currency": "USD",
+            "market_size_fallback_used": False,
+            "market_size_status": "available",
+            "industry": "Internet Retail",
+            "sector": None,
+            "long_business_summary": None,
+            "ceo_name": None,
+            "beta": 2,
+            "security_type": "STOCK",
+            "data_source": "fh",
+        }
+
+    async def yfinance_enrichment(ticker):
+        calls.append(f"yf:{ticker}")
+        return yf_payload
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub_result)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yfinance_enrichment)
+
+    result = await hybrid_data_service.get_hybrid_stock_price("AMZN")
+
+    assert calls == ["fh:AMZN", "yf:AMZN"]
+    assert result[field] == expected_value
+    assert result["yf_enriched_fields"] == [field]
+    assert result["market_cap"] == finnhub_market_cap
+    assert result["market_cap"] != yf_payload.get("market_cap")
+    assert result["market_size_value"] == finnhub_market_cap
+    assert result["market_size_type"] == "market_cap"
+    assert result["market_size_currency"] == "USD"
+    assert result["market_size_fallback_used"] is False
+    assert result["market_size_status"] == "available"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "beta",
+        "number_of_analysts",
+        "insider_percent",
+        "institution_percent",
+        "short_percent_of_float",
+        "shares_short",
+    ],
+)
+def test_legitimate_zero_enrichment_fields_are_preserved(field):
+    merged, enriched_fields = hybrid_data_service._enrich_with_yf(
+        {"ticker": "AMZN", field: None, "market_cap": 2_000_000_000_000},
+        {field: 0},
+    )
+
+    assert merged[field] == 0
+    assert enriched_fields == [field]
+    assert merged["market_cap"] == 2_000_000_000_000
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "forward_pe",
+        "open_price",
+        "previous_close",
+        "day_low",
+        "day_high",
+        "fifty_two_week_high",
+        "fifty_two_week_low",
+        "volume",
+        "shares_outstanding",
+        "float_shares",
+        "overall_risk",
+        "target_mean_price",
+        "target_median_price",
+        "target_high_price",
+        "target_low_price",
+        "average_analyst_rating",
+        "full_time_employees",
+    ],
+)
+def test_nonmeaningful_zero_values_are_rejected_by_field_policy(field):
+    assert hybrid_data_service._normalize_meaningful_enrichment_value(0, field) is None
+
+
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Unknown Industries Inc.", "Error Control Systems", "None Such Company"],
+)
+def test_placeholder_substrings_remain_meaningful(value):
+    assert hybrid_data_service._normalize_meaningful_enrichment_value(value, "sector") == value
+
+
+
+
 def test_null_and_zero_are_diagnosed_differently():
     normalized = normalize_market_data_payload(
         "ZERO",

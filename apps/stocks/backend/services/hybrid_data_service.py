@@ -16,6 +16,7 @@ Rate limit sync:
 
 import asyncio
 import logging
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -106,6 +107,7 @@ FUNDAMENTAL_GAP_FIELDS: Set[str] = {
     "recommendation_key",     # Buy/Hold/Sell rating
     "number_of_analysts",     # Number of analysts covering
     "average_analyst_rating", # Average rating (1=Strong Buy)
+    "sector",                 # Sector classification
     "long_business_summary",  # Business description
     "ceo_name",              # CEO name
     "full_time_employees",    # Employee count
@@ -116,25 +118,36 @@ FUNDAMENTAL_GAP_FIELDS: Set[str] = {
 }
 
 
+_PLACEHOLDER_ENRICHMENT_VALUES = {"n/a", "none", "null", "unknown", "error"}
+
+_ZERO_MEANINGFUL_ENRICHMENT_FIELDS = {
+    "beta",
+    "number_of_analysts",
+    "insider_percent",
+    "institution_percent",
+    "short_percent_of_float",
+    "shares_short",
+}
+
+
 def _is_gap_value(value: Any, field: str) -> bool:
     """Check if a value represents a Finnhub gap (missing/zero/default data)."""
-    if value is None:
+    if value is None or isinstance(value, bool):
         return True
-    if isinstance(value, str) and value in ("N/A", "", "Error"):
+    if isinstance(value, str):
+        return value.strip().casefold() in _PLACEHOLDER_ENRICHMENT_VALUES
+    if isinstance(value, (int, float)) and not math.isfinite(value):
         return True
     # Numeric fields that are 0 when not available from Finnhub
     numeric_zero_fields = {
         "forward_pe", "fifty_two_week_high", "fifty_two_week_low",
-        "shares_outstanding", "float_shares", "short_percent_of_float",
-        "shares_short", "target_mean_price", "target_median_price",
-        "target_high_price", "target_low_price", "number_of_analysts",
+        "open_price", "day_low", "day_high",
+        "shares_outstanding", "float_shares",
+        "target_mean_price", "target_median_price",
+        "target_high_price", "target_low_price",
         "average_analyst_rating", "full_time_employees", "market_cap",
     }
     if field in numeric_zero_fields and value == 0:
-        return True
-    # Percent fields defaulting to 0 when not available
-    percent_fields = {"insider_percent", "institution_percent"}
-    if field in percent_fields and value == 0.0:
         return True
     # recommendation_key is "N/A" or "error" when not available
     if field == "recommendation_key" and value in ("N/A", "error"):
@@ -143,6 +156,26 @@ def _is_gap_value(value: Any, field: str) -> bool:
     if field == "beta" and value == 1.0:
         return True
     return False
+
+
+def _normalize_meaningful_enrichment_value(value: Any, field: str) -> Any:
+    """Return a normalized yfinance value only when it can improve Finnhub data."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        return (
+            normalized
+            if normalized and normalized.casefold() not in _PLACEHOLDER_ENRICHMENT_VALUES
+            else None
+        )
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return None
+        if value == 0 and field not in _ZERO_MEANINGFUL_ENRICHMENT_FIELDS:
+            return None
+        return value
+    return None
 
 
 def _yf_sync(ticker: str) -> Optional[Dict[str, Any]]:
@@ -174,8 +207,14 @@ def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tu
     # replace it with the actual company name from yfinance.
     fh_company = merged.get("company_name", "")
     ticker_upper = merged.get("ticker", "").upper()
-    yf_company = yf_data.get("company_name", "")
-    if fh_company == ticker_upper and yf_company and yf_company != "N/A" and yf_company != ticker_upper:
+    yf_company = _normalize_meaningful_enrichment_value(
+        yf_data.get("company_name"), "company_name"
+    )
+    if (
+        fh_company == ticker_upper
+        and isinstance(yf_company, str)
+        and yf_company.upper() != ticker_upper
+    ):
         merged["company_name"] = yf_company
         enriched_fields.append("company_name")
     
@@ -201,6 +240,7 @@ def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tu
         "recommendation_key": "recommendation_key",
         "number_of_analysts": "number_of_analysts",
         "average_analyst_rating": "average_analyst_rating",
+        "sector": "sector",
         "long_business_summary": "long_business_summary",
         "ceo_name": "ceo_name",
         "full_time_employees": "full_time_employees",
@@ -210,10 +250,16 @@ def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tu
     
     for out_field, yf_key in field_mapping.items():
         fh_value = merged.get(out_field)
-        yf_value = yf_data.get(yf_key)
+        yf_value = _normalize_meaningful_enrichment_value(
+            yf_data.get(yf_key), out_field
+        )
         
-        # Only enrich if Finnhub value is a gap AND yfinance has real data
-        if _is_gap_value(fh_value, out_field) and not _is_gap_value(yf_value, out_field):
+        # Only enrich a real Finnhub gap with a distinct, meaningful candidate.
+        if (
+            _is_gap_value(fh_value, out_field)
+            and yf_value is not None
+            and yf_value != fh_value
+        ):
             merged[out_field] = yf_value
             enriched_fields.append(out_field)
     
@@ -278,14 +324,21 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
                 # Fetch yfinance data in background to fill gaps
                 logger.debug("[Hybrid] Enriching %s from yfinance (gaps=%s, bad_name=%s).", ticker_upper, has_gaps, bad_company_name)
                 try:
-                    yf_data, _ = await run_provider_attempt(
+                    async def validated_yf_enrichment():
+                        yf_data = await _yf_async(ticker_upper)
+                        if not yf_data:
+                            return None
+                        merged_data, enriched_fields = _enrich_with_yf(data, yf_data)
+                        return (merged_data, enriched_fields) if enriched_fields else None
+
+                    enrichment, _ = await run_provider_attempt(
                         ticker=ticker_upper,
                         provider="yf_enrichment",
                         timeout_s=_PROVIDER_TIMEOUT_S,
-                        operation=lambda: _yf_async(ticker_upper),
+                        operation=validated_yf_enrichment,
                     )
-                    if yf_data:
-                        data, enriched_fields = _enrich_with_yf(data, yf_data)
+                    if enrichment:
+                        data, enriched_fields = enrichment
                         data["yf_enriched_fields"] = enriched_fields
                         logger.debug(
                             "[Hybrid] %s enriched %d fields from yfinance.",
