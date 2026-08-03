@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from './watchlistPresentation.ts';
-import { formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistRecommendation, getWatchlistDisplayPrice, mergeWatchlistRefresh } from './watchlistPresentation.ts';
+import { formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistRecommendation, getWatchlistDisplayPrice, mergeWatchlistRefresh } from './watchlistPresentation.ts';
 
 const item = (ticker, company_name, current_price, previous_close, market_cap) => ({ ticker, company_name, current_price, previous_close, market_cap });
 const items = [item('BBB', 'Beta', 90, 100, 20), item('AAA', 'Alpha', 110, 100, 10)];
@@ -151,7 +151,7 @@ test('partial full-refresh quote does not erase existing ETF fundamentals', () =
 
 test('unsupported-symbol error shell cannot replace complete custom SPCX data', () => {
   const previous = { ...completeSpy(), ticker: 'SPCX', symbol: 'SPCX', company_name: 'Space Exploration Technologies', security_type: 'STOCK', market_cap: 1_500_000_000_000 };
-  const errorShell = { ...previous, company_name: 'Error', current_price: 0, market_cap: 0, recommendation_key: 'error', post_market_price: null };
+  const errorShell = { ...previous, company_name: 'SPCX', current_price: 0, market_cap: null, market_size_status: 'provider_failed', post_market_price: null };
 
   const [merged] = mergeWatchlistRefresh([previous], [errorShell]);
 
@@ -170,4 +170,19 @@ test('late WebSocket quote changes price and change only, preserving metadata', 
   assert.equal(previous.company_name, 'SPDR S&P 500 ETF Trust');
   assert.equal(previous.market_cap, 500_000_000_000);
   assert.equal(JSON.stringify(previous), before);
+});
+
+test('renders fund assets and non-USD market sizes without a dollar prefix', () => {
+  assert.equal(formatMarketSize({ market_size_type: 'fund_assets', market_size_value: 10_000_000_000, market_size_currency: 'USD' }), '$10.00B');
+  assert.equal(formatMarketSize({ market_size_type: 'market_cap', market_size_value: 62_890_000_000_000, market_size_currency: 'TWD' }), 'TWD 62.89T');
+  assert.equal(formatMarketSize({ market_size_status: 'provider_failed' }), 'Unavailable');
+});
+test('provider failure retains the complete prior market-size identity as stale cache', () => {
+  const prior = { ticker: 'SPY', company_name: 'SPDR', market_cap: null, fund_assets: 100, market_size_value: 100, market_size_type: 'fund_assets', market_size_currency: 'USD', market_size_status: 'available' };
+  const failed = { ticker: 'SPY', company_name: 'SPY', market_cap: null, market_size_status: 'provider_failed' };
+  const [merged] = mergeWatchlistRefresh([prior], [failed]);
+  assert.equal(merged.fund_assets, 100);
+  assert.equal(merged.market_size_type, 'fund_assets');
+  assert.equal(merged.market_size_currency, 'USD');
+  assert.equal(merged.market_size_status, 'stale_cache');
 });

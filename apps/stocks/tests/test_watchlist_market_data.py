@@ -80,7 +80,9 @@ def test_complete_etf_data_uses_etf_shape_and_decimal_percentages(monkeypatch):
     item = WatchlistItem.model_validate(result)
 
     assert item.security_type == "ETF"
-    assert item.market_cap == 50_000_000_000
+    assert item.market_cap is None
+    assert item.fund_assets == 50_000_000_000
+    assert item.market_size_type == "fund_assets"
     assert item.shares_outstanding is None
     assert item.etf_data is not None
     assert item.etf_data.expense_ratio == pytest.approx(0.0009)
@@ -179,12 +181,12 @@ def test_null_and_zero_are_diagnosed_differently():
     present, missing, zero_fields = summarize_normalized_fields(normalized)
 
     assert normalized["current_price"] == 0
-    assert normalized["market_cap"] == 0
+    assert normalized["market_cap"] is None
     assert normalized["target_mean_price"] is None
-    assert "market_cap" in present
+    assert "market_cap" in missing
     assert "number_of_analysts" in present
     assert "target_mean_price" in missing
-    assert {"current_price", "market_cap", "number_of_analysts"} <= set(zero_fields)
+    assert {"current_price", "number_of_analysts"} <= set(zero_fields)
 
 
 @pytest.mark.asyncio
@@ -251,7 +253,10 @@ async def test_unsupported_symbol_returns_safe_per_symbol_fallback(monkeypatch):
     item = WatchlistItem.model_validate(result)
 
     assert item.ticker == "NOPE"
-    assert item.company_name == "Error"
+    assert item.company_name == "NOPE"
+    assert item.market_size_status == "provider_failed"
+    assert item.market_cap is None
+    assert item.fund_assets is None
     assert item.current_price == 0
     assert item.security_type == "UNKNOWN"
 
@@ -275,3 +280,63 @@ async def test_market_data_logs_include_safe_request_correlation(caplog):
     assert failure is None
     assert "correlation_id=watchlist-refresh-42" in caplog.text
     generated = normalize_correlation_id("unsafe\nlog=value")
+
+@pytest.mark.parametrize("ticker", ["SPY", "QQQ", "IWM", "DIA"])
+def test_etf_assets_are_never_normalized_as_market_cap(ticker):
+    normalized = normalize_market_data_payload(
+        ticker,
+        {"ticker": ticker, "company_name": ticker, "security_type": "ETF", "totalAssets": 1, "fund_assets": 12_000_000_000, "currency": "USD"},
+        default_source="yf",
+    )
+    assert normalized["market_cap"] is None
+    assert normalized["fund_assets"] == 12_000_000_000
+    assert normalized["market_size_type"] == "fund_assets"
+    assert normalized["market_size_status"] == "available"
+
+
+def test_equity_market_cap_and_currency_are_preserved():
+    normalized = normalize_market_data_payload(
+        "TSM", {"ticker": "TSM", "security_type": "ADR", "market_cap": 62_890_000_000_000, "currency": "TWD"}, default_source="yf"
+    )
+    assert normalized["market_size_type"] == "market_cap"
+    assert normalized["market_size_currency"] == "TWD"
+
+
+def test_equity_price_times_shares_fallback_is_not_used_for_etfs():
+    assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 10, "currency": "USD"}, "STOCK", 5) == (50, True)
+    assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 10, "currency": "USD"}, "ETF", 5) == (None, False)
+
+
+def test_provider_failure_is_distinct_from_unsupported_market_size():
+    failed = normalize_market_data_payload("NOPE", hybrid_data_service.create_error_fallback("NOPE"), default_source="yf")
+    unsupported = normalize_market_data_payload("NONE", {"ticker": "NONE", "security_type": "ETF"}, default_source="yf")
+    assert failed["market_size_status"] == "provider_failed"
+    assert unsupported["market_size_status"] == "unsupported"
+@pytest.mark.asyncio
+async def test_provider_failure_preserves_cached_market_size_identity(monkeypatch):
+    previous = [
+        WatchlistItem(ticker="SPY", symbol="SPY", company_name="SPDR", security_type="ETF", market_cap=None,
+                      fund_assets=100, market_size_value=100, market_size_type="fund_assets",
+                      market_size_currency="USD", market_size_status="available"),
+        WatchlistItem(ticker="AAPL", symbol="AAPL", company_name="Apple", security_type="STOCK", market_cap=200,
+                      market_size_value=200, market_size_type="market_cap", market_size_currency="USD",
+                      market_size_status="available"),
+    ]
+    failure = normalize_market_data_payload("SPY", hybrid_data_service.create_error_fallback("SPY"), default_source="yf")
+    assert failure["market_size_status"] == "provider_failed"
+    assert previous[0].fund_assets == 100
+    assert previous[1].market_cap == 200
+
+
+def test_strict_market_size_inputs_reject_bools_strings_and_non_finite_values():
+    for value in (True, False, "12", "", float("nan"), float("inf"), -1, 0):
+        assert yfinance_fallback._positive_market_number(value) is None
+
+
+def test_tsm_direct_provider_market_cap_never_uses_calculated_fallback():
+    cap, fallback = yfinance_fallback._resolve_market_cap(
+        {"marketCap": 2_090_000_000_000, "sharesOutstanding": 99, "currency": "USD"}, "ADR", 10
+    )
+    assert cap == 2_090_000_000_000
+    assert fallback is False
+    assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 99, "currency": "USD"}, "ADR", 10) == (None, False)

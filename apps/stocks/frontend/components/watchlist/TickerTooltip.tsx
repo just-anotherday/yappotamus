@@ -4,8 +4,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import type { WatchlistItem } from "@/types/stock";
-import { formatCurrency, formatLargeNumber } from "@/lib/formatters";
-import { formatWatchlistNumber } from "@/lib/watchlistPresentation";
+import { formatCurrency } from "@/lib/formatters";
+import { formatMarketSize, formatWatchlistNumber, getMarketSizeLabel } from "@/lib/watchlistPresentation";
 
 interface Props {
   item: WatchlistItem;
@@ -89,9 +89,9 @@ export default function TickerTooltip({ item }: Props) {
               {item.full_time_employees != null ? item.full_time_employees.toLocaleString() : "N/A"}
             </span>
 
-            <span className="text-gray-500 font-medium">Market Cap</span>
+            <span className="text-gray-500 font-medium">{getMarketSizeLabel(item)}</span>
             <span className="text-gray-900 font-semibold text-right">
-              {formatLargeNumber(item.market_cap)}
+              {formatMarketSize(item)}
             </span>
 
             {item.average_analyst_rating && (

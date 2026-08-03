@@ -18,6 +18,7 @@ import {
   formatWatchlistCurrency,
   formatWatchlistNumber,
   formatWatchlistRecommendation,
+  formatMarketSize,
   getWatchlistDisplayPrice,
   getWatchlistChange,
   presentWatchlist,
@@ -209,7 +210,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                 <th className="px-2 py-2.5 text-left font-semibold text-gray-700 min-w-0">Ticker / Company</th>
                 <th className="px-2 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Current Price</th>
                 <th className="px-2 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Change %</th>
-                <th className="px-2 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Market Cap</th>
+                <th className="px-2 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Market Size</th>
               </tr>
             </thead>
             <tbody>
@@ -252,7 +253,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                      {showAfterHours && (
                        <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums" title="Extended-hours price (pre-market and after-hours ET)">After Hours</th>
                      )}
-                     <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Market Cap</th>
+                     <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Market Size</th>
                    </tr>
                  </thead>
                  <tbody>
@@ -314,7 +315,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                             : '\u2014'}
                         </td>
                       )}
-                      <td className="px-3 py-2.5 text-right text-blue-800 dark:text-blue-300" onClick={() => safeToggleExpand(item.ticker)}>{formatLargeNumber(item.market_cap)}</td>
+                      <td className="px-3 py-2.5 text-right text-blue-800 dark:text-blue-300" onClick={() => safeToggleExpand(item.ticker)}>{formatMarketSize(item)}</td>
                     </SortableRow>
 
                     {/* Expanded detail row */}
@@ -382,7 +383,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                {/* Badges: Market Cap Size, Analyst Rec */}
                                <div className="flex gap-2 items-center flex-wrap">
                                  {(() => {
-                                   const capInfo = marketCapLabel(item.market_cap);
+                                   const capInfo = marketCapLabel(item.market_size_value ?? 0);
                                    return (
                                      <>
                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${capInfo.color}`}>

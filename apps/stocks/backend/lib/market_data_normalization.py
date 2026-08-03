@@ -84,6 +84,13 @@ def _finite_float(value: Any, default: float | None) -> float | None:
     return normalized if math.isfinite(normalized) else default
 
 
+def _positive_market_size(value: Any) -> float | None:
+    """Accept only finite positive provider numbers; reject bools and strings."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    normalized = float(value)
+    return normalized if math.isfinite(normalized) and normalized > 0 else None
+
 def _finite_int(value: Any, default: int | None) -> int | None:
     normalized = _finite_float(value, None)
     return int(normalized) if normalized is not None else default
@@ -144,6 +151,8 @@ def normalize_market_data_payload(
     for field, default in REQUIRED_NUMERIC_DEFAULTS.items():
         normalized[field] = _finite_float(payload.get(field), default)
 
+    normalized["market_cap"] = _positive_market_size(payload.get("market_cap"))
+
     for field in OPTIONAL_FLOAT_FIELDS:
         normalized[field] = _finite_float(payload.get(field), None)
 
@@ -174,4 +183,24 @@ def normalize_market_data_payload(
     )
 
     normalized["etf_data"] = _normalize_etf_data(payload.get("etf_data"))
+    security_type = normalized["security_type"]
+    market_cap = normalized["market_cap"]
+    fund_assets = _positive_market_size(payload.get("fund_assets"))
+    if security_type == "ETF":
+        etf_data = normalized["etf_data"] or {}
+        fund_assets = fund_assets or _positive_market_size(etf_data.get("net_assets"))
+        normalized["market_cap"] = None
+        normalized["fund_assets"] = fund_assets
+        normalized["market_size_value"] = fund_assets
+        normalized["market_size_type"] = "fund_assets" if fund_assets else None
+    else:
+        normalized["fund_assets"] = fund_assets
+        normalized["market_size_value"] = market_cap
+        normalized["market_size_type"] = "market_cap" if market_cap is not None else None
+    currency = _optional_text(payload.get("market_size_currency") or payload.get("currency"))
+    normalized["market_size_currency"] = currency.upper() if currency else None
+    status = _optional_text(payload.get("market_size_status"))
+    valid_statuses = {"available", "unsupported", "provider_failed", "rate_limited", "unauthorized", "stale_cache"}
+    normalized["market_size_status"] = status if status in valid_statuses else ("available" if normalized["market_size_value"] else "unsupported")
+    normalized["market_size_fallback_used"] = bool(payload.get("market_size_fallback_used"))
     return normalized

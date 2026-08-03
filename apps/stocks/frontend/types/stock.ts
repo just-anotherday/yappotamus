@@ -1,10 +1,12 @@
-﻿// ==============================================================================
+// ==============================================================================
 // TYPES / INTERFACES
 // ==============================================================================
 
 export type DataSource = "fh" | "yf";
 
 export type SecurityType = "STOCK" | "ETF" | "INDEX" | "CRYPTO" | "ADR" | "UNKNOWN";
+export type MarketSizeType = "market_cap" | "fund_assets";
+export type MarketDataStatus = "available" | "unsupported" | "provider_failed" | "rate_limited" | "unauthorized" | "stale_cache";
 
 export interface StockData {
   ticker: string;
@@ -68,7 +70,13 @@ export interface WatchlistItem {
   fifty_two_week_low: number;
   change: number;
   change_percent: number;
-  market_cap: number;
+  market_cap: number | null;
+  fund_assets?: number | null;
+  market_size_value?: number | null;
+  market_size_type?: MarketSizeType | null;
+  market_size_currency?: string | null;
+  market_size_fallback_used?: boolean;
+  market_size_status?: MarketDataStatus;
   volume: number;
 
   // Share Structure (STOCK only)

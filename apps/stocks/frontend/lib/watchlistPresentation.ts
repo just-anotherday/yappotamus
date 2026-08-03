@@ -14,6 +14,21 @@ export function formatWatchlistCurrency(value: unknown): string {
   }).format(value);
 }
 
+export function getMarketSizeLabel(item: WatchlistItem): string {
+  return item.market_size_type === 'fund_assets' ? 'Fund Assets' : 'Market Cap';
+}
+
+export function formatMarketSize(item: WatchlistItem): string {
+  if (item.market_size_status === 'provider_failed') return 'Unavailable';
+  const value = item.market_size_value;
+  if (!isFiniteWatchlistNumber(value) || value <= 0) return 'N/A';
+  const currency = item.market_size_currency;
+  const prefix = currency === 'USD' ? '$' : `${currency} `;
+  if (value >= 1e12) return `${prefix}${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e9) return `${prefix}${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `${prefix}${(value / 1e6).toFixed(2)}M`;
+  return `${prefix}${value.toLocaleString()}`;
+}
 export function formatWatchlistNumber(value: unknown, decimals = 2): string {
   return isFiniteWatchlistNumber(value) ? value.toFixed(decimals) : 'N/A';
 }
@@ -41,6 +56,12 @@ const PRESERVE_WHEN_MISSING: readonly (keyof WatchlistItem)[] = [
   'ceo_name',
   'exchange',
   'security_type',
+  'fund_assets',
+  'market_size_value',
+  'market_size_type',
+  'market_size_currency',
+  'market_size_fallback_used',
+  'market_size_status',
   'shares_outstanding',
   'float_shares',
   'insider_percent',
@@ -121,11 +142,11 @@ export function mergeWatchlistRefresh(
     const previous = previousByTicker.get(incoming.ticker);
     if (!previous) return incoming;
 
-    const isErrorShell = incoming.company_name?.trim().toLowerCase() === 'error'
-      || incoming.recommendation_key?.trim().toLowerCase() === 'error';
-    if (isErrorShell) {
+    const providerFailed = ['provider_failed', 'rate_limited', 'unauthorized'].includes(incoming.market_size_status ?? '');
+    if (providerFailed) {
       return {
         ...previous,
+        market_size_status: 'stale_cache',
         post_market_price: incoming.post_market_price ?? previous.post_market_price,
         post_market_change: incoming.post_market_change ?? previous.post_market_change,
         post_market_change_percent: incoming.post_market_change_percent ?? previous.post_market_change_percent,
@@ -200,7 +221,7 @@ export function presentWatchlist(
   if (sort === 'custom') return filtered;
   return [...filtered].sort((a, b) => {
     if (sort === 'ticker') return a.ticker.localeCompare(b.ticker);
-    if (sort === 'market-cap') return sortableMarketCap(b.market_cap) - sortableMarketCap(a.market_cap);
+    if (sort === 'market-cap') return sortableMarketCap(b.market_size_value) - sortableMarketCap(a.market_size_value);
     return (getWatchlistChange(b, livePrices[b.ticker]) ?? -Infinity) - (getWatchlistChange(a, livePrices[a.ticker]) ?? -Infinity);
   });
 }

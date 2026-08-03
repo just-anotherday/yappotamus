@@ -109,14 +109,41 @@ def _is_crypto(info: Dict[str, Any]) -> bool:
     return _get_quote_type(info) == "CRYPTOCURRENCY"
 
 
-def _resolve_market_cap(info: Dict[str, Any], is_etf_flag: bool) -> int:
-    """Resolve market cap from yfinance info, handling ETF vs stock differences."""
-    if is_etf_flag:
-        value = info.get("totalAssets") or info.get("netAssets") or 0
-    else:
-        value = info.get("marketCap") or info.get("nonDilutedMarketCap") or 0
-    return int(value) if value else 0
+def _positive_market_number(value: Any) -> float | None:
+    """Accept only finite positive numeric provider values, never bools/strings."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    normalized = float(value)
+    return normalized if math.isfinite(normalized) and normalized > 0 else None
 
+
+def _resolve_market_cap(info: Dict[str, Any], security_type: str, current_price: Any) -> tuple[float | None, bool]:
+    """Return a direct company cap or a conservative ordinary-stock fallback.
+
+    ADR fallback is disabled because generic sharesOutstanding can describe
+    native ordinary shares rather than the listed ADR share class.
+    """
+    if security_type not in {"STOCK", "ADR"}:
+        return None, False
+    direct = _positive_market_number(info.get("marketCap")) or _positive_market_number(info.get("nonDilutedMarketCap"))
+    if direct is not None:
+        return direct, False
+    if security_type != "STOCK":
+        return None, False
+    price = _positive_market_number(current_price)
+    shares = _positive_market_number(info.get("sharesOutstanding"))
+    if price is None or shares is None or not (info.get("currency") or info.get("financialCurrency")):
+        return None, False
+    result = price * shares
+    return (result, True) if math.isfinite(result) and 0 < result <= 100_000_000_000_000 else (None, False)
+
+
+def _resolve_fund_assets(info: Dict[str, Any]) -> float | None:
+    for field in ("totalAssets", "netAssets", "fundTotalAssets"):
+        value = _positive_market_number(info.get(field))
+        if value is not None:
+            return value
+    return None
 
 def _resolve_shares_outstanding(info: Dict[str, Any], is_etf_flag: bool) -> int:
     """Resolve shares outstanding, computing from NAV for ETFs when needed."""
@@ -259,7 +286,7 @@ def _fetch_etf_data_lazy(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Optiona
     etf_data = {
         "fund_family": info.get("fundFamily"),
         "expense_ratio": _normalize_yfinance_percentage(info.get("expenseRatio")),
-        "net_assets": info.get("totalAssets") or info.get("netAssets"),
+        "net_assets": _resolve_fund_assets(info) or None,
         "inception_date": _format_date(info.get("fundInceptionDate")),
         "dividend_yield": _normalize_yfinance_percentage(info.get("dividendYield")),
         "distribution_frequency": _get_distribution_frequency(info),
@@ -392,7 +419,10 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
         }
         result.update(_assemble_company_fields(ticker_obj, info))
         result.update(_assemble_price_fields(info))
-        result["market_cap"] = _resolve_market_cap(info, etf)
+        result["market_size_currency"] = info.get("currency") or info.get("financialCurrency")
+        result["market_cap"], result["market_size_fallback_used"] = _resolve_market_cap(info, security_type, current_price)
+        if security_type == "ETF":
+            result["fund_assets"] = _resolve_fund_assets(info) or None
         
         # Only include share structure for STOCKs
         if security_type == "STOCK":

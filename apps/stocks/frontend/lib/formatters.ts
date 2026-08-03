@@ -4,12 +4,13 @@ export const formatCurrency = (val: number) => {
 };
 
 // Large number formatting (market cap, shares)
-export const formatLargeNumber = (val: number) => {
+export const formatLargeNumber = (val: number | null | undefined, currency = 'USD') => {
   if (val == null || val === 0) return 'N/A';
-  if (val >= 1e12) return `$${(val / 1e12).toFixed(2)}T`;
-  if (val >= 1e9) return `$${(val / 1e9).toFixed(2)}B`;
-  if (val >= 1e6) return `$${(val / 1e6).toFixed(2)}M`;
-  return val.toLocaleString();
+  const prefix = currency === 'USD' ? '$' : `${currency} `;
+  if (val >= 1e12) return `${prefix}${(val / 1e12).toFixed(2)}T`;
+  if (val >= 1e9) return `${prefix}${(val / 1e9).toFixed(2)}B`;
+  if (val >= 1e6) return `${prefix}${(val / 1e6).toFixed(2)}M`;
+  return `${prefix}${val.toLocaleString()}`;
 };
 
 // Share count formatting
