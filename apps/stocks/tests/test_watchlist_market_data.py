@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import numpy as np
 import pandas as pd
 import time
@@ -13,6 +14,7 @@ from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.market_data_normalization import normalize_market_data_payload
 from backend.models.stock import WatchlistItem
 from backend.services import hybrid_data_service, yfinance_fallback
+from backend.services import finnhub_service
 from backend.services.market_data_observability import (
     market_data_correlation,
     normalize_correlation_id,
@@ -697,6 +699,147 @@ async def test_market_data_logs_include_safe_request_correlation(caplog):
     assert "correlation_id=watchlist-refresh-42" in caplog.text
     generated = normalize_correlation_id("unsafe\nlog=value")
 
+
+@pytest.mark.asyncio
+async def test_timeout_attempt_keeps_correlation_and_symbol_order(caplog):
+    async def provider_timeout():
+        raise asyncio.TimeoutError()
+
+    with caplog.at_level("WARNING"):
+        with market_data_correlation("request-42"):
+            result, failure = await run_provider_attempt(
+                ticker="AMD",
+                provider="fh",
+                timeout_s=1,
+                operation=provider_timeout,
+            )
+
+    assert result is None
+    assert failure == "timeout"
+    assert "correlation_id=request-42 symbol=AMD provider=fh success=false timeout=true" in caplog.text
+    assert "correlation_id=AMD symbol=request-42" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_empty_and_unusable_finnhub_results_are_not_successes(caplog):
+    async def empty_provider():
+        return {}
+
+    async def unusable_provider():
+        return {"current_price": 0}
+
+    with caplog.at_level("INFO"):
+        with market_data_correlation("request-43"):
+            empty, empty_failure = await run_provider_attempt(
+                ticker="EMPTY",
+                provider="fh",
+                timeout_s=1,
+                operation=empty_provider,
+            )
+            unusable, unusable_failure = await run_provider_attempt(
+                ticker="ZERO",
+                provider="fh",
+                timeout_s=1,
+                operation=unusable_provider,
+                result_is_usable=hybrid_data_service._has_usable_finnhub_quote,
+            )
+
+    assert empty == {}
+    assert empty_failure == "empty_response"
+    assert unusable == {"current_price": 0}
+    assert unusable_failure == "empty_response"
+    assert "symbol=EMPTY provider=fh success=false timeout=false" in caplog.text
+    assert "symbol=ZERO provider=fh success=false timeout=false" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_valid_finnhub_result_is_logged_as_success(caplog):
+    async def valid_provider():
+        return _stock_payload("NVDA", source="fh")
+
+    with caplog.at_level("INFO"):
+        with market_data_correlation("request-44"):
+            result, failure = await run_provider_attempt(
+                ticker="NVDA",
+                provider="fh",
+                timeout_s=1,
+                operation=valid_provider,
+                result_is_usable=hybrid_data_service._has_usable_finnhub_quote,
+            )
+
+    assert result is not None
+    assert failure is None
+    assert "correlation_id=request-44 symbol=NVDA provider=fh success=true timeout=false" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_collection_result_agrees_when_finnhub_quote_is_unusable(monkeypatch, caplog):
+    async def unusable_finnhub(_ticker):
+        return {"ticker": "NVDA", "current_price": 0, "data_source": "fh"}
+
+    async def no_yfinance(_ticker):
+        return None
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", unusable_finnhub)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", no_yfinance)
+
+    with caplog.at_level("INFO"):
+        with market_data_correlation("request-45"):
+            result = await hybrid_data_service.get_hybrid_stock_price("NVDA")
+
+    assert result is None
+    assert "symbol=NVDA provider=fh success=false timeout=false" in caplog.text
+    assert "event=collection_result correlation_id=request-45 symbol=NVDA" in caplog.text
+    assert "selected_provider=fh" in caplog.text
+    assert "success=false" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_late_threaded_quote_result_is_discarded_after_timeout(monkeypatch, caplog):
+    quote_started = threading.Event()
+    release_quote = threading.Event()
+    quote_finished = threading.Event()
+    late_continuations = []
+    yfinance_calls = []
+    monkeypatch.setattr(hybrid_data_service, "_PROVIDER_TIMEOUT_S", 0.01)
+
+    class BlockingClient:
+        def quote(self, _ticker):
+            quote_started.set()
+            assert release_quote.wait(timeout=1)
+            quote_finished.set()
+            return {"c": 100.0}
+
+    async def delayed_finnhub(_ticker):
+        quote = await finnhub_service._do_quote(BlockingClient(), "NVDA")
+        late_continuations.append(quote)
+        return _stock_payload("NVDA", source="fh")
+
+    async def no_yfinance(_ticker):
+        yfinance_calls.append("fallback")
+        return None
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", delayed_finnhub)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", no_yfinance)
+
+    with caplog.at_level("INFO"):
+        with market_data_correlation("late-thread-42"):
+            pending = asyncio.create_task(hybrid_data_service.get_hybrid_stock_price("NVDA"))
+            assert await asyncio.wait_for(asyncio.to_thread(quote_started.wait), timeout=1)
+            assert await pending is None
+
+    release_quote.set()
+    assert await asyncio.wait_for(asyncio.to_thread(quote_finished.wait), timeout=1)
+    await asyncio.sleep(0)
+
+    assert late_continuations == []
+    assert yfinance_calls == ["fallback"]
+    assert hybrid_data_service._cache == {}
+    assert "symbol=NVDA provider=fh success=false timeout=true" in caplog.text
+    assert "symbol=NVDA provider=fh success=true" not in caplog.text
+    assert "event=collection_result correlation_id=late-thread-42 symbol=NVDA" in caplog.text
+    assert "selected_provider=fh" in caplog.text
+    assert "success=false" in caplog.text
 @pytest.mark.parametrize("ticker", ["SPY", "QQQ", "IWM", "DIA"])
 def test_etf_assets_are_never_normalized_as_market_cap(ticker):
     normalized = normalize_market_data_payload(

@@ -1,5 +1,8 @@
 """Contract tests for Finnhub quote and company-profile normalization."""
 
+import asyncio
+import threading
+
 import pytest
 
 from backend.services import finnhub_service
@@ -42,3 +45,37 @@ async def test_ticker_info_converts_finnhub_market_cap_millions_to_absolute_unit
     assert info["marketCap"] == 3_210_500_000
     assert info["sharesOutstanding"] == 125_250_000
     assert info["regularMarketChangePercent"] == 2.0
+
+@pytest.mark.asyncio
+async def test_blocked_quotes_are_offloaded_and_do_not_serialize(monkeypatch):
+    started = []
+    started_lock = threading.Lock()
+    all_started = threading.Event()
+    release_quotes = threading.Event()
+
+    async def no_rate_limit():
+        return None
+
+    class BlockingClient:
+        def quote(self, ticker):
+            with started_lock:
+                started.append(ticker)
+                if len(started) == 4:
+                    all_started.set()
+            assert release_quotes.wait(timeout=1)
+            return {"c": 100.0}
+
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", no_rate_limit)
+    monkeypatch.setattr(finnhub_service, "get_finnhub_client", lambda: BlockingClient())
+
+    pending = [asyncio.create_task(finnhub_service.fetch_quote(ticker)) for ticker in ("AAA", "BBB", "CCC", "DDD")]
+    assert await asyncio.wait_for(asyncio.to_thread(all_started.wait), timeout=1)
+
+    heartbeat = asyncio.Event()
+    await asyncio.sleep(0)
+    heartbeat.set()
+    assert heartbeat.is_set()
+    assert len(started) == 4
+
+    release_quotes.set()
+    assert await asyncio.gather(*pending) == [{"c": 100.0}] * 4

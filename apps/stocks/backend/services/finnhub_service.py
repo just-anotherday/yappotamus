@@ -123,7 +123,7 @@ def _retry_api_sync(func, *args, **kwargs):
 
 async def _do_quote(client: finnhub.Client, ticker: str):
     """Inner API call — may raise on transient failures (retryable)."""
-    return client.quote(ticker.upper())
+    return await asyncio.to_thread(client.quote, ticker.upper())
 
 
 async def fetch_quote(ticker: str) -> Dict[str, Any]:

@@ -47,6 +47,18 @@ _PROVIDER_TIMEOUT_S = settings.MARKET_DATA_PROVIDER_TIMEOUT_S
 _CACHE_MAX_SIZE = settings.HYBRID_CACHE_MAX_SIZE
 _cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
+def _has_usable_finnhub_quote(data: Any) -> bool:
+    """Accept only Finnhub payloads with a finite positive current price."""
+    if not isinstance(data, dict):
+        return False
+    price = data.get("current_price")
+    return (
+        not isinstance(price, bool)
+        and isinstance(price, (int, float))
+        and math.isfinite(float(price))
+        and price > 0
+    )
+
 
 def _cache_get(ticker: str) -> Optional[Dict[str, Any]]:
     """Retrieve a cached entry if within TTL."""
@@ -303,6 +315,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             provider="fh",
             timeout_s=_PROVIDER_TIMEOUT_S,
             operation=lambda: finnhub_get_stock_price(ticker_upper),
+            result_is_usable=_has_usable_finnhub_quote,
         )
         if data and data.get("current_price", 0) > 0:
             logger.debug("[Hybrid] %s served by Finnhub.", ticker_upper)

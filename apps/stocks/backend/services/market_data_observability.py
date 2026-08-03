@@ -132,6 +132,7 @@ async def run_provider_attempt(
     provider: str,
     timeout_s: float,
     operation: Callable[[], Awaitable[T]],
+    result_is_usable: Callable[[T], bool] | None = None,
 ) -> tuple[T | None, str | None]:
     """Execute one provider attempt with timeout and structured diagnostics."""
 
@@ -142,8 +143,8 @@ async def run_provider_attempt(
         logger.warning(
             "[MarketData] event=provider_attempt correlation_id=%s symbol=%s provider=%s "
             "success=false timeout=true duration_ms=%.1f",
-            ticker,
             current_correlation_id(),
+            ticker,
             provider,
             (time.monotonic() - started) * 1000,
         )
@@ -163,6 +164,10 @@ async def run_provider_attempt(
         return None, type(exc).__name__
 
     success = result is not None
+    if success and isinstance(result, Mapping):
+        success = bool(result)
+    if success and result_is_usable is not None:
+        success = bool(result_is_usable(result))
     logger.info(
         "[MarketData] event=provider_attempt correlation_id=%s symbol=%s provider=%s "
         "success=%s timeout=false duration_ms=%.1f",
@@ -173,7 +178,6 @@ async def run_provider_attempt(
         (time.monotonic() - started) * 1000,
     )
     return result, None if success else "empty_response"
-
 
 def log_collection_result(
     *,
