@@ -43,8 +43,132 @@ def _stock_payload(ticker: str, *, source: str = "yf") -> dict:
 @pytest.fixture(autouse=True)
 def clear_hybrid_cache():
     hybrid_data_service._cache.clear()
+    yfinance_fallback._reset_yfinance_cooldown_for_tests()
     yield
     hybrid_data_service._cache.clear()
+    yfinance_fallback._reset_yfinance_cooldown_for_tests()
+
+
+@pytest.mark.parametrize(
+    ("exception", "expected_class"),
+    [
+        (yfinance_fallback.YFRateLimitError(), "yf_rate_limit"),
+        (RuntimeError("Too Many Requests"), "rate_limited"),
+        (RuntimeError("HTTP 429"), "rate_limited"),
+        (RuntimeError("Invalid Crumb"), "invalid_crumb"),
+        (RuntimeError("Yahoo unauthorized"), "yahoo_access_denied"),
+    ],
+)
+def test_yfinance_cooldown_opens_for_recognized_outages(
+    monkeypatch, caplog, exception, expected_class
+):
+    now = [100.0]
+    monkeypatch.setattr(yfinance_fallback.time, "monotonic", lambda: now[0])
+
+    assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
+    with caplog.at_level("WARNING"):
+        assert yfinance_fallback._record_yfinance_outage_failure(exception) == expected_class
+
+    assert yfinance_fallback._yfinance_cooldown_status() == (True, expected_class)
+    assert "event=yfinance_cooldown_opened" in caplog.text
+    assert f"failure_class={expected_class}" in caplog.text
+    assert "cooldown_seconds=120" in caplog.text
+    assert "crumb=" not in caplog.text
+    assert "cookie" not in caplog.text
+    assert "http://" not in caplog.text
+
+    now[0] = 219.999
+    assert yfinance_fallback._yfinance_cooldown_status()[0] is True
+    now[0] = 220.0
+    assert yfinance_fallback._yfinance_cooldown_status()[0] is False
+
+    assert yfinance_fallback._record_yfinance_outage_failure(exception) == expected_class
+    now[0] = 339.999
+    assert yfinance_fallback._yfinance_cooldown_status()[0] is True
+
+
+def test_cooldown_reset_and_unrecognized_failures_do_not_leak(monkeypatch):
+    monkeypatch.setattr(yfinance_fallback.time, "monotonic", lambda: 100.0)
+
+    yfinance_fallback._record_yfinance_outage_failure(yfinance_fallback.YFRateLimitError())
+    assert yfinance_fallback._yfinance_cooldown_status()[0] is True
+    yfinance_fallback._reset_yfinance_cooldown_for_tests()
+    assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
+
+    assert yfinance_fallback._record_yfinance_outage_failure(RuntimeError("ordinary failure")) is None
+    assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
+
+
+@pytest.mark.asyncio
+async def test_yfinance_cooldown_skips_optional_enrichment_and_preserves_finnhub(
+    monkeypatch, caplog
+):
+    now = [100.0]
+    calls: list[str] = []
+    finnhub_market_cap = 2_000_000_000_000
+    monkeypatch.setattr(yfinance_fallback.time, "monotonic", lambda: now[0])
+    yfinance_fallback._record_yfinance_outage_failure(
+        RuntimeError("Invalid Crumb: crumb=secret-cookie")
+    )
+
+    async def finnhub_result(ticker):
+        calls.append(f"fh:{ticker}")
+        return {
+            "ticker": ticker,
+            "symbol": ticker,
+            "company_name": "Amazon.com, Inc.",
+            "current_price": 200,
+            "market_cap": finnhub_market_cap,
+            "market_size_value": finnhub_market_cap,
+            "market_size_type": "market_cap",
+            "market_size_currency": "USD",
+            "market_size_fallback_used": False,
+            "market_size_status": "available",
+            "long_business_summary": None,
+            "security_type": "STOCK",
+            "data_source": "fh",
+        }
+
+    async def yfinance_enrichment(ticker):
+        calls.append(f"yf:{ticker}")
+        return {"ticker": ticker, "long_business_summary": "must not be fetched"}
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub_result)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yfinance_enrichment)
+
+    with caplog.at_level("DEBUG"):
+        result = await hybrid_data_service.get_hybrid_stock_price("AMZN")
+
+    assert calls == ["fh:AMZN"]
+    assert result["data_source"] == "fh"
+    assert result["yf_enriched_fields"] == []
+    assert result["market_cap"] == finnhub_market_cap
+    assert result["market_size_value"] == finnhub_market_cap
+    assert result["market_size_type"] == "market_cap"
+    assert result["market_size_currency"] == "USD"
+    assert result["market_size_fallback_used"] is False
+    assert result["market_size_status"] == "available"
+    assert "event=yfinance_cooldown_skip" in caplog.text
+    assert "secret-cookie" not in caplog.text
+
+
+def test_yfinance_primary_cooldown_skips_provider_call(monkeypatch):
+    now = [100.0]
+    calls: list[str] = []
+    monkeypatch.setattr(yfinance_fallback.time, "monotonic", lambda: now[0])
+    yfinance_fallback._record_yfinance_outage_failure(yfinance_fallback.YFRateLimitError())
+
+    class FakeTicker:
+        def __init__(self, _ticker):
+            calls.append("ticker")
+
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+
+    assert yfinance_fallback.get_stock_price_yf("SPY") is None
+    assert calls == []
+    assert yfinance_fallback._yfinance_cooldown_status()[0] is True
+
+
 
 
 def test_complete_etf_data_uses_etf_shape_and_decimal_percentages(monkeypatch):
@@ -87,6 +211,7 @@ def test_complete_etf_data_uses_etf_shape_and_decimal_percentages(monkeypatch):
     assert item.market_size_type == "fund_assets"
     assert item.shares_outstanding is None
     assert item.etf_data is not None
+    assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
     assert item.etf_data.expense_ratio == pytest.approx(0.0009)
     assert item.etf_data.dividend_yield == pytest.approx(0.0101)
 
@@ -311,6 +436,7 @@ async def test_unusable_yfinance_enrichment_does_not_count_as_success(
     assert calls == ["fh:AMZN", "yf:AMZN"]
     assert "provider=yf_enrichment success=false" in caplog.text
     assert result["yf_enriched_fields"] == []
+    assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
     assert result["market_cap"] == finnhub_market_cap
     assert result["market_size_value"] == finnhub_market_cap
     assert result["market_size_type"] == "market_cap"

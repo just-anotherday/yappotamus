@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from backend.config.settings import settings
 from backend.services.finnhub_service import get_stock_price as finnhub_get_stock_price
+from backend.services import yfinance_fallback
 from backend.services.yfinance_fallback import get_stock_price_yf
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.error_fallback import create_error_fallback
@@ -321,31 +322,44 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             )
             
             if has_gaps or bad_company_name:
-                # Fetch yfinance data in background to fill gaps
-                logger.debug("[Hybrid] Enriching %s from yfinance (gaps=%s, bad_name=%s).", ticker_upper, has_gaps, bad_company_name)
-                try:
-                    async def validated_yf_enrichment():
-                        yf_data = await _yf_async(ticker_upper)
-                        if not yf_data:
-                            return None
-                        merged_data, enriched_fields = _enrich_with_yf(data, yf_data)
-                        return (merged_data, enriched_fields) if enriched_fields else None
-
-                    enrichment, _ = await run_provider_attempt(
-                        ticker=ticker_upper,
-                        provider="yf_enrichment",
-                        timeout_s=_PROVIDER_TIMEOUT_S,
-                        operation=validated_yf_enrichment,
+                cooldown_active, failure_class = yfinance_fallback._yfinance_cooldown_status()
+                if cooldown_active:
+                    logger.debug(
+                        "[Hybrid] event=yfinance_cooldown_skip failure_class=%s",
+                        failure_class,
                     )
-                    if enrichment:
-                        data, enriched_fields = enrichment
-                        data["yf_enriched_fields"] = enriched_fields
-                        logger.debug(
-                            "[Hybrid] %s enriched %d fields from yfinance.",
-                            ticker_upper, len(enriched_fields)
+                else:
+                    # Fetch yfinance data in background to fill gaps
+                    logger.debug("[Hybrid] Enriching %s from yfinance (gaps=%s, bad_name=%s).", ticker_upper, has_gaps, bad_company_name)
+                    try:
+                        async def validated_yf_enrichment():
+                            yf_data = await _yf_async(ticker_upper)
+                            if not yf_data:
+                                return None
+                            merged_data, enriched_fields = _enrich_with_yf(data, yf_data)
+                            return (merged_data, enriched_fields) if enriched_fields else None
+
+                        enrichment, _ = await run_provider_attempt(
+                            ticker=ticker_upper,
+                            provider="yf_enrichment",
+                            timeout_s=_PROVIDER_TIMEOUT_S,
+                            operation=validated_yf_enrichment,
                         )
-                except Exception as e:
-                    logger.warning("[Hybrid] Enrichment failed for %s: %s", ticker_upper, e)
+                        if enrichment:
+                            data, enriched_fields = enrichment
+                            data["yf_enriched_fields"] = enriched_fields
+                            logger.debug(
+                                "[Hybrid] %s enriched %d fields from yfinance.",
+                                ticker_upper, len(enriched_fields)
+                            )
+                    except Exception as exc:
+                        failure_class = yfinance_fallback._record_yfinance_outage_failure(exc)
+                        logger.warning(
+                            "[Hybrid] Enrichment failed for %s: failure_class=%s exception_type=%s",
+                            ticker_upper,
+                            failure_class or "unclassified",
+                            type(exc).__name__,
+                        )
             
             _cache_set(ticker_upper, data)
             return data

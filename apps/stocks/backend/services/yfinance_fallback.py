@@ -14,10 +14,13 @@ securities as STOCK, ETF, INDEX, CRYPTO, ADR, or UNKNOWN.
 
 import logging
 import math
+import threading
+import time
 from numbers import Real
 from typing import Any, Dict, List, Optional
 
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 from backend.lib.error_fallback import create_error_fallback
 from backend.lib.market_data_normalization import normalize_market_data_payload
@@ -25,6 +28,66 @@ from backend.lib.risk_metrics import _compute_composite_risk, _safe_pct
 from backend.services.yfinance_cache import configure_yfinance_cache
 
 logger = logging.getLogger(__name__)
+
+_YFINANCE_COOLDOWN_SECONDS = 120
+_yfinance_cooldown_until = 0.0
+_yfinance_last_failure_class: Optional[str] = None
+_yfinance_cooldown_lock = threading.Lock()
+
+
+def _classify_yfinance_outage(exception: BaseException) -> Optional[str]:
+    """Classify only explicit Yahoo rate-limit or access failures."""
+    if isinstance(exception, YFRateLimitError):
+        return "yf_rate_limit"
+
+    response = getattr(exception, "response", None)
+    status_code = getattr(exception, "status_code", None) or getattr(
+        response, "status_code", None
+    )
+    if status_code == 429:
+        return "http_429"
+
+    message = str(exception).strip().casefold()
+    if "too many requests" in message or "http 429" in message:
+        return "rate_limited"
+    if "invalid crumb" in message:
+        return "invalid_crumb"
+    if any(marker in message for marker in ("unauthorized", "access denied", "forbidden")):
+        return "yahoo_access_denied"
+    return None
+
+
+def _record_yfinance_outage_failure(exception: BaseException) -> Optional[str]:
+    """Open the bounded process-local cooldown for a recognized Yahoo outage."""
+    failure_class = _classify_yfinance_outage(exception)
+    if failure_class is None:
+        return None
+
+    global _yfinance_cooldown_until, _yfinance_last_failure_class
+    with _yfinance_cooldown_lock:
+        _yfinance_cooldown_until = time.monotonic() + _YFINANCE_COOLDOWN_SECONDS
+        _yfinance_last_failure_class = failure_class
+    logger.warning(
+        "[YF-Fallback] event=yfinance_cooldown_opened failure_class=%s cooldown_seconds=%s",
+        failure_class,
+        _YFINANCE_COOLDOWN_SECONDS,
+    )
+    return failure_class
+
+
+def _yfinance_cooldown_status() -> tuple[bool, Optional[str]]:
+    """Return whether the process-local Yahoo cooldown remains active."""
+    now = time.monotonic()
+    with _yfinance_cooldown_lock:
+        return now < _yfinance_cooldown_until, _yfinance_last_failure_class
+
+
+def _reset_yfinance_cooldown_for_tests() -> None:
+    """Reset bounded process-local cooldown state for test isolation."""
+    global _yfinance_cooldown_until, _yfinance_last_failure_class
+    with _yfinance_cooldown_lock:
+        _yfinance_cooldown_until = 0.0
+        _yfinance_last_failure_class = None
 
 
 # ==============================================================================
@@ -414,6 +477,14 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
     
     Includes dynamic security type detection and lazy ETF data fetching.
     """
+    cooldown_active, failure_class = _yfinance_cooldown_status()
+    if cooldown_active:
+        logger.debug(
+            "[YF-Fallback] event=yfinance_cooldown_skip failure_class=%s",
+            failure_class,
+        )
+        return None
+
     configure_yfinance_cache(yf)
     try:
         ticker_obj = yf.Ticker(ticker.upper())
@@ -482,8 +553,14 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
             normalized["market_size_type"] = "fund_assets"
             normalized["market_size_status"] = "unsupported"
         return normalized
-    except Exception as e:
-        logger.error("[YF-Fallback] Failed for %s: %s", ticker, e)
+    except Exception as exc:
+        failure_class = _record_yfinance_outage_failure(exc)
+        if failure_class is None:
+            logger.error(
+                "[YF-Fallback] Failed for %s: exception_type=%s",
+                ticker,
+                type(exc).__name__,
+            )
         return None
 
 
