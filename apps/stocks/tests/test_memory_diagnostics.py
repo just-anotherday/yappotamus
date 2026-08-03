@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -253,7 +254,8 @@ class TestReservedPayloadKeysNotOverwritten:
             )
 
             assert result is not None
-            assert result["event"] == "process_memory"
+            # Event must be the checkpoint name, not the injected value
+            assert result["event"] == "test_action"
         finally:
             sys.platform = original_platform
             sys.modules.pop("resource", None)
@@ -375,3 +377,225 @@ class TestDisabledDiagnostics:
 
         assert result is None
         fake_logger.info.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Plaintext and structured fields (caplog-based)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaintextAndStructuredFields:
+    def test_plaintext_contains_required_fields(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The plaintext message must contain event, rss_mb, peak_rss_mb, pid, and safe context."""
+        fake_resource = mock.MagicMock()
+        fake_usage = mock.Mock()
+        fake_usage.ru_maxrss = 102400
+        fake_resource.getrusage.return_value = fake_usage
+
+        original_platform = sys.platform
+        try:
+            sys.platform = "linux"
+            sys.modules["resource"] = fake_resource
+
+            with caplog.at_level("INFO", logger="test_memory_plaintext"):
+                result = memory_diagnostics.log_memory(
+                    "test_event",
+                    logger_to_use=logging.getLogger("test_memory_plaintext"),
+                    enabled=True,
+                    include_peak=True,
+                    extra={"safe_count": 12},
+                )
+
+            assert result is not None
+            message = caplog.messages[0] if caplog.messages else ""
+
+            # Essential fields present in plaintext
+            assert "Process memory diagnostic" in message
+            assert "event=test_event" in message
+            assert "rss_mb=" in message
+            assert "peak_rss_mb=" in message
+            assert "pid=" in message
+            assert "safe_count=12" in message
+
+            # Each reserved field appears exactly once (prefix, not exact token)
+            fields = message.split()
+            assert sum(field.startswith("event=") for field in fields) == 1
+            assert sum(field.startswith("rss_mb=") for field in fields) == 1
+            assert sum(field.startswith("peak_rss_mb=") for field in fields) == 1
+            assert sum(field.startswith("pid=") for field in fields) == 1
+
+            # Structured fields remain on the record (rss_mb may be None on Windows)
+            assert result["event"] == "test_event"
+            assert result["peak_rss_mb"] is not None
+            assert isinstance(result["pid"], int)
+        finally:
+            sys.platform = original_platform
+            sys.modules.pop("resource", None)
+
+    def test_structured_fields_guard_against_mutation(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Ensure event is NOT removed from the structured payload (regression vs .pop() bug)."""
+        fake_resource = mock.MagicMock()
+        fake_usage = mock.Mock()
+        fake_usage.ru_maxrss = 102400
+        fake_resource.getrusage.return_value = fake_usage
+
+        original_platform = sys.platform
+        try:
+            sys.platform = "linux"
+            sys.modules["resource"] = fake_resource
+
+            with caplog.at_level("INFO", logger="test_memory_mutation_guard"):
+                result = memory_diagnostics.log_memory(
+                    "mutation_guard_test",
+                    logger_to_use=logging.getLogger("test_memory_mutation_guard"),
+                    enabled=True,
+                    include_peak=True,
+                    extra={},
+                )
+
+            assert result is not None
+            # The event key must survive in the structured payload
+            assert result["event"] == "mutation_guard_test"
+        finally:
+            sys.platform = original_platform
+            sys.modules.pop("resource", None)
+
+
+# ---------------------------------------------------------------------------
+# Sensitive data protection
+# ---------------------------------------------------------------------------
+
+
+class TestSensitiveDataProtection:
+    def test_fake_sensitive_values_absent_from_plaintext(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Fake sensitive values must not appear in the plaintext message."""
+        fake_resource = mock.MagicMock()
+        fake_usage = mock.Mock()
+        fake_usage.ru_maxrss = 102400
+        fake_resource.getrusage.return_value = fake_usage
+
+        original_platform = sys.platform
+        try:
+            sys.platform = "linux"
+            sys.modules["resource"] = fake_resource
+
+            with caplog.at_level("INFO", logger="test_sensitive"):
+                result = memory_diagnostics.log_memory(
+                    "sensitive_test",
+                    logger_to_use=logging.getLogger("test_sensitive"),
+                    enabled=True,
+                    include_peak=True,
+                    extra={
+                        "database_url": "postgresql://user:fake-secret@example/db",
+                        "api_token": "fake-token-value",
+                        "password": "fake-password",
+                    },
+                )
+
+            message = caplog.messages[0] if caplog.messages else ""
+
+            # Fake sensitive values must NOT appear anywhere in plaintext
+            assert "fake-secret" not in message
+            assert "fake-token-value" not in message
+            assert "fake-password" not in message
+
+            # Structured payload: sensitive keys are redacted
+            assert result is not None
+            assert result.get("database_url") == "<redacted>"
+            assert result.get("api_token") == "<redacted>"
+            assert result.get("password") == "<redacted>"
+        finally:
+            sys.platform = original_platform
+            sys.modules.pop("resource", None)
+
+
+# ---------------------------------------------------------------------------
+# Complex values omitted from plaintext
+# ---------------------------------------------------------------------------
+
+
+class TestComplexValuesOmittedFromPlaintext:
+    def test_dict_and_list_not_stringified_in_plaintext(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Dict and list values must not appear as full string representations in the message."""
+        fake_resource = mock.MagicMock()
+        fake_usage = mock.Mock()
+        fake_usage.ru_maxrss = 102400
+        fake_resource.getrusage.return_value = fake_usage
+
+        original_platform = sys.platform
+        try:
+            sys.platform = "linux"
+            sys.modules["resource"] = fake_resource
+
+            with caplog.at_level("INFO", logger="test_complex"):
+                result = memory_diagnostics.log_memory(
+                    "complex_test",
+                    logger_to_use=logging.getLogger("test_complex"),
+                    enabled=True,
+                    include_peak=True,
+                    extra={
+                        "my_dict": {"nested": "deep_value"},
+                        "my_list": [1, 2, 3],
+                    },
+                )
+
+            message = caplog.messages[0] if caplog.messages else ""
+
+            # Full str() representations must NOT appear in plaintext
+            assert "{'nested': 'deep_value'}" not in message
+            assert "[1, 2, 3]" not in message
+        finally:
+            sys.platform = original_platform
+            sys.modules.pop("resource", None)
+
+
+# ---------------------------------------------------------------------------
+# Unavailable memory
+# ---------------------------------------------------------------------------
+
+
+class TestUnavailableMemory:
+    def test_unavailable_rss_produces_stable_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        """When RSS and peak RSS are unavailable, message must contain 'unavailable' text."""
+        original_platform = sys.platform
+        try:
+            # Mock current RSS to return None/unavailable
+            with mock.patch.object(
+                memory_diagnostics, "_get_current_rss", return_value=(None, "unavailable")
+            ), mock.patch.object(
+                memory_diagnostics, "_get_peak_rss", return_value=None
+            ):
+                with caplog.at_level("INFO", logger="test_unavailable"):
+                    result = memory_diagnostics.log_memory(
+                        "unavailable_test",
+                        logger_to_use=logging.getLogger("test_unavailable"),
+                        enabled=True,
+                        include_peak=True,
+                    )
+
+            message = caplog.messages[0] if caplog.messages else ""
+            assert "rss_mb=unavailable" in message
+            assert "peak_rss_mb=unavailable" in message
+            # No exception raised
+            assert result is not None
+        finally:
+            sys.platform = original_platform
+
+
+# ---------------------------------------------------------------------------
+# Disabled diagnostics (retained from existing suite)
+# ---------------------------------------------------------------------------
+
+
+class TestDisabledDiagnosticsRetained:
+    def test_disabled_emits_no_record(self, caplog: pytest.LogCaptureFixture) -> None:
+        """When diagnostics are disabled, no log record is emitted."""
+        with caplog.at_level("INFO", logger="test_disabled_retained"):
+            result = memory_diagnostics.log_memory(
+                "disabled_action",
+                logger_to_use=logging.getLogger("test_disabled_retained"),
+                enabled=False,
+            )
+
+        assert result is None
+        assert len(caplog.records) == 0

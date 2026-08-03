@@ -111,6 +111,14 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
 		tickers_processed = 0
 		articles_ingested = 0
 		recovered_thumbnail_count = 0
+		cycle_counters = {
+			"articles_fetched": 0,
+			"articles_changed": 0,
+			"report_candidates": 0,
+			"enqueue_attempts": 0,
+			"jobs_created": 0,
+			"jobs_deduplicated": 0,
+		}
 		outcome = "cancelled"
 
 		try:
@@ -129,7 +137,12 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
 				if not tickers:
 					logger.info("[NewsScheduler] No tickers in watchlist; skipping cycle.")
 				else:
-					results = await fetch_and_ingest_many(tickers, session, limit=25)
+					results = await fetch_and_ingest_many(
+						tickers,
+						session,
+						limit=25,
+						_cycle_counters=cycle_counters,
+					)
 					total = sum(results.values())
 					tickers_processed = len(results)
 					articles_ingested = total
@@ -169,6 +182,12 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
 						"ticker_count": ticker_count,
 						"tickers_processed": tickers_processed,
 						"articles_ingested": articles_ingested,
+						"articles_fetched": cycle_counters["articles_fetched"],
+						"articles_changed": cycle_counters["articles_changed"],
+						"report_candidates": cycle_counters["report_candidates"],
+						"enqueue_attempts": cycle_counters["enqueue_attempts"],
+						"jobs_created": cycle_counters["jobs_created"],
+						"jobs_deduplicated": cycle_counters["jobs_deduplicated"],
 						"recovered_thumbnail_count": recovered_thumbnail_count,
 						"outcome": outcome,
 						"duration_seconds": round(time.monotonic() - cycle_started_at, 3),
@@ -484,7 +503,48 @@ async def batch_ingest_articles(
     return list(result.scalars().all())
 
 
-async def fetch_and_ingest_news(ticker: str, session: AsyncSession, limit: int = 30) -> int:
+async def _enqueue_company_report_jobs(
+    session: AsyncSession,
+    ticker: str,
+    affected_asset_ids: set[int],
+) -> dict[str, int]:
+    """Enqueue one company-report job per affected asset and return counters."""
+    report_candidates = len(affected_asset_ids)
+    enqueue_attempts = 0
+    jobs_created = 0
+    jobs_deduplicated = 0
+
+    if affected_asset_ids:
+        for asset_id in affected_asset_ids:
+            enqueue_attempts += 1
+            job_ok = await enqueue_job(
+                session=session,
+                job_type="company_report",
+                target_type="asset",
+                target_id=asset_id,
+                payload={"ticker": ticker.upper()},
+                priority=10,
+            )
+            if job_ok:
+                jobs_created += 1
+            else:
+                jobs_deduplicated += 1
+
+    return {
+        "report_candidates": report_candidates,
+        "enqueue_attempts": enqueue_attempts,
+        "jobs_created": jobs_created,
+        "jobs_deduplicated": jobs_deduplicated,
+    }
+
+
+async def fetch_and_ingest_news(
+    ticker: str,
+    session: AsyncSession,
+    limit: int = 30,
+    *,
+    _cycle_counters: Optional[dict[str, int]] = None,
+) -> int:
     """
     Fetch latest news for a ticker from Finnhub and persist to PostgreSQL.
     Returns the count of newly ingested articles.
@@ -553,6 +613,8 @@ async def fetch_and_ingest_news(ticker: str, session: AsyncSession, limit: int =
 
     material_article_ids = await batch_ingest_articles(session, normalized_articles)
     ingested = len(material_article_ids)
+    articles_fetched = len(normalized_articles)
+    articles_changed = ingested
 
     if settings.INTELLIGENCE_ENABLED and material_article_ids:
         from backend.intelligence.article_service import ARTICLE_PROMPT_HASH, article_source_content_hash
@@ -566,6 +628,10 @@ async def fetch_and_ingest_news(ticker: str, session: AsyncSession, limit: int =
                               priority=8, dedupe_key=f"{row.id}:{source_hash}:{ARTICLE_PROMPT_HASH}")
 
     # --- Pipeline: Extract tickers from new articles → queue company report jobs ---
+    report_candidates = 0
+    enqueue_attempts = 0
+    jobs_created = 0
+    jobs_deduplicated = 0
     try:
         affected_asset_ids = set()
         for article in normalized_articles:
@@ -580,29 +646,46 @@ async def fetch_and_ingest_news(ticker: str, session: AsyncSession, limit: int =
                     affected_asset_ids.add(aid)
 
         # Queue company report jobs only for affected assets (deduplicated by enqueue_job)
-        for asset_id in affected_asset_ids:
-            await enqueue_job(
-                session=session,
-                job_type="company_report",
-                target_type="asset",
-                target_id=asset_id,
-                payload={"ticker": ticker.upper()},
-                priority=10,
-            )
-
-        if affected_asset_ids:
-            logger.info(
-                f"[NewsIngestion] Queued company reports for {len(affected_asset_ids)} assets from {ingested} articles ({ticker})"
-            )
+        enqueue_counts = await _enqueue_company_report_jobs(
+            session,
+            ticker,
+            affected_asset_ids,
+        )
+        report_candidates = enqueue_counts["report_candidates"]
+        enqueue_attempts = enqueue_counts["enqueue_attempts"]
+        jobs_created = enqueue_counts["jobs_created"]
+        jobs_deduplicated = enqueue_counts["jobs_deduplicated"]
     except Exception as e:
         # Non-fatal: article ingestion succeeded, only enrichment queue failed
         logger.warning(f"[NewsIngestion] Failed to queue AI jobs for {ticker}: {e}")
+
+    logger.info(
+        f"[NewsIngestion] Company report enqueue summary "
+        f"ticker={ticker.upper()} articles_fetched={articles_fetched} "
+        f"articles_changed={articles_changed} report_candidates={report_candidates} "
+        f"enqueue_attempts={enqueue_attempts} jobs_created={jobs_created} "
+        f"jobs_deduplicated={jobs_deduplicated}"
+    )
+
+    if _cycle_counters is not None:
+        _cycle_counters["articles_fetched"] += articles_fetched
+        _cycle_counters["articles_changed"] += articles_changed
+        _cycle_counters["report_candidates"] += report_candidates
+        _cycle_counters["enqueue_attempts"] += enqueue_attempts
+        _cycle_counters["jobs_created"] += jobs_created
+        _cycle_counters["jobs_deduplicated"] += jobs_deduplicated
 
     logger.info(f"[NewsIngestion] Ingested {ingested}/{min(len(raw_news), limit)} articles for {ticker}")
     return ingested
 
 
-async def fetch_and_ingest_many(tickers: list[str], session: AsyncSession, limit: int = 25) -> dict[str, int]:
+async def fetch_and_ingest_many(
+    tickers: list[str],
+    session: AsyncSession,
+    limit: int = 25,
+    *,
+    _cycle_counters: Optional[dict[str, int]] = None,
+) -> dict[str, int]:
     """Fetch and ingest news for multiple tickers. Returns {ticker: count}.
 
     Adds delays between ticker requests to stay within Finnhub rate limits
@@ -610,7 +693,12 @@ async def fetch_and_ingest_many(tickers: list[str], session: AsyncSession, limit
     """
     results = {}
     for i, ticker in enumerate(tickers):
-        count = await fetch_and_ingest_news(ticker.upper(), session, limit=limit)
+        count = await fetch_and_ingest_news(
+            ticker.upper(),
+            session,
+            limit=limit,
+            _cycle_counters=_cycle_counters,
+        )
         results[ticker.upper()] = count
         # Delay between tickers to avoid rate-limit bursts (skip delay after last ticker)
         if i < len(tickers) - 1:

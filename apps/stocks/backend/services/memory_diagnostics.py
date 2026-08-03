@@ -39,6 +39,11 @@ _SENSITIVE_KEYS = {
     "authorization",
     "cookie",
     "credentials",
+    "database_url",
+    "db_url",
+    "dsn",
+    "connection_string",
+    "connection_url",
     "model_input",
     "model_output",
     "password",
@@ -47,6 +52,17 @@ _SENSITIVE_KEYS = {
     "response_body",
     "secret",
     "token",
+}
+
+# Reserved keys that already appear individually in the plaintext message.
+# They are intentionally omitted from the sorted context loop to avoid duplication.
+_PLAINTEXT_RESERVED_KEYS = {
+    "event",
+    "action",
+    "rss_mb",
+    "rss_source",
+    "peak_rss_mb",
+    "pid",
 }
 
 
@@ -187,6 +203,18 @@ def _sanitize_extra(extra: dict[str, Any] | None) -> dict[str, Any]:
             sanitized[key] = "<redacted>"
             continue
 
+        # Redact URL-shaped string values even under innocent keys.
+        if isinstance(value, str):
+            lower_value = value.strip().lower()
+            if (
+                lower_value.startswith("postgresql://")
+                or lower_value.startswith("postgresql+asyncpg://")
+                or lower_value.startswith("http://")
+                or lower_value.startswith("https://")
+            ):
+                sanitized[key] = "<redacted>"
+                continue
+
         sanitized[key] = value
 
     return sanitized
@@ -224,7 +252,7 @@ def log_memory(
     rss_mb, rss_source = _get_current_rss()
 
     payload: dict[str, Any] = {
-        "event": "process_memory",
+        "event": action,
         "action": action,
         "rss_mb": rss_mb,
         "rss_source": rss_source,
@@ -234,11 +262,51 @@ def log_memory(
     if include_peak:
         payload["peak_rss_mb"] = _get_peak_rss()
 
-    payload.update(_sanitize_extra(extra))
+    sanitized_context = _sanitize_extra(extra)
+    payload.update(sanitized_context)
 
-    logger_to_use.info(
-        "Process memory diagnostic",
-        extra=payload,
-    )
+    # Build a plaintext message with essential diagnostic values so they are
+    # visible in plain-text log consumers (Render, stdout, etc.) while keeping
+    # the full structured ``extra`` payload for JSON log collectors.
+    msg_parts: list[str] = ["Process memory diagnostic"]
+
+    rss_str = f"rss_mb={rss_mb}" if rss_mb is not None else "rss_mb=unavailable"
+    msg_parts.append(rss_str)
+
+    peak_value = payload.get("peak_rss_mb")
+    peak_str = f"peak_rss_mb={peak_value}" if peak_value is not None else "peak_rss_mb=unavailable"
+    msg_parts.append(peak_str)
+
+    msg_parts.append(f"pid={os.getpid()}")
+
+    event_value = payload.get("event", "process_memory")
+    msg_parts.append(f"event={event_value}")
+
+    # Append safe scalar context fields in deterministic (sorted) order,
+    # excluding reserved keys that already appear above.  Do NOT mutate
+    # ``sanitized_context`` -- it is merged into the structured payload below.
+    _PLAINTEXT_SAFE_TYPES = (str, int, float, bool)
+    context_fields: list[str] = []
+    for key in sorted(sanitized_context.keys()):
+        # Skip reserved keys that already appear above.
+        if key in _PLAINTEXT_RESERVED_KEYS:
+            continue
+        value = sanitized_context[key]
+        if value is None:
+            # Omit None-valued fields from plaintext to keep output compact.
+            continue
+        if isinstance(value, _PLAINTEXT_SAFE_TYPES):
+            str_value = str(value)
+            # Guard against accidentally logging oversized payloads.
+            if len(str_value) > 200:
+                continue
+            context_fields.append(f"{key}={str_value}")
+        else:
+            # Omit complex types from plaintext; they remain in ``extra``.
+            pass
+
+    msg_parts.extend(context_fields)
+
+    logger_to_use.info(" ".join(msg_parts), extra=payload)
 
     return payload
