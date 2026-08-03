@@ -168,6 +168,56 @@ async def test_partial_provider_response_is_normalized_without_breaking_batch(mo
     assert item.target_mean_price is None
 
 
+@pytest.mark.asyncio
+async def test_finnhub_market_cap_is_preserved_during_yfinance_enrichment(monkeypatch):
+    calls: list[str] = []
+    finnhub_market_cap = 2_000_000_000_000
+
+    async def finnhub_result(ticker):
+        calls.append(f"fh:{ticker}")
+        return {
+            "ticker": ticker,
+            "symbol": ticker,
+            "company_name": "Amazon.com, Inc.",
+            "current_price": 200,
+            "market_cap": finnhub_market_cap,
+            "market_size_value": finnhub_market_cap,
+            "market_size_type": "market_cap",
+            "market_size_currency": "USD",
+            "market_size_fallback_used": False,
+            "market_size_status": "available",
+            "industry": "Internet Retail",
+            "long_business_summary": None,
+            "security_type": "STOCK",
+            "data_source": "fh",
+        }
+
+    async def yfinance_enrichment(ticker):
+        calls.append(f"yf:{ticker}")
+        return {
+            "ticker": ticker,
+            "market_cap": 1_000_000_000_000,
+            "long_business_summary": "Online retail and cloud computing company.",
+            "security_type": "STOCK",
+            "data_source": "yf",
+        }
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub_result)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yfinance_enrichment)
+
+    result = await hybrid_data_service.get_hybrid_stock_price("AMZN")
+
+    assert calls == ["fh:AMZN", "yf:AMZN"]
+    assert result["long_business_summary"] == "Online retail and cloud computing company."
+    assert result["market_cap"] == finnhub_market_cap
+    assert result["market_cap"] != 1_000_000_000_000
+    assert result["market_size_value"] == finnhub_market_cap
+    assert result["market_size_type"] == "market_cap"
+    assert result["market_size_currency"] == "USD"
+    assert result["market_size_fallback_used"] is False
+    assert result["market_size_status"] == "available"
+
+
 def test_null_and_zero_are_diagnosed_differently():
     normalized = normalize_market_data_payload(
         "ZERO",
