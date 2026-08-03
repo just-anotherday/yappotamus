@@ -48,154 +48,159 @@ _scheduler_interval_seconds = 900  # 15 minutes
 
 
 # Max thumbnail recovery attempts per scheduler cycle (keep it light)
-_THUMB_RECOVERY_BATCH = 50
+_THUMBNAIL_RECOVERY_BATCH_SIZE = 20
+_MAX_OG_HTML_BYTES = 1_048_576
+_OG_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 
-async def _recover_thumbnails(session: AsyncSession, batch_size: int = _THUMB_RECOVERY_BATCH) -> int:
-	"""Attempt to recover thumbnails for articles that are missing them.
-	
-	Tries OG image extraction on the finnhub.io redirect URL (which follows through
-	to the real article page via follow_redirects=True). Updates the database with
-	recovered images. Returns the number of thumbnails recovered.
-	"""
-	from sqlalchemy import text
-	
-	# Find recent articles (last 30 days) missing thumbnails
-	result = await session.execute(text(
-		"SELECT id, article_url FROM news_articles "
-		"WHERE thumbnail_url IS NULL "
-		"AND imported_at >= NOW() - INTERVAL '30 days' "
-		"ORDER BY imported_at DESC LIMIT :limit"
-	), {"limit": batch_size})
-	rows = result.fetchall()
-	
-	if not rows:
-		return 0
-	
-	recovered = 0
-	semaphore = asyncio.Semaphore(_OG_CONCURRENCY_LIMIT)
-	
-	async def _try_extract(url: str) -> Optional[str]:
-		async with semaphore:
-			return await _extract_og_image(url)
-	
-	tasks = [_try_extract(row[1]) for row in rows]  # row[0]=id, row[1]=article_url
-	results = await asyncio.gather(*tasks, return_exceptions=True)
-	
-	for row, res in zip(rows, results):
-		if isinstance(res, str):
-			await session.execute(
-				text("UPDATE news_articles SET thumbnail_url = :thumb WHERE id = :id"),
-				{"thumb": res, "id": row[0]}
-			)
-			recovered += 1
-		elif isinstance(res, Exception):
-			logger.debug(f"[ThumbRecovery] Failed to extract: {res}")
-	
-	if recovered:
-		await session.commit()
-		logger.info(f"[ThumbRecovery] Recovered {recovered}/{len(rows)} thumbnails this cycle.")
-	return recovered
-
+async def _recover_thumbnails(
+    session: AsyncSession,
+    batch_size: int = _THUMBNAIL_RECOVERY_BATCH_SIZE,
+    *,
+    counters: Optional[dict[str, int]] = None,
+) -> int:
+    """Recover recent missing thumbnails with one bounded shared HTTP client."""
+    from sqlalchemy import text
+    result = await session.execute(text(
+        "SELECT id, article_url FROM news_articles "
+        "WHERE thumbnail_url IS NULL "
+        "AND imported_at >= NOW() - INTERVAL '30 days' "
+        "ORDER BY imported_at DESC LIMIT :limit"
+    ), {"limit": batch_size})
+    rows = result.fetchall()
+    if counters is not None:
+        counters["thumbnail_candidates"] += len(rows)
+    if not rows:
+        return 0
+    recovered = 0
+    semaphore = asyncio.Semaphore(_OG_CONCURRENCY_LIMIT)
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+        async def _try_extract(url: str) -> Optional[str]:
+            async with semaphore:
+                return await _extract_og_image(url, client=client)
+        tasks = [_try_extract(row[1]) for row in rows]
+        if counters is not None:
+            counters["thumbnail_attempted"] += len(tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    for row, res in zip(rows, results):
+        if isinstance(res, str):
+            await session.execute(
+                text("UPDATE news_articles SET thumbnail_url = :thumb WHERE id = :id"),
+                {"thumb": res, "id": row[0]},
+            )
+            recovered += 1
+        elif isinstance(res, Exception):
+            logger.debug("[ThumbRecovery] OG extraction failed exception_type=%s", type(res).__name__)
+    if counters is not None:
+        counters["thumbnail_recovered"] += recovered
+    if recovered:
+        await session.commit()
+        logger.info("[ThumbRecovery] Recovered %d/%d thumbnails this cycle.", recovered, len(rows))
+    return recovered
 
 async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager) -> None:
-	"""Periodically fetch news for all watchlist tickers every 15 minutes (runs all day).
-	
-	Each cycle also attempts to recover thumbnails for recently-ingested articles
-	that are missing them.
-	"""
-	while True:
-		# Observability-only locals — safe defaults for failure / cancellation paths
-		cycle_started_at = time.monotonic()
-		ticker_count = 0
-		tickers_processed = 0
-		articles_ingested = 0
-		recovered_thumbnail_count = 0
-		cycle_counters = {
-			"articles_fetched": 0,
-			"articles_changed": 0,
-			"report_candidates": 0,
-			"enqueue_attempts": 0,
-			"jobs_created": 0,
-			"jobs_deduplicated": 0,
-		}
-		outcome = "cancelled"
-
-		try:
-			tickers = await tickers_fn()
-			ticker_count = len(tickers)
-
-			if settings.MEMORY_DIAGNOSTICS_ENABLED:
-				log_memory(
-					"news_ingestion_cycle_start",
-					logger_to_use=logger,
-					enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
-					extra={"ticker_count": ticker_count},
-				)
-
-			async with session_factory() as session:
-				if not tickers:
-					logger.info("[NewsScheduler] No tickers in watchlist; skipping cycle.")
-				else:
-					results = await fetch_and_ingest_many(
-						tickers,
-						session,
-						limit=25,
-						_cycle_counters=cycle_counters,
-					)
-					total = sum(results.values())
-					tickers_processed = len(results)
-					articles_ingested = total
-					logger.info(
-						f"[NewsScheduler] Cycle complete – ingested {total} articles "
-						f"across {len(results)} tickers: {results}"
-					)
-
-				# Thumbnail recovery: fill in missing images for recent articles
-				try:
-					rec = await _recover_thumbnails(session)
-					if rec > 0:
-						logger.info(f"[NewsScheduler] Thumbnail recovery: +{rec} images recovered.")
-						recovered_thumbnail_count = rec
-				except Exception as e:
-					logger.error(f"[NewsScheduler] Thumbnail recovery failed: {e}")
-
-			# Broadcast news refresh notification to all connected WebSocket clients
-			try:
-				await connection_manager.broadcast({"type": "news_refresh"})
-				logger.info("[NewsScheduler] Broadcast news_refresh to all clients.")
-			except Exception as e:
-				logger.error(f"[NewsScheduler] Failed to broadcast news_refresh: {e}")
-
-			outcome = "completed"
-
-		except Exception as e:
-			outcome = "failed"
-			logger.error(f"[NewsScheduler] Error during ingestion cycle: {e}")
-		finally:
-			if settings.MEMORY_DIAGNOSTICS_ENABLED:
-				log_memory(
-					"news_ingestion_cycle_end",
-					logger_to_use=logger,
-					enabled=settings.MEMORY_DIAGNOSTICS_ENABLED,
-					extra={
-						"ticker_count": ticker_count,
-						"tickers_processed": tickers_processed,
-						"articles_ingested": articles_ingested,
-						"articles_fetched": cycle_counters["articles_fetched"],
-						"articles_changed": cycle_counters["articles_changed"],
-						"report_candidates": cycle_counters["report_candidates"],
-						"enqueue_attempts": cycle_counters["enqueue_attempts"],
-						"jobs_created": cycle_counters["jobs_created"],
-						"jobs_deduplicated": cycle_counters["jobs_deduplicated"],
-						"recovered_thumbnail_count": recovered_thumbnail_count,
-						"outcome": outcome,
-						"duration_seconds": round(time.monotonic() - cycle_started_at, 3),
-					},
-				)
-
-		await asyncio.sleep(_scheduler_interval_seconds)
-
+    """Run sequential ticker ingestion and bounded thumbnail recovery every 15 minutes."""
+    def memory_context(*, ticker_count: int, tickers_processed: int, articles_ingested: int,
+                       cycle_counters: dict[str, int], thumbnail_counters: dict[str, int],
+                       duration_seconds: float | None = None, outcome: str | None = None) -> dict[str, int | float | str]:
+        context: dict[str, int | float | str] = {
+            "ticker_count": ticker_count,
+            "tickers_processed": tickers_processed,
+            "articles_fetched": cycle_counters["articles_fetched"],
+            "articles_changed": cycle_counters["articles_changed"],
+            "articles_ingested": articles_ingested,
+            "report_candidates": cycle_counters["report_candidates"],
+            "report_candidates_discovered": cycle_counters["report_candidates_discovered"],
+            "report_candidates_unique": cycle_counters["report_candidates_unique"],
+            "scheduler_duplicates_skipped": cycle_counters["scheduler_duplicates_skipped"],
+            "enqueue_attempts": cycle_counters["enqueue_attempts"],
+            "jobs_created": cycle_counters["jobs_created"],
+            "jobs_deduplicated": cycle_counters["jobs_deduplicated"],
+            "thumbnail_candidates": thumbnail_counters["thumbnail_candidates"],
+            "thumbnail_attempted": thumbnail_counters["thumbnail_attempted"],
+            "thumbnail_recovered": thumbnail_counters["thumbnail_recovered"],
+        }
+        if duration_seconds is not None:
+            context["duration_seconds"] = duration_seconds
+        if outcome is not None:
+            context["outcome"] = outcome
+        return context
+    while True:
+        cycle_started_at = time.monotonic()
+        ticker_count = tickers_processed = articles_ingested = recovered_thumbnail_count = 0
+        cycle_counters = {
+            "articles_fetched": 0, "articles_changed": 0, "report_candidates": 0,
+            "report_candidates_discovered": 0, "report_candidates_unique": 0,
+            "scheduler_duplicates_skipped": 0, "enqueue_attempts": 0,
+            "jobs_created": 0, "jobs_deduplicated": 0,
+        }
+        thumbnail_counters = {"thumbnail_candidates": 0, "thumbnail_attempted": 0, "thumbnail_recovered": 0}
+        scheduler_attempted_asset_ids: set[int] = set()
+        outcome = "cancelled"
+        try:
+            tickers = await tickers_fn()
+            ticker_count = len(tickers)
+            if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                log_memory("news_cycle_start", logger_to_use=logger, enabled=True, extra=memory_context(
+                    ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
+                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
+                ))
+            async with session_factory() as session:
+                if not tickers:
+                    logger.info("[NewsScheduler] No tickers in watchlist; skipping cycle.")
+                else:
+                    results = await fetch_and_ingest_many(
+                        tickers, session, limit=25, _cycle_counters=cycle_counters,
+                        _scheduler_attempted_asset_ids=scheduler_attempted_asset_ids,
+                    )
+                    articles_ingested = sum(results.values())
+                    tickers_processed = len(results)
+                    logger.info("[NewsScheduler] Cycle complete - ingested %d articles across %d tickers: %s", articles_ingested, tickers_processed, results)
+                if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                    log_memory("after_ticker_ingestion", logger_to_use=logger, enabled=True, extra=memory_context(
+                        ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
+                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
+                    ))
+                    log_memory("before_thumbnail_recovery", logger_to_use=logger, enabled=True, extra=memory_context(
+                        ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
+                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
+                    ))
+                try:
+                    recovered_thumbnail_count = await _recover_thumbnails(session, counters=thumbnail_counters)
+                    if recovered_thumbnail_count:
+                        logger.info("[NewsScheduler] Thumbnail recovery: +%d images recovered.", recovered_thumbnail_count)
+                except Exception as exc:
+                    logger.error("[NewsScheduler] Thumbnail recovery failed: %s", exc)
+                if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                    log_memory("after_thumbnail_recovery", logger_to_use=logger, enabled=True, extra=memory_context(
+                        ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
+                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
+                    ))
+            try:
+                await connection_manager.broadcast({"type": "news_refresh"})
+                logger.info("[NewsScheduler] Broadcast news_refresh to all clients.")
+            except Exception as exc:
+                logger.error("[NewsScheduler] Failed to broadcast news_refresh: %s", exc)
+            if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                log_memory("after_broadcast", logger_to_use=logger, enabled=True, extra=memory_context(
+                    ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
+                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
+                ))
+            outcome = "completed"
+        except Exception as exc:
+            outcome = "failed"
+            logger.error("[NewsScheduler] Error during ingestion cycle: %s", exc)
+        finally:
+            if settings.MEMORY_DIAGNOSTICS_ENABLED:
+                log_memory("news_ingestion_cycle_end", logger_to_use=logger, enabled=True, extra=memory_context(
+                    ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
+                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
+                    duration_seconds=round(time.monotonic() - cycle_started_at, 3), outcome=outcome,
+                ))
+        await asyncio.sleep(_scheduler_interval_seconds)
 
 def start_scheduler(session_factory, tickers_fn, connection_manager) -> None:
 	"""Start the background news ingestion scheduler."""
@@ -285,77 +290,71 @@ def _is_og_junk_image(image_url: Optional[str]) -> bool:
     return False
 
 
-async def _extract_og_image(url: str, timeout: float = 8.0) -> Optional[str]:
-    """Scrape an article page for a thumbnail image using multiple strategies.
-
-    Used as a fallback when Finnhub returns a placeholder or null image. Tries multiple
-    extraction strategies in order of priority:
-      1. OpenGraph <meta property='og:image'> tag
-      2. Twitter Card <meta name='twitter:image'> tag
-      3. First meaningful <img> tag (article hero images, not favicons/tracking pixels)
-
-    Finnhub redirect URLs (finnhub.io/api/news?id=...) follow a 302 to the real article.
-    With follow_redirects=True, httpx will automatically resolve to the target page,
-    so we scrape the actual article HTML for OG/Twitter images.
+async def _extract_og_image(
+    url: str,
+    timeout: float = 8.0,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> Optional[str]:
+    """Extract a usable OG image URL from bounded HTML using a supplied client.
+    A caller that supplies ``client`` owns its lifetime.  The compatibility path
+    creates one client for this call, while phase callers share one client.
     """
-    last_error = None
+    if client is None:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as owned_client:
+            return await _extract_og_image(url, timeout=timeout, client=owned_client)
+    last_error: str | None = None
     for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                resp = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                })
-                if resp.status_code not in (200, 301, 302):
-                    logger.debug(f"[OGExtract] HTTP {resp.status_code} for {url} (attempt {attempt+1})")
+            async with client.stream("GET", url, headers=_OG_HEADERS) as response:
+                if response.status_code not in (200, 301, 302):
+                    last_error = f"http_{response.status_code}"
                     continue
-
-                html = resp.text
-
-                # Strategy 1: OpenGraph og:image tag
-                img_url = None
-                match = re.search(r'<meta\s+(?:property|name)="og:image"\s+content="(.*?)"', html, re.IGNORECASE)
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if content_type and content_type not in {"text/html", "application/xhtml+xml"}:
+                    last_error = "non_html"
+                    continue
+                body = bytearray()
+                oversized = False
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > _MAX_OG_HTML_BYTES:
+                        oversized = True
+                        break
+                    body.extend(chunk)
+                if oversized:
+                    last_error = "response_too_large"
+                    continue
+                html = bytes(body).decode(response.encoding or "utf-8", errors="replace")
+            img_url = None
+            match = re.search(r'<meta\s+(?:property|name)="og:image"\s+content="(.*?)"', html, re.IGNORECASE)
+            if not match:
+                match = re.search(r'<meta\s+content="(.*?)"\s+(?:property|name)="og:image"', html, re.IGNORECASE)
+            if match:
+                img_url = match.group(1).strip()
+            if not img_url:
+                match = re.search(r'<meta\s+(?:property|name)="twitter:image"\s+content="(.*?)"', html, re.IGNORECASE)
                 if not match:
-                    match = re.search(r'<meta\s+content="(.*?)"\s+(?:property|name)="og:image"', html, re.IGNORECASE)
+                    match = re.search(r'<meta\s+content="(.*?)"\s+(?:property|name)="twitter:image"', html, re.IGNORECASE)
                 if match:
                     img_url = match.group(1).strip()
-
-                # Strategy 2: Twitter Card twitter:image tag
-                if not img_url:
-                    match = re.search(r'<meta\s+(?:property|name)="twitter:image"\s+content="(.*?)"', html, re.IGNORECASE)
-                    if not match:
-                        match = re.search(r'<meta\s+content="(.*?)"\s+(?:property|name)="twitter:image"', html, re.IGNORECASE)
-                    if match:
-                        img_url = match.group(1).strip()
-
-                # Strategy 3: First <img src="..."> tag with meaningful content (not tracking/favicons)
-                if not img_url:
-                    for m in re.finditer(r'<img[^>]+src="(.*?)"', html, re.IGNORECASE):
-                        candidate = m.group(1).strip()
-                        if (candidate.startswith("http")
-                            and not candidate.startswith("data:")
-                            and "favicon" not in candidate.lower()
-                            and "tracking" not in candidate.lower()
+            if not img_url:
+                for match in re.finditer(r'<img[^>]+src="(.*?)"', html, re.IGNORECASE):
+                    candidate = match.group(1).strip()
+                    if (candidate.startswith("http") and not candidate.startswith("data:")
+                            and "favicon" not in candidate.lower() and "tracking" not in candidate.lower()
                             and "pixel" not in candidate.lower()):
-                            img_url = candidate
-                            break
-
-                if img_url and img_url.startswith("http") and len(img_url) > 10:
-                    # Validate: reject junk OG images (logos, privacy icons, favicons)
-                    if not _is_og_junk_image(img_url):
-                        return img_url
-
+                        img_url = candidate
+                        break
+            if img_url and img_url.startswith("http") and len(img_url) > 10 and not _is_og_junk_image(img_url):
+                return img_url
+            last_error = "image_not_found"
         except httpx.TimeoutException:
             last_error = "timeout"
-            logger.debug(f"[OGExtract] Timeout for {url} (attempt {attempt+1}/2)")
-        except Exception as e:
-            last_error = str(e)
-            logger.debug(f"[OGExtract] Error for {url} (attempt {attempt+1}/2): {e}")
-
+        except Exception as exc:
+            last_error = type(exc).__name__
     if last_error:
-        logger.debug(f"[OGExtract] Exhausted retries for {url} (last error: {last_error})")
+        logger.debug("[OGExtract] exhausted outcome=%s attempt_count=2", last_error)
     return None
-
 
 def _extract_ticker_from_related(article: Dict[str, Any], query_ticker: str) -> Optional[str]:
     """Extract the best ticker from Finnhub's 'related' field.
@@ -507,36 +506,35 @@ async def _enqueue_company_report_jobs(
     session: AsyncSession,
     ticker: str,
     affected_asset_ids: set[int],
+    *,
+    scheduler_attempted_asset_ids: Optional[set[int]] = None,
 ) -> dict[str, int]:
-    """Enqueue one company-report job per affected asset and return counters."""
-    report_candidates = len(affected_asset_ids)
-    enqueue_attempts = 0
-    jobs_created = 0
-    jobs_deduplicated = 0
-
-    if affected_asset_ids:
-        for asset_id in affected_asset_ids:
-            enqueue_attempts += 1
-            job_ok = await enqueue_job(
-                session=session,
-                job_type="company_report",
-                target_type="asset",
-                target_id=asset_id,
-                payload={"ticker": ticker.upper()},
-                priority=10,
-            )
-            if job_ok:
-                jobs_created += 1
-            else:
-                jobs_deduplicated += 1
-
+    """Enqueue unique cycle targets; ``report_candidates`` means discovered."""
+    discovered = len(affected_asset_ids)
+    prior_attempts = scheduler_attempted_asset_ids if scheduler_attempted_asset_ids is not None else set()
+    enqueue_asset_ids = affected_asset_ids - prior_attempts
+    scheduler_duplicates_skipped = discovered - len(enqueue_asset_ids)
+    jobs_created = jobs_deduplicated = 0
+    for asset_id in enqueue_asset_ids:
+        # Mark only when this target is about to make an actual enqueue attempt.
+        prior_attempts.add(asset_id)
+        job_ok = await enqueue_job(
+            session=session, job_type="company_report", target_type="asset", target_id=asset_id,
+            payload={"ticker": ticker.upper()}, priority=10,
+        )
+        if job_ok:
+            jobs_created += 1
+        else:
+            jobs_deduplicated += 1
     return {
-        "report_candidates": report_candidates,
-        "enqueue_attempts": enqueue_attempts,
+        "report_candidates": discovered,
+        "report_candidates_discovered": discovered,
+        "report_candidates_unique": len(enqueue_asset_ids),
+        "scheduler_duplicates_skipped": scheduler_duplicates_skipped,
+        "enqueue_attempts": len(enqueue_asset_ids),
         "jobs_created": jobs_created,
         "jobs_deduplicated": jobs_deduplicated,
     }
-
 
 async def fetch_and_ingest_news(
     ticker: str,
@@ -544,6 +542,7 @@ async def fetch_and_ingest_news(
     limit: int = 30,
     *,
     _cycle_counters: Optional[dict[str, int]] = None,
+    _scheduler_attempted_asset_ids: Optional[set[int]] = None,
 ) -> int:
     """
     Fetch latest news for a ticker from Finnhub and persist to PostgreSQL.
@@ -592,13 +591,12 @@ async def fetch_and_ingest_news(
     # Extract OG images in parallel (concurrency-limited) for articles missing thumbnails
     if articles_missing_images:
         semaphore = asyncio.Semaphore(_OG_CONCURRENCY_LIMIT)
-
-        async def _extract_with_limit(url: str) -> Optional[str]:
-            async with semaphore:
-                return await _extract_og_image(url)
-
-        og_tasks = [_extract_with_limit(url) for _, url in articles_missing_images]
-        og_results = await asyncio.gather(*og_tasks, return_exceptions=True)
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            async def _extract_with_limit(url: str) -> Optional[str]:
+                async with semaphore:
+                    return await _extract_og_image(url, client=client)
+            og_tasks = [_extract_with_limit(url) for _, url in articles_missing_images]
+            og_results = await asyncio.gather(*og_tasks, return_exceptions=True)
         og_success = 0
         for (article, _), result in zip(articles_missing_images, og_results):
             if isinstance(result, str):
@@ -606,7 +604,6 @@ async def fetch_and_ingest_news(
                 og_success += 1
         if og_success:
             logger.info(f"[NewsIngestion] Recovered {og_success} OG images via scraping for {ticker}")
-
     if not normalized_articles:
         logger.info(f"[NewsIngestion] No valid articles to ingest for {ticker}")
         return 0
@@ -628,7 +625,7 @@ async def fetch_and_ingest_news(
                               priority=8, dedupe_key=f"{row.id}:{source_hash}:{ARTICLE_PROMPT_HASH}")
 
     # --- Pipeline: Extract tickers from new articles → queue company report jobs ---
-    report_candidates = 0
+    report_candidates = report_candidates_discovered = report_candidates_unique = scheduler_duplicates_skipped = 0
     enqueue_attempts = 0
     jobs_created = 0
     jobs_deduplicated = 0
@@ -650,8 +647,12 @@ async def fetch_and_ingest_news(
             session,
             ticker,
             affected_asset_ids,
+            scheduler_attempted_asset_ids=_scheduler_attempted_asset_ids,
         )
         report_candidates = enqueue_counts["report_candidates"]
+        report_candidates_discovered = enqueue_counts["report_candidates_discovered"]
+        report_candidates_unique = enqueue_counts["report_candidates_unique"]
+        scheduler_duplicates_skipped = enqueue_counts["scheduler_duplicates_skipped"]
         enqueue_attempts = enqueue_counts["enqueue_attempts"]
         jobs_created = enqueue_counts["jobs_created"]
         jobs_deduplicated = enqueue_counts["jobs_deduplicated"]
@@ -663,6 +664,9 @@ async def fetch_and_ingest_news(
         f"[NewsIngestion] Company report enqueue summary "
         f"ticker={ticker.upper()} articles_fetched={articles_fetched} "
         f"articles_changed={articles_changed} report_candidates={report_candidates} "
+        f"report_candidates_discovered={report_candidates_discovered} "
+        f"report_candidates_unique={report_candidates_unique} "
+        f"scheduler_duplicates_skipped={scheduler_duplicates_skipped} "
         f"enqueue_attempts={enqueue_attempts} jobs_created={jobs_created} "
         f"jobs_deduplicated={jobs_deduplicated}"
     )
@@ -671,6 +675,9 @@ async def fetch_and_ingest_news(
         _cycle_counters["articles_fetched"] += articles_fetched
         _cycle_counters["articles_changed"] += articles_changed
         _cycle_counters["report_candidates"] += report_candidates
+        _cycle_counters["report_candidates_discovered"] += report_candidates_discovered
+        _cycle_counters["report_candidates_unique"] += report_candidates_unique
+        _cycle_counters["scheduler_duplicates_skipped"] += scheduler_duplicates_skipped
         _cycle_counters["enqueue_attempts"] += enqueue_attempts
         _cycle_counters["jobs_created"] += jobs_created
         _cycle_counters["jobs_deduplicated"] += jobs_deduplicated
@@ -685,6 +692,7 @@ async def fetch_and_ingest_many(
     limit: int = 25,
     *,
     _cycle_counters: Optional[dict[str, int]] = None,
+    _scheduler_attempted_asset_ids: Optional[set[int]] = None,
 ) -> dict[str, int]:
     """Fetch and ingest news for multiple tickers. Returns {ticker: count}.
 
@@ -692,12 +700,14 @@ async def fetch_and_ingest_many(
     (60 calls/min on free tier).
     """
     results = {}
+    scheduler_attempted_asset_ids = _scheduler_attempted_asset_ids if _scheduler_attempted_asset_ids is not None else set()
     for i, ticker in enumerate(tickers):
         count = await fetch_and_ingest_news(
             ticker.upper(),
             session,
             limit=limit,
             _cycle_counters=_cycle_counters,
+            _scheduler_attempted_asset_ids=scheduler_attempted_asset_ids,
         )
         results[ticker.upper()] = count
         # Delay between tickers to avoid rate-limit bursts (skip delay after last ticker)
