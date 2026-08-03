@@ -186,3 +186,13 @@ test('provider failure retains the complete prior market-size identity as stale 
   assert.equal(merged.market_size_currency, 'USD');
   assert.equal(merged.market_size_status, 'stale_cache');
 });
+test('normalizes valid currencies and labels missing currency explicitly', () => {
+  assert.equal(formatMarketSize({ market_size_value: 4_860_000_000_000, market_size_currency: 'usd' }), '$4.86T');
+  assert.equal(formatMarketSize({ market_size_value: 62_890_000_000_000, market_size_currency: ' TWD ' }), 'TWD 62.89T');
+  assert.equal(formatMarketSize({ market_size_value: 1_200_000_000, market_size_currency: 'EUR' }), 'EUR 1.20B');
+  for (const currency of [null, undefined, '', '   ']) {
+    assert.equal(formatMarketSize({ market_size_value: 4_860_000_000_000, market_size_currency: currency }), 'Unknown currency 4.86T');
+  }
+  assert.equal(formatMarketSize({ market_size_currency: 'USD' }), 'N/A');
+  assert.equal(formatMarketSize({ market_size_status: 'provider_failed' }), 'Unavailable');
+});

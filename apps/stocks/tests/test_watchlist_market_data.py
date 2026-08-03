@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import numpy as np
+import pandas as pd
 import time
 
 import pytest
@@ -339,4 +341,59 @@ def test_tsm_direct_provider_market_cap_never_uses_calculated_fallback():
     )
     assert cap == 2_090_000_000_000
     assert fallback is False
-    assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 99, "currency": "USD"}, "ADR", 10) == (None, False)
+
+@pytest.mark.parametrize("field", ["totalAssets", "netAssets", "fundTotalAssets"])
+def test_etf_info_asset_fields_and_names_are_supported(monkeypatch, field):
+    class FakeTicker:
+        ticker = "SPY"
+        holdings = None
+        info = {"quoteType": "ETF", "longName": "Long Fund", "shortName": "Short Fund", "currentPrice": 1, field: np.int64(500)}
+        def __init__(self, _ticker): pass
+    monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+    item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("SPY"))
+    assert item.company_name == "Long Fund"
+    assert item.market_cap is None
+    assert item.fund_assets == 500
+    assert item.market_size_currency is None
+
+
+def test_fund_operations_uses_row_then_ticker_column_and_keeps_currency_unknown(monkeypatch):
+    class FakeTicker:
+        ticker = "DIA"
+        holdings = None
+        info = {"quoteType": "ETF", "currentPrice": 1, "currency": "USD"}
+        def __init__(self, _ticker):
+            self.funds_data = type("Funds", (), {"fund_operations": pd.DataFrame({"DIA": [np.float64(700)], "Category Average": [1]}, index=["Total Net Assets"])})()
+    monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+    item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("DIA"))
+    assert (item.market_cap, item.fund_assets, item.market_size_value, item.market_size_currency) == (None, 700, 700, None)
+
+
+def test_fund_metadata_errors_and_invalid_values_are_non_fatal(monkeypatch):
+    class FakeTicker:
+        ticker = "QQQ"
+        holdings = None
+        info = {"quoteType": "ETF", "currentPrice": 1}
+
+        def __init__(self, _ticker):
+            pass
+
+        @property
+        def funds_data(self):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+    item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("QQQ"))
+    assert item.company_name == "QQQ"
+    assert item.market_size_status == "unsupported"
+    for value in (True, "1", 0, -1, np.nan, np.inf):
+        assert yfinance_fallback._positive_market_number(value) is None
+
+
+def test_adr_calculated_market_cap_remains_disabled():
+    assert yfinance_fallback._resolve_market_cap(
+        {"sharesOutstanding": 99, "currency": "USD"}, "ADR", 10
+    ) == (None, False)

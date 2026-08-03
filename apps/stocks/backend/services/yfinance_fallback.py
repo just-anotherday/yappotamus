@@ -14,6 +14,7 @@ securities as STOCK, ETF, INDEX, CRYPTO, ADR, or UNKNOWN.
 
 import logging
 import math
+from numbers import Real
 from typing import Any, Dict, List, Optional
 
 import yfinance as yf
@@ -111,7 +112,7 @@ def _is_crypto(info: Dict[str, Any]) -> bool:
 
 def _positive_market_number(value: Any) -> float | None:
     """Accept only finite positive numeric provider values, never bools/strings."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, Real):
         return None
     normalized = float(value)
     return normalized if math.isfinite(normalized) and normalized > 0 else None
@@ -144,6 +145,16 @@ def _resolve_fund_assets(info: Dict[str, Any]) -> float | None:
         if value is not None:
             return value
     return None
+
+def _resolve_fund_assets_from_metadata(ticker_obj: yf.Ticker) -> float | None:
+    """Read yfinance 1.5 ``funds_data.fund_operations`` total net assets."""
+    try:
+        operations = ticker_obj.funds_data.fund_operations
+        value = operations.loc["Total Net Assets", ticker_obj.ticker]
+    except Exception as exc:
+        logger.debug("[YF-ETF] Fund metadata unavailable for %s: %s", ticker_obj.ticker, type(exc).__name__)
+        return None
+    return _positive_market_number(value)
 
 def _resolve_shares_outstanding(info: Dict[str, Any], is_etf_flag: bool) -> int:
     """Resolve shares outstanding, computing from NAV for ETFs when needed."""
@@ -250,6 +261,13 @@ def _extract_ceo_name(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Optional[s
     return None
 
 
+def _resolve_fund_name(info: Dict[str, Any], ticker: str) -> str:
+    """Prefer provider names and fall back to the valid ticker."""
+    for field in ("longName", "shortName"):
+        value = info.get(field)
+        if isinstance(value, str) and value.strip() and value.strip().upper() != "N/A":
+            return value.strip()
+    return ticker.upper()
 def _assemble_company_fields(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Dict[str, Any]:
     """Extract company profile fields.
 
@@ -257,7 +275,7 @@ def _assemble_company_fields(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Dic
     The parameter is retained for future re-enablement if needed.
     """
     return {
-        "company_name": info.get("shortName") or info.get("longName", "N/A"),
+        "company_name": _resolve_fund_name(info, ticker_obj.ticker),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
         "long_business_summary": info.get("longBusinessSummary"),
@@ -422,7 +440,14 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
         result["market_size_currency"] = info.get("currency") or info.get("financialCurrency")
         result["market_cap"], result["market_size_fallback_used"] = _resolve_market_cap(info, security_type, current_price)
         if security_type == "ETF":
-            result["fund_assets"] = _resolve_fund_assets(info) or None
+            fund_assets = _resolve_fund_assets(info)
+            fund_assets_from_metadata = False
+            if fund_assets is None:
+                fund_assets = _resolve_fund_assets_from_metadata(ticker_obj)
+                fund_assets_from_metadata = fund_assets is not None
+            if fund_assets_from_metadata:
+                result["market_size_currency"] = None
+            result["fund_assets"] = fund_assets
         
         # Only include share structure for STOCKs
         if security_type == "STOCK":
@@ -448,11 +473,15 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
             if etf_data:
                 result["etf_data"] = etf_data
         
-        return normalize_market_data_payload(
+        normalized = normalize_market_data_payload(
             ticker,
             result,
             default_source="yf",
         )
+        if security_type == "ETF" and normalized["fund_assets"] is None:
+            normalized["market_size_type"] = "fund_assets"
+            normalized["market_size_status"] = "unsupported"
+        return normalized
     except Exception as e:
         logger.error("[YF-Fallback] Failed for %s: %s", ticker, e)
         return None

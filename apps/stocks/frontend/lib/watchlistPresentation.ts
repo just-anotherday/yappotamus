@@ -22,8 +22,10 @@ export function formatMarketSize(item: WatchlistItem): string {
   if (item.market_size_status === 'provider_failed') return 'Unavailable';
   const value = item.market_size_value;
   if (!isFiniteWatchlistNumber(value) || value <= 0) return 'N/A';
-  const currency = item.market_size_currency;
-  const prefix = currency === 'USD' ? '$' : `${currency} `;
+  const currency = typeof item.market_size_currency === 'string'
+    ? item.market_size_currency.trim().toUpperCase()
+    : '';
+  const prefix = currency === 'USD' ? '$' : currency ? `${currency} ` : 'Unknown currency ';
   if (value >= 1e12) return `${prefix}${(value / 1e12).toFixed(2)}T`;
   if (value >= 1e9) return `${prefix}${(value / 1e9).toFixed(2)}B`;
   if (value >= 1e6) return `${prefix}${(value / 1e6).toFixed(2)}M`;

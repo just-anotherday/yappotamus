@@ -378,6 +378,7 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
 
     stale = _cache_get_stale(ticker_upper)
     if stale is not None:
+        stale = stale.copy()
         stale["market_size_status"] = "stale_cache"
         normalized = normalize_market_data_payload(
             ticker_upper,
