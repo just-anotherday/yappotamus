@@ -13,13 +13,17 @@ import threading
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import yfinance as yf
 
 from backend.config.polling_settings import polling_settings
 from backend.config.settings import settings as app_settings
 from backend.services.yfinance_cache import configure_yfinance_cache
+from backend.services.yfinance_fallback import (
+    _record_yfinance_outage_failure,
+    _yfinance_cooldown_status,
+)
 from backend.services.market_data_observability import normalize_correlation_id
 from backend.services.memory_diagnostics import log_memory
 
@@ -118,25 +122,41 @@ class PostMarketService:
         ticker: str,
         now_et: datetime | None = None,
         correlation_id: str = "none",
+        on_cooldown_skip: Callable[[], None] | None = None,
     ) -> tuple[float | None, float | None]:
         """Fetch extended-hours and regular-market prices for a single ticker.
 
         Returns (extended_price, regular_price) or (None, regular_price) when no
         valid quote exists for the current pre-market/post-market session.
         """
-        configure_yfinance_cache(yf)
         try:
+            configure_yfinance_cache(yf)
+            cooldown_active, failure_class = _yfinance_cooldown_status()
+            if cooldown_active:
+                if on_cooldown_skip is not None:
+                    on_cooldown_skip()
+                logger.debug(
+                    "[PostMarket] event=yfinance_cooldown_skip correlation_id=%s "
+                    "symbol=%s failure_class=%s",
+                    correlation_id,
+                    ticker,
+                    failure_class,
+                )
+                return None, None
+
             tkr = yf.Ticker(ticker)
             info = tkr.info  # dict-based .info is more stable than .fast_info
             effective_now = now_et or datetime.now(tz=ZoneInfo("US/Eastern"))
             return self._extract_extended_hours_prices(info, effective_now)
         except Exception as e:
+            failure_class = _record_yfinance_outage_failure(e)
             logger.warning(
                 "[PostMarket] event=provider_attempt correlation_id=%s symbol=%s "
-                "provider=yf success=false exception_type=%s",
+                "provider=yf success=false exception_type=%s failure_class=%s",
                 correlation_id,
                 ticker,
                 type(e).__name__,
+                failure_class,
             )
             return None, None
 
@@ -144,10 +164,19 @@ class PostMarketService:
         """Fetch extended-hours metadata with conservative bounded concurrency."""
         started = time.monotonic()
         correlation_id = normalize_correlation_id(None)
-        updated = failed = missing = 0
+        updated = failed = missing = cooldown_skips = 0
 
         def fetch(ticker: str):
-            return ticker, self._get_post_market_data_for_ticker(ticker, correlation_id=correlation_id)
+            def record_cooldown_skip() -> None:
+                nonlocal cooldown_skips
+                with self._lock:
+                    cooldown_skips += 1
+
+            return ticker, self._get_post_market_data_for_ticker(
+                ticker,
+                correlation_id=correlation_id,
+                on_cooldown_skip=record_cooldown_skip,
+            )
 
         with ThreadPoolExecutor(max_workers=polling_settings.PM_MAX_CONCURRENCY, thread_name_prefix="extended-hours") as executor:
             futures = {executor.submit(fetch, ticker): ticker for ticker in tickers}
@@ -186,10 +215,13 @@ class PostMarketService:
                     }
                 updated += 1
 
+        cooldown_active, _ = _yfinance_cooldown_status()
         logger.info(
-            "[PostMarket] cycle=extended correlation_id=%s duration_ms=%.1f requested=%d valid=%d missing=%d failures=%d concurrency=%d",
+            "[PostMarket] cycle=extended correlation_id=%s duration_ms=%.1f requested=%d valid=%d missing=%d failures=%d cooldown_skips=%d cooldown_active=%s concurrency=%d",
             correlation_id,
             (time.monotonic() - started) * 1000, len(tickers), updated, missing, failed,
+            cooldown_skips,
+            cooldown_active,
             polling_settings.PM_MAX_CONCURRENCY,
         )
 

@@ -1,13 +1,22 @@
 """Regression tests for extended-hours quote extraction and caching."""
 
 from datetime import datetime
+import threading
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from backend.services.post_market_service import PostMarketService, _next_poll_delay
+import pytest
+
+from backend.services import post_market_service, yfinance_fallback
 
 
 ET = ZoneInfo("US/Eastern")
+@pytest.fixture(autouse=True)
+def reset_yfinance_cooldown():
+    yfinance_fallback._reset_yfinance_cooldown_for_tests()
+    yield
+    yfinance_fallback._reset_yfinance_cooldown_for_tests()
 
 
 def test_price_hint_is_not_treated_as_an_after_hours_price():
@@ -115,6 +124,98 @@ def test_extended_start_to_start_delay_backoff_jitter_and_recovery(monkeypatch):
         assert _next_poll_delay(100.0, False, 5.0) == (7.0, 10.0)
 
 
+def test_post_market_cooldown_skips_yahoo_and_reports_cycle(monkeypatch, caplog):
+    calls = []
+    monkeypatch.setattr(post_market_service, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(yfinance_fallback.time, "monotonic", lambda: 100.0)
+    yfinance_fallback._record_yfinance_outage_failure(yfinance_fallback.YFRateLimitError())
+
+    class FakeTicker:
+        def __init__(self, ticker):
+            calls.append(ticker)
+
+    monkeypatch.setattr(post_market_service.yf, "Ticker", FakeTicker)
+
+    with caplog.at_level("INFO"):
+        PostMarketService().fetch_all(["AAPL", "MSFT"])
+
+    assert calls == []
+    assert "cooldown_skips=2" in caplog.text
+    assert "cooldown_active=True" in caplog.text
+
+
+def test_post_market_recognized_yahoo_failure_opens_shared_cooldown(monkeypatch):
+    monkeypatch.setattr(post_market_service, "configure_yfinance_cache", lambda _yf: True)
+
+    class RateLimitedTicker:
+        def __init__(self, _ticker):
+            pass
+
+        @property
+        def info(self):
+            raise yfinance_fallback.YFRateLimitError()
+
+    monkeypatch.setattr(post_market_service.yf, "Ticker", RateLimitedTicker)
+
+    assert PostMarketService()._get_post_market_data_for_ticker("AAPL") == (None, None)
+    assert yfinance_fallback._yfinance_cooldown_status()[0] is True
+
+
+def test_post_market_unrecognized_failure_does_not_open_shared_cooldown(monkeypatch):
+    monkeypatch.setattr(post_market_service, "configure_yfinance_cache", lambda _yf: True)
+
+    class BrokenTicker:
+        def __init__(self, _ticker):
+            raise RuntimeError("ordinary provider failure")
+
+    monkeypatch.setattr(post_market_service.yf, "Ticker", BrokenTicker)
+
+    assert PostMarketService()._get_post_market_data_for_ticker("AAPL") == (None, None)
+    assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
+
+
+def test_queued_post_market_task_checks_cooldown_when_it_starts(monkeypatch):
+    ticker_calls = []
+    inflight_started = threading.Event()
+    cooldown_opened = threading.Event()
+    inflight_finished = threading.Event()
+    monkeypatch.setenv("PM_MAX_CONCURRENCY", "2")
+    monkeypatch.setattr(post_market_service, "configure_yfinance_cache", lambda _yf: True)
+
+    original_record_failure = post_market_service._record_yfinance_outage_failure
+
+    def record_failure(exception):
+        failure_class = original_record_failure(exception)
+        if failure_class is not None:
+            cooldown_opened.set()
+        return failure_class
+
+    monkeypatch.setattr(post_market_service, "_record_yfinance_outage_failure", record_failure)
+
+    class ControlledTicker:
+        def __init__(self, ticker):
+            ticker_calls.append(ticker)
+            self.ticker = ticker
+
+        @property
+        def info(self):
+            if self.ticker == "AAPL":
+                assert inflight_started.wait(timeout=1)
+                raise yfinance_fallback.YFRateLimitError()
+            if self.ticker == "MSFT":
+                inflight_started.set()
+                assert cooldown_opened.wait(timeout=1)
+                inflight_finished.set()
+            return {"regularMarketPrice": 100.0, "postMarketPrice": 101.0}
+
+    monkeypatch.setattr(post_market_service.yf, "Ticker", ControlledTicker)
+
+    PostMarketService().fetch_all(["AAPL", "MSFT", "NVDA"])
+
+    assert ticker_calls == ["AAPL", "MSFT"]
+    assert inflight_finished.is_set()
+    assert yfinance_fallback._yfinance_cooldown_status()[0] is True
+
 # ---------------------------------------------------------------------------
 # Focused memory-boundary instrumentation tests for _post_market_fetch_loop
 # ---------------------------------------------------------------------------
@@ -122,9 +223,7 @@ import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, Mock, call
 
-import pytest
-
-from backend.services import post_market_service, watchlist_service
+from backend.services import watchlist_service
 
 
 class SaturdayDateTime(datetime):
