@@ -1,9 +1,13 @@
 """Focused resource-safety tests for news ingestion."""
 
 import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock
 
 import httpx
+from requests.exceptions import ConnectTimeout, ReadTimeout
+from urllib3.exceptions import ReadTimeoutError
 import pytest
 
 from backend.services import news_ingestion_service as service
@@ -252,3 +256,262 @@ async def test_per_ticker_og_recovery_reuses_one_closed_client(monkeypatch):
     assert len(clients) == 1
     assert clients[0].is_closed
     assert len(seen) == 2 and len({id(client) for client in seen}) == 1
+
+
+def _provider_counters():
+    return {
+        "provider_requests": 0,
+        "provider_successes": 0,
+        "provider_timeouts": 0,
+        "provider_failures": 0,
+        "consecutive_timeouts": 0,
+        "provider_timeout_breaker_open": False,
+        "tickers_skipped_provider_timeout": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_finnhub_company_news_uses_to_thread(monkeypatch):
+    calls = []
+
+    class Client:
+        def company_news(self, ticker, *, _from, to):
+            calls.append((ticker, _from, to))
+            return []
+
+    async def to_thread(fn, *args, **kwargs):
+        assert fn is service._fetch_finnhub_company_news
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
+    monkeypatch.setattr(service.asyncio, "to_thread", to_thread)
+    counters = _provider_counters()
+    state = {}
+
+    assert await service.fetch_and_ingest_news(
+        "spy", object(), _provider_counters=counters, _provider_state=state
+    ) == 0
+
+    assert calls and calls[0][0] == "SPY"
+    assert counters["provider_requests"] == 1
+    assert counters["provider_successes"] == 1
+    assert state["last_outcome"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_finnhub_blocking_call_does_not_block_event_loop(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+
+    class Client:
+        def company_news(self, *_args, **_kwargs):
+            started.set()
+            release.wait(timeout=1)
+            return []
+
+    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
+
+    task = asyncio.create_task(service.fetch_and_ingest_news("spy", object()))
+    for _ in range(20):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+
+    advanced = asyncio.Event()
+
+    async def heartbeat():
+        await asyncio.sleep(0)
+        advanced.set()
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    assert started.is_set() and not task.done()
+    await asyncio.wait_for(advanced.wait(), timeout=0.1)
+    assert not task.done()
+    release.set()
+
+    assert await task == 0
+    await heartbeat_task
+
+
+@pytest.mark.asyncio
+async def test_timeout_breaker_stops_after_three_sequential_requests(monkeypatch):
+    seen = []
+
+    async def timeout_fetch(ticker, _session, **kwargs):
+        seen.append(ticker)
+        kwargs["_provider_counters"]["provider_requests"] += 1
+        kwargs["_provider_counters"]["provider_timeouts"] += 1
+        kwargs["_provider_state"]["last_outcome"] = "timeout"
+        return 0
+
+    monkeypatch.setattr(service, "fetch_and_ingest_news", timeout_fetch)
+    monkeypatch.setattr(service.asyncio, "sleep", AsyncMock())
+    counters = _provider_counters()
+
+    result = await service.fetch_and_ingest_many(
+        [f"T{i}" for i in range(16)], object(), _provider_counters=counters
+    )
+
+    assert list(result) == ["T0", "T1", "T2"]
+    assert seen == ["T0", "T1", "T2"]
+    assert counters["provider_requests"] == 3
+    assert counters["provider_timeouts"] == 3
+    assert counters["consecutive_timeouts"] == 3
+    assert counters["provider_timeout_breaker_open"] is True
+    assert counters["tickers_skipped_provider_timeout"] == 13
+
+
+@pytest.mark.asyncio
+async def test_success_resets_consecutive_timeout_count(monkeypatch):
+    outcomes = iter(["timeout", "success", "timeout", "timeout"])
+
+    async def fetch(ticker, _session, **kwargs):
+        outcome = next(outcomes)
+        kwargs["_provider_counters"]["provider_requests"] += 1
+        kwargs["_provider_counters"][f"provider_{outcome}es" if outcome == "success" else "provider_timeouts"] += 1
+        kwargs["_provider_state"]["last_outcome"] = outcome
+        return 0
+
+    monkeypatch.setattr(service, "fetch_and_ingest_news", fetch)
+    monkeypatch.setattr(service.asyncio, "sleep", AsyncMock())
+    counters = _provider_counters()
+
+    await service.fetch_and_ingest_many(["A", "B", "C", "D"], object(), _provider_counters=counters)
+
+    assert counters["provider_successes"] == 1
+    assert counters["provider_timeouts"] == 3
+    assert counters["consecutive_timeouts"] == 2
+    assert counters["provider_timeout_breaker_open"] is False
+
+
+@pytest.mark.asyncio
+async def test_new_many_call_starts_with_fresh_timeout_state(monkeypatch):
+    async def timeout_fetch(_ticker, _session, **kwargs):
+        kwargs["_provider_counters"]["provider_requests"] += 1
+        kwargs["_provider_counters"]["provider_timeouts"] += 1
+        kwargs["_provider_state"]["last_outcome"] = "timeout"
+        return 0
+
+    monkeypatch.setattr(service, "fetch_and_ingest_news", timeout_fetch)
+    monkeypatch.setattr(service.asyncio, "sleep", AsyncMock())
+
+    first = _provider_counters()
+    second = _provider_counters()
+    await service.fetch_and_ingest_many(["A", "B", "C", "D"], object(), _provider_counters=first)
+    await service.fetch_and_ingest_many(["E", "F", "G", "H"], object(), _provider_counters=second)
+
+    assert first["tickers_skipped_provider_timeout"] == 1
+    assert second["tickers_skipped_provider_timeout"] == 1
+    assert second["consecutive_timeouts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_non_timeout_provider_failure_does_not_open_breaker(monkeypatch):
+    async def failing_fetch(_ticker, _session, **kwargs):
+        kwargs["_provider_counters"]["provider_requests"] += 1
+        kwargs["_provider_counters"]["provider_failures"] += 1
+        kwargs["_provider_state"]["last_outcome"] = "failure"
+        return 0
+
+    monkeypatch.setattr(service, "fetch_and_ingest_news", failing_fetch)
+    monkeypatch.setattr(service.asyncio, "sleep", AsyncMock())
+    counters = _provider_counters()
+
+    result = await service.fetch_and_ingest_many(["A", "B", "C", "D"], object(), _provider_counters=counters)
+
+    assert len(result) == 4
+    assert counters["provider_failures"] == 4
+    assert counters["consecutive_timeouts"] == 0
+    assert counters["provider_timeout_breaker_open"] is False
+
+
+@pytest.mark.asyncio
+async def test_provider_cancellation_propagates_without_failure_counter(monkeypatch):
+    class Client:
+        def company_news(self, *_args, **_kwargs):
+            return []
+
+    async def cancelled_to_thread(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
+    monkeypatch.setattr(service.asyncio, "to_thread", cancelled_to_thread)
+    counters = _provider_counters()
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.fetch_and_ingest_news("spy", object(), _provider_counters=counters)
+
+    assert counters["provider_requests"] == 1
+    assert counters["provider_timeouts"] == 0
+    assert counters["provider_failures"] == 0
+
+
+@pytest.mark.asyncio
+async def test_zero_fetched_articles_skips_thumbnail_recovery(monkeypatch):
+    monkeypatch.setattr(type(service.settings), "MEMORY_DIAGNOSTICS_ENABLED", property(lambda _self: False))
+    monkeypatch.setattr(service, "fetch_and_ingest_many", AsyncMock(return_value={"SPY": 0}))
+    recover = AsyncMock(return_value=0)
+    monkeypatch.setattr(service, "_recover_thumbnails", recover)
+
+    class SessionContext:
+        async def __aenter__(self): return object()
+        async def __aexit__(self, *_args): return False
+
+    class Manager:
+        broadcast = AsyncMock()
+
+    async def stop_after_cycle(_):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(service.asyncio, "sleep", stop_after_cycle)
+    with pytest.raises(asyncio.CancelledError):
+        await service._scheduled_ingest_loop(lambda: SessionContext(), AsyncMock(return_value=["SPY"]), Manager())
+
+    recover.assert_not_awaited()
+
+
+def test_timeout_classifier_handles_requests_urllib3_and_chained_errors():
+    assert service._is_finnhub_timeout(ReadTimeout("read timed out"))
+    assert service._is_finnhub_timeout(ConnectTimeout("connect timed out"))
+    assert service._is_finnhub_timeout(ReadTimeoutError(None, "host", "read timed out"))
+
+    wrapped = RuntimeError("SDK wrapper")
+    wrapped.__cause__ = ReadTimeout("read timed out")
+    assert service._is_finnhub_timeout(wrapped)
+    assert not service._is_finnhub_timeout(RuntimeError("unauthorized"))
+
+
+@pytest.mark.asyncio
+async def test_finnhub_requests_remain_sequential(monkeypatch):
+    real_sleep = asyncio.sleep
+    active = maximum = 0
+    guard = threading.Lock()
+    calls = []
+
+    class Client:
+        def company_news(self, ticker, **_kwargs):
+            nonlocal active, maximum
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+                calls.append(ticker)
+            time.sleep(0.02)
+            with guard:
+                active -= 1
+            return []
+
+    async def no_delay(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
+    monkeypatch.setattr(service.asyncio, "sleep", no_delay)
+
+    result = await service.fetch_and_ingest_many(["spy", "qqq", "iwm"], object())
+
+    assert result == {"SPY": 0, "QQQ": 0, "IWM": 0}
+    assert calls == ["SPY", "QQQ", "IWM"]
+    assert maximum == 1

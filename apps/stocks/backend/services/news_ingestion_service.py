@@ -16,11 +16,14 @@ Free tier limits:
 import asyncio
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
+from requests.exceptions import Timeout as RequestsTimeout
+from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -40,6 +43,34 @@ logger = logging.getLogger(__name__)
 _OG_CONCURRENCY_LIMIT = 4
 # Minimum delay (seconds) between per-ticker news fetches to stay under Finnhub limits
 _TICKER_DELAY = 2.0
+# Stop a cycle after a short run of provider-wide timeouts; a later cycle retries normally.
+_MAX_CONSECUTIVE_NEWS_PROVIDER_TIMEOUTS = 3
+# The Finnhub SDK client is process-singleton; this also serializes an in-flight
+# request whose async waiter was cancelled before its synchronous timeout expires.
+_finnhub_company_news_lock = threading.Lock()
+
+
+def _is_finnhub_timeout(exc: BaseException) -> bool:
+    """Recognize requests/urllib3 timeouts, including safely chained causes."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, RequestsTimeout, Urllib3TimeoutError)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _fetch_finnhub_company_news(
+    client: Any,
+    ticker: str,
+    from_date: str,
+    to_date: str,
+) -> list[dict[str, Any]]:
+    """Call the singleton synchronous client without concurrent use."""
+    with _finnhub_company_news_lock:
+        return client.company_news(ticker, _from=from_date, to=to_date)
 
 # ---------- Background Scheduler ----------
 
@@ -105,39 +136,42 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
     """Run sequential ticker ingestion and bounded thumbnail recovery every 15 minutes."""
     def memory_context(*, ticker_count: int, tickers_processed: int, articles_ingested: int,
                        cycle_counters: dict[str, int], thumbnail_counters: dict[str, int],
-                       duration_seconds: float | None = None, outcome: str | None = None) -> dict[str, int | float | str]:
-        context: dict[str, int | float | str] = {
-            "ticker_count": ticker_count,
-            "tickers_processed": tickers_processed,
-            "articles_fetched": cycle_counters["articles_fetched"],
-            "articles_changed": cycle_counters["articles_changed"],
-            "articles_ingested": articles_ingested,
-            "report_candidates": cycle_counters["report_candidates"],
+                       provider_counters: dict[str, int | bool],
+                       duration_seconds: float | None = None, outcome: str | None = None) -> dict[str, int | float | str | bool]:
+        context: dict[str, int | float | str | bool] = {
+            "ticker_count": ticker_count, "tickers_processed": tickers_processed,
+            "articles_fetched": cycle_counters["articles_fetched"], "articles_changed": cycle_counters["articles_changed"],
+            "articles_ingested": articles_ingested, "report_candidates": cycle_counters["report_candidates"],
             "report_candidates_discovered": cycle_counters["report_candidates_discovered"],
             "report_candidates_unique": cycle_counters["report_candidates_unique"],
             "scheduler_duplicates_skipped": cycle_counters["scheduler_duplicates_skipped"],
-            "enqueue_attempts": cycle_counters["enqueue_attempts"],
-            "jobs_created": cycle_counters["jobs_created"],
+            "enqueue_attempts": cycle_counters["enqueue_attempts"], "jobs_created": cycle_counters["jobs_created"],
             "jobs_deduplicated": cycle_counters["jobs_deduplicated"],
             "thumbnail_candidates": thumbnail_counters["thumbnail_candidates"],
             "thumbnail_attempted": thumbnail_counters["thumbnail_attempted"],
             "thumbnail_recovered": thumbnail_counters["thumbnail_recovered"],
+            "provider_requests": provider_counters["provider_requests"],
+            "provider_successes": provider_counters["provider_successes"],
+            "provider_timeouts": provider_counters["provider_timeouts"],
+            "provider_failures": provider_counters["provider_failures"],
+            "consecutive_timeouts": provider_counters["consecutive_timeouts"],
+            "provider_timeout_breaker_open": provider_counters["provider_timeout_breaker_open"],
+            "tickers_skipped_provider_timeout": provider_counters["tickers_skipped_provider_timeout"],
         }
-        if duration_seconds is not None:
-            context["duration_seconds"] = duration_seconds
-        if outcome is not None:
-            context["outcome"] = outcome
+        if duration_seconds is not None: context["duration_seconds"] = duration_seconds
+        if outcome is not None: context["outcome"] = outcome
         return context
+
     while True:
         cycle_started_at = time.monotonic()
         ticker_count = tickers_processed = articles_ingested = recovered_thumbnail_count = 0
-        cycle_counters = {
-            "articles_fetched": 0, "articles_changed": 0, "report_candidates": 0,
+        cycle_counters = {"articles_fetched": 0, "articles_changed": 0, "report_candidates": 0,
             "report_candidates_discovered": 0, "report_candidates_unique": 0,
-            "scheduler_duplicates_skipped": 0, "enqueue_attempts": 0,
-            "jobs_created": 0, "jobs_deduplicated": 0,
-        }
+            "scheduler_duplicates_skipped": 0, "enqueue_attempts": 0, "jobs_created": 0, "jobs_deduplicated": 0}
         thumbnail_counters = {"thumbnail_candidates": 0, "thumbnail_attempted": 0, "thumbnail_recovered": 0}
+        provider_counters: dict[str, int | bool] = {"provider_requests": 0, "provider_successes": 0,
+            "provider_timeouts": 0, "provider_failures": 0, "consecutive_timeouts": 0,
+            "provider_timeout_breaker_open": False, "tickers_skipped_provider_timeout": 0}
         scheduler_attempted_asset_ids: set[int] = set()
         outcome = "cancelled"
         try:
@@ -146,60 +180,63 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
             if settings.MEMORY_DIAGNOSTICS_ENABLED:
                 log_memory("news_cycle_start", logger_to_use=logger, enabled=True, extra=memory_context(
                     ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
-                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
-                ))
+                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters, provider_counters=provider_counters))
             async with session_factory() as session:
                 if not tickers:
                     logger.info("[NewsScheduler] No tickers in watchlist; skipping cycle.")
                 else:
-                    results = await fetch_and_ingest_many(
-                        tickers, session, limit=25, _cycle_counters=cycle_counters,
-                        _scheduler_attempted_asset_ids=scheduler_attempted_asset_ids,
-                    )
+                    results = await fetch_and_ingest_many(tickers, session, limit=25, _cycle_counters=cycle_counters,
+                        _scheduler_attempted_asset_ids=scheduler_attempted_asset_ids, _provider_counters=provider_counters)
                     articles_ingested = sum(results.values())
                     tickers_processed = len(results)
-                    logger.info("[NewsScheduler] Cycle complete - ingested %d articles across %d tickers: %s", articles_ingested, tickers_processed, results)
+                    logger.info("[NewsScheduler] Cycle complete - ingested %d articles across %d tickers: %s",
+                        articles_ingested, tickers_processed, results)
+                    logger.info("[NewsScheduler] Provider summary provider_requests=%d provider_successes=%d "
+                        "provider_timeouts=%d provider_failures=%d consecutive_timeouts=%d "
+                        "provider_timeout_breaker_open=%s tickers_skipped_provider_timeout=%d",
+                        provider_counters["provider_requests"], provider_counters["provider_successes"],
+                        provider_counters["provider_timeouts"], provider_counters["provider_failures"],
+                        provider_counters["consecutive_timeouts"], provider_counters["provider_timeout_breaker_open"],
+                        provider_counters["tickers_skipped_provider_timeout"])
                 if settings.MEMORY_DIAGNOSTICS_ENABLED:
                     log_memory("after_ticker_ingestion", logger_to_use=logger, enabled=True, extra=memory_context(
                         ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
-                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
-                    ))
+                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters, provider_counters=provider_counters))
                     log_memory("before_thumbnail_recovery", logger_to_use=logger, enabled=True, extra=memory_context(
                         ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
-                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
-                    ))
-                try:
-                    recovered_thumbnail_count = await _recover_thumbnails(session, counters=thumbnail_counters)
-                    if recovered_thumbnail_count:
-                        logger.info("[NewsScheduler] Thumbnail recovery: +%d images recovered.", recovered_thumbnail_count)
-                except Exception as exc:
-                    logger.error("[NewsScheduler] Thumbnail recovery failed: %s", exc)
+                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters, provider_counters=provider_counters))
+                if cycle_counters["articles_fetched"] > 0:
+                    try:
+                        recovered_thumbnail_count = await _recover_thumbnails(session, counters=thumbnail_counters)
+                        if recovered_thumbnail_count:
+                            logger.info("[NewsScheduler] Thumbnail recovery: +%d images recovered.", recovered_thumbnail_count)
+                    except Exception as exc:
+                        logger.error("[NewsScheduler] Thumbnail recovery failed exception_type=%s", type(exc).__name__)
+                else:
+                    logger.info("[NewsScheduler] Thumbnail recovery skipped articles_fetched=0")
                 if settings.MEMORY_DIAGNOSTICS_ENABLED:
                     log_memory("after_thumbnail_recovery", logger_to_use=logger, enabled=True, extra=memory_context(
                         ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
-                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
-                    ))
+                        cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters, provider_counters=provider_counters))
             try:
                 await connection_manager.broadcast({"type": "news_refresh"})
                 logger.info("[NewsScheduler] Broadcast news_refresh to all clients.")
             except Exception as exc:
-                logger.error("[NewsScheduler] Failed to broadcast news_refresh: %s", exc)
+                logger.error("[NewsScheduler] Failed to broadcast news_refresh exception_type=%s", type(exc).__name__)
             if settings.MEMORY_DIAGNOSTICS_ENABLED:
                 log_memory("after_broadcast", logger_to_use=logger, enabled=True, extra=memory_context(
                     ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
-                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
-                ))
-            outcome = "completed"
+                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters, provider_counters=provider_counters))
+            outcome = "provider_timeout" if provider_counters["provider_timeout_breaker_open"] else "completed"
         except Exception as exc:
             outcome = "failed"
-            logger.error("[NewsScheduler] Error during ingestion cycle: %s", exc)
+            logger.error("[NewsScheduler] Error during ingestion cycle exception_type=%s", type(exc).__name__)
         finally:
             if settings.MEMORY_DIAGNOSTICS_ENABLED:
                 log_memory("news_ingestion_cycle_end", logger_to_use=logger, enabled=True, extra=memory_context(
                     ticker_count=ticker_count, tickers_processed=tickers_processed, articles_ingested=articles_ingested,
-                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters,
-                    duration_seconds=round(time.monotonic() - cycle_started_at, 3), outcome=outcome,
-                ))
+                    cycle_counters=cycle_counters, thumbnail_counters=thumbnail_counters, provider_counters=provider_counters,
+                    duration_seconds=round(time.monotonic() - cycle_started_at, 3), outcome=outcome))
         await asyncio.sleep(_scheduler_interval_seconds)
 
 def start_scheduler(session_factory, tickers_fn, connection_manager) -> None:
@@ -543,6 +580,8 @@ async def fetch_and_ingest_news(
     *,
     _cycle_counters: Optional[dict[str, int]] = None,
     _scheduler_attempted_asset_ids: Optional[set[int]] = None,
+    _provider_counters: Optional[dict[str, int | bool]] = None,
+    _provider_state: Optional[dict[str, str]] = None,
 ) -> int:
     """
     Fetch latest news for a ticker from Finnhub and persist to PostgreSQL.
@@ -552,21 +591,30 @@ async def fetch_and_ingest_news(
     try:
         await _rate_limiter()
         client = get_finnhub_client()
-
-        # Finnhub /company-news expects YYYY-MM-DD format dates (not unix timestamps)
         now_utc = datetime.now(timezone.utc)
-        to_date   = now_utc.strftime("%Y-%m-%d")
+        to_date = now_utc.strftime("%Y-%m-%d")
         from_date = (now_utc - timedelta(days=7)).strftime("%Y-%m-%d")
-
-        raw_news = client.company_news(
-            ticker.upper(),
-            _from=from_date,
-            to=to_date,
+        if _provider_counters is not None:
+            _provider_counters["provider_requests"] += 1
+        raw_news = await asyncio.to_thread(
+            _fetch_finnhub_company_news, client, ticker.upper(), from_date, to_date,
         )
-
-    except Exception as e:
-        logger.error(f"[NewsIngestion] Failed to fetch news for {ticker}: {e}")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        is_timeout = _is_finnhub_timeout(exc)
+        if _provider_counters is not None:
+            _provider_counters["provider_timeouts" if is_timeout else "provider_failures"] += 1
+        if _provider_state is not None:
+            _provider_state["last_outcome"] = "timeout" if is_timeout else "failure"
+        logger.error("[NewsIngestion] Failed to fetch news ticker=%s exception_type=%s",
+            ticker.upper(), type(exc).__name__)
         return 0
+
+    if _provider_counters is not None:
+        _provider_counters["provider_successes"] += 1
+    if _provider_state is not None:
+        _provider_state["last_outcome"] = "success"
 
     if not raw_news:
         logger.info(f"[NewsIngestion] No news returned for {ticker}")
@@ -693,24 +741,38 @@ async def fetch_and_ingest_many(
     *,
     _cycle_counters: Optional[dict[str, int]] = None,
     _scheduler_attempted_asset_ids: Optional[set[int]] = None,
+    _provider_counters: Optional[dict[str, int | bool]] = None,
 ) -> dict[str, int]:
-    """Fetch and ingest news for multiple tickers. Returns {ticker: count}.
+    """Fetch and ingest news sequentially, stopping after repeated provider timeouts."""
+    results: dict[str, int] = {}
+    scheduler_attempted_asset_ids = (
+        _scheduler_attempted_asset_ids if _scheduler_attempted_asset_ids is not None else set()
+    )
+    provider_state: dict[str, str] = {}
+    consecutive_timeouts = 0
 
-    Adds delays between ticker requests to stay within Finnhub rate limits
-    (60 calls/min on free tier).
-    """
-    results = {}
-    scheduler_attempted_asset_ids = _scheduler_attempted_asset_ids if _scheduler_attempted_asset_ids is not None else set()
-    for i, ticker in enumerate(tickers):
+    for index, ticker in enumerate(tickers):
+        provider_state.clear()
         count = await fetch_and_ingest_news(
-            ticker.upper(),
-            session,
-            limit=limit,
-            _cycle_counters=_cycle_counters,
+            ticker.upper(), session, limit=limit, _cycle_counters=_cycle_counters,
             _scheduler_attempted_asset_ids=scheduler_attempted_asset_ids,
+            _provider_counters=_provider_counters, _provider_state=provider_state,
         )
         results[ticker.upper()] = count
-        # Delay between tickers to avoid rate-limit bursts (skip delay after last ticker)
-        if i < len(tickers) - 1:
+        if provider_state.get("last_outcome") == "timeout":
+            consecutive_timeouts += 1
+        else:
+            consecutive_timeouts = 0
+        if _provider_counters is not None:
+            _provider_counters["consecutive_timeouts"] = consecutive_timeouts
+        if consecutive_timeouts >= _MAX_CONSECUTIVE_NEWS_PROVIDER_TIMEOUTS:
+            skipped = len(tickers) - index - 1
+            if _provider_counters is not None:
+                _provider_counters["provider_timeout_breaker_open"] = True
+                _provider_counters["tickers_skipped_provider_timeout"] += skipped
+            logger.warning("[NewsScheduler] Provider timeout breaker opened consecutive_timeouts=%d "
+                "tickers_skipped_provider_timeout=%d", consecutive_timeouts, skipped)
+            break
+        if index < len(tickers) - 1:
             await asyncio.sleep(_TICKER_DELAY)
     return results
