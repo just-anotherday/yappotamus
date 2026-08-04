@@ -19,6 +19,7 @@ import {
   formatWatchlistNumber,
   formatWatchlistRecommendation,
   formatMarketSize,
+  getMarketSizeLabel,
   getCompanySize,
   formatWatchlistPercent,
   formatWatchlistRange,
@@ -184,7 +185,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
       <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3 shadow-sm dark:bg-slate-900">
         <input aria-label="Search watchlist" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search ticker or company" className="min-w-48 flex-1 rounded-md border px-3 py-2 text-sm dark:bg-slate-800" />
         <select aria-label="Sort watchlist" value={sort} onChange={event => setSort(event.target.value as WatchlistSort)} className="rounded-md border px-3 py-2 text-sm dark:bg-slate-800">
-          <option value="custom">Custom order</option><option value="ticker">Ticker</option><option value="change">Price change</option><option value="market-cap">Market cap</option>
+          <option value="custom">Custom order</option><option value="ticker">Ticker</option><option value="change">Price change</option><option value="market-cap">Market size</option>
         </select>
         <select aria-label="Filter watchlist movers" value={direction} onChange={event => setDirection(event.target.value as WatchlistDirectionFilter)} className="rounded-md border px-3 py-2 text-sm dark:bg-slate-800">
           <option value="all">All</option><option value="gainers">Gainers</option><option value="losers">Losers</option>
@@ -315,7 +316,12 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                             : '\u2014'}
                         </td>
                       )}
-                      <td className="px-3 py-2.5 text-right text-blue-800 dark:text-blue-300" onClick={() => safeToggleExpand(item.ticker)}>{formatMarketSize(item)}</td>
+                      <td className="px-3 py-2.5 text-right text-blue-800 dark:text-blue-300" onClick={() => safeToggleExpand(item.ticker)}>
+                        <div className="flex flex-col items-end">
+                          <span>{formatMarketSize(item)}</span>
+                          <span className="text-[10px] font-medium text-gray-500 dark:text-slate-400">{getMarketSizeLabel(item)}</span>
+                        </div>
+                      </td>
                     </SortableRow>
 
                     {/* Expanded detail row */}

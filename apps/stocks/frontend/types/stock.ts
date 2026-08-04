@@ -5,7 +5,7 @@
 export type DataSource = "fh" | "yf";
 
 export type SecurityType = "STOCK" | "ETF" | "INDEX" | "CRYPTO" | "ADR" | "UNKNOWN";
-export type MarketSizeType = "market_cap" | "fund_assets";
+export type MarketSizeType = "market_cap" | "fund_assets" | "etf_market_cap";
 export type MarketDataStatus = "available" | "unsupported" | "provider_failed" | "rate_limited" | "unauthorized" | "stale_cache";
 export type WatchlistDataStatus = "complete" | "partial" | "stale" | "unavailable";
 export type ProviderState = "healthy" | "cooldown" | "degraded" | "unavailable";
@@ -78,9 +78,11 @@ export interface WatchlistItem {
   market_session?: string | null;
   market_cap: number | null;
   fund_assets?: number | null;
+  etf_market_cap?: number | null;
   market_size_value?: number | null;
   market_size_type?: MarketSizeType | null;
   market_size_currency?: string | null;
+  market_size_source?: string | null;
   market_size_fallback_used?: boolean;
   market_size_status?: MarketDataStatus;
   volume: number;

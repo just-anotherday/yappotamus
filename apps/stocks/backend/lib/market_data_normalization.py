@@ -143,6 +143,7 @@ def normalize_market_data_payload(
         normalized[field] = _finite_float(payload.get(field), None)
 
     normalized["market_cap"] = _positive_market_size(payload.get("market_cap"))
+    normalized["etf_market_cap"] = _positive_market_size(payload.get("etf_market_cap"))
 
     for field in OPTIONAL_FLOAT_FIELDS:
         normalized[field] = _finite_float(payload.get(field), None)
@@ -187,11 +188,16 @@ def normalize_market_data_payload(
     if security_type == "ETF":
         etf_data = normalized["etf_data"] or {}
         fund_assets = fund_assets or _positive_market_size(etf_data.get("net_assets"))
+        etf_market_cap = normalized["etf_market_cap"] or market_cap
         normalized["market_cap"] = None
         normalized["fund_assets"] = fund_assets
-        normalized["market_size_value"] = fund_assets
-        normalized["market_size_type"] = "fund_assets" if fund_assets else None
+        normalized["etf_market_cap"] = etf_market_cap
+        normalized["market_size_value"] = fund_assets or etf_market_cap
+        normalized["market_size_type"] = (
+            "fund_assets" if fund_assets else "etf_market_cap" if etf_market_cap else None
+        )
     else:
+        normalized["etf_market_cap"] = None
         normalized["fund_assets"] = fund_assets
         normalized["market_size_value"] = market_cap
         normalized["market_size_type"] = "market_cap" if market_cap is not None else None
@@ -199,8 +205,37 @@ def normalize_market_data_payload(
     normalized["market_size_currency"] = currency.upper() if currency else None
     status = _optional_text(payload.get("market_size_status"))
     valid_statuses = {"available", "unsupported", "provider_failed", "rate_limited", "unauthorized", "stale_cache"}
-    normalized["market_size_status"] = status if status in valid_statuses else ("available" if normalized["market_size_value"] else "unsupported")
-    normalized["market_size_fallback_used"] = bool(payload.get("market_size_fallback_used"))
+    if normalized["market_size_value"] is not None:
+        normalized["market_size_status"] = "stale_cache" if status == "stale_cache" else "available"
+    else:
+        normalized["market_size_status"] = status if status in valid_statuses else "unsupported"
+    normalized["market_size_fallback_used"] = (
+        normalized["market_size_type"] == "etf_market_cap"
+        if security_type == "ETF"
+        else bool(payload.get("market_size_fallback_used"))
+    )
+    supplied_market_size_type = _optional_text(payload.get("market_size_type"))
+    if normalized["market_size_type"] == "fund_assets":
+        normalized["market_size_source"] = _optional_text(
+            payload.get("fund_assets_source")
+            or (
+                payload.get("market_size_source")
+                if supplied_market_size_type == "fund_assets"
+                else None
+            )
+        )
+    elif normalized["market_size_type"] == "etf_market_cap":
+        normalized["market_size_source"] = _optional_text(
+            payload.get("etf_market_cap_source")
+            or (
+                payload.get("market_size_source")
+                if supplied_market_size_type == "etf_market_cap"
+                or _positive_market_size(payload.get("market_cap")) is not None
+                else None
+            )
+        )
+    else:
+        normalized["market_size_source"] = _optional_text(payload.get("market_size_source"))
     provider_status = payload.get("provider_status")
     normalized["provider_status"] = dict(provider_status) if isinstance(provider_status, Mapping) else {}
     relevant_fields = ["open_price", "previous_close", "day_low", "day_high", "fifty_two_week_low", "fifty_two_week_high"]

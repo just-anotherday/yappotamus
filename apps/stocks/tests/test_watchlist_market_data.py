@@ -1285,6 +1285,9 @@ def test_etf_info_asset_fields_and_names_are_supported(monkeypatch, field):
     assert item.company_name == "Long Fund"
     assert item.market_cap is None
     assert item.fund_assets == 500
+    assert item.market_size_type == "fund_assets"
+    assert item.market_size_source == f"yfinance_info.{field}"
+    assert item.market_size_fallback_used is False
     assert item.market_size_currency is None
 
 
@@ -1299,6 +1302,187 @@ def test_fund_operations_uses_row_then_ticker_column_and_keeps_currency_unknown(
     monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
     item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("DIA"))
     assert (item.market_cap, item.fund_assets, item.market_size_value, item.market_size_currency) == (None, 700, 700, None)
+    assert item.market_size_source == "yfinance_funds_data.fund_operations.Total Net Assets"
+
+
+def test_etf_info_market_cap_is_a_distinct_market_size_fallback(monkeypatch):
+    class FakeTicker:
+        ticker = "SPY"
+        holdings = None
+        info = {
+            "quoteType": "ETF",
+            "longName": "SPDR Fund",
+            "currentPrice": 500,
+            "marketCap": np.int64(450_000_000_000),
+            "currency": "USD",
+        }
+
+        def __init__(self, _ticker):
+            pass
+
+        @property
+        def funds_data(self):
+            raise RuntimeError("fund assets unavailable")
+
+    monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+
+    item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("SPY"))
+
+    assert item.market_cap is None
+    assert item.fund_assets is None
+    assert item.etf_market_cap == 450_000_000_000
+    assert item.market_size_value == 450_000_000_000
+    assert item.market_size_type == "etf_market_cap"
+    assert item.market_size_source == "yfinance_info.marketCap"
+    assert item.market_size_currency == "USD"
+    assert item.market_size_fallback_used is True
+    assert item.market_size_status == "available"
+    assert item.data_status == "partial"
+
+
+def test_etf_fast_info_market_cap_is_used_when_info_cap_is_missing(monkeypatch):
+    class FakeTicker:
+        ticker = "QQQ"
+        holdings = None
+        info = {"quoteType": "ETF", "currentPrice": 400, "currency": "USD"}
+        fast_info = {"market_cap": np.float64(300_000_000_000)}
+
+        def __init__(self, _ticker):
+            pass
+
+        @property
+        def funds_data(self):
+            raise RuntimeError("fund assets unavailable")
+
+    monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+
+    item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("QQQ"))
+
+    assert item.etf_market_cap == 300_000_000_000
+    assert item.market_size_type == "etf_market_cap"
+    assert item.market_size_source == "yfinance_fast_info.market_cap"
+
+
+def test_etf_market_cap_provider_fields_follow_documented_precedence():
+    class FakeTicker:
+        ticker = "SPY"
+        fast_info = {"market_cap": 300}
+
+    ticker = FakeTicker()
+
+    assert yfinance_fallback._resolve_etf_market_cap(
+        ticker, {"marketCap": 500, "nonDilutedMarketCap": 400}
+    ) == (500, "yfinance_info.marketCap")
+    assert yfinance_fallback._resolve_etf_market_cap(
+        ticker, {"marketCap": None, "nonDilutedMarketCap": 400}
+    ) == (400, "yfinance_info.nonDilutedMarketCap")
+    assert yfinance_fallback._resolve_etf_market_cap(
+        ticker, {"marketCap": None, "nonDilutedMarketCap": None}
+    ) == (300, "yfinance_fast_info.market_cap")
+
+
+def test_fund_assets_take_precedence_over_etf_market_cap_without_fast_info_call(monkeypatch):
+    class FakeTicker:
+        ticker = "IWM"
+        holdings = None
+        info = {
+            "quoteType": "ETF",
+            "currentPrice": 200,
+            "totalAssets": 80_000_000_000,
+            "marketCap": 79_000_000_000,
+            "currency": "USD",
+        }
+
+        def __init__(self, _ticker):
+            pass
+
+        @property
+        def fast_info(self):
+            raise AssertionError("market-cap fallback must not run when fund assets exist")
+
+    monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+
+    item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("IWM"))
+
+    assert item.fund_assets == 80_000_000_000
+    assert item.etf_market_cap is None
+    assert item.market_size_value == 80_000_000_000
+    assert item.market_size_type == "fund_assets"
+    assert item.market_size_source == "yfinance_info.totalAssets"
+
+
+@pytest.mark.parametrize("value", [True, "12", 0, -1, np.nan, np.inf])
+def test_invalid_etf_market_cap_values_are_rejected(value):
+    class FakeTicker:
+        ticker = "SPY"
+        fast_info = {"market_cap": value}
+
+    assert yfinance_fallback._resolve_etf_market_cap(
+        FakeTicker(), {"marketCap": value}
+    ) == (None, None)
+
+
+def test_etf_market_size_normalization_and_serialization_preserve_semantics():
+    normalized = normalize_market_data_payload(
+        "SPY",
+        {
+            "ticker": "SPY",
+            "security_type": "ETF",
+            "market_cap": 450_000_000_000,
+            "market_size_currency": "USD",
+            "market_size_source": "yfinance_info.marketCap",
+        },
+        default_source="yf",
+    )
+    response = WatchlistItem.model_validate(normalized).model_dump(mode="json")
+
+    assert response["market_cap"] is None
+    assert response["etf_market_cap"] == 450_000_000_000
+    assert response["market_size_value"] == 450_000_000_000
+    assert response["market_size_type"] == "etf_market_cap"
+    assert response["market_size_source"] == "yfinance_info.marketCap"
+
+
+def test_stale_fund_assets_are_not_replaced_by_etf_market_cap():
+    stale = normalize_market_data_payload(
+        "SPY",
+        {"ticker": "SPY", "security_type": "ETF", "fund_assets": 500},
+        default_source="yf",
+    )
+    partial = normalize_market_data_payload(
+        "SPY",
+        {"ticker": "SPY", "security_type": "ETF", "etf_market_cap": 600},
+        default_source="yf",
+    )
+
+    merged = hybrid_data_service._merge_stale_static_metadata(stale, partial)
+
+    assert merged["fund_assets"] == 500
+    assert merged["market_size_value"] == 500
+    assert merged["market_size_type"] == "fund_assets"
+    assert merged["market_size_status"] == "stale_cache"
+
+
+def test_later_fund_assets_supersede_etf_market_cap_fallback():
+    fallback = normalize_market_data_payload(
+        "SPY",
+        {"ticker": "SPY", "security_type": "ETF", "etf_market_cap": 600},
+        default_source="yf",
+    )
+    upgraded = normalize_market_data_payload(
+        "SPY",
+        {**fallback, "fund_assets": 700},
+        default_source="yf",
+    )
+
+    assert upgraded["fund_assets"] == 700
+    assert upgraded["market_size_value"] == 700
+    assert upgraded["market_size_type"] == "fund_assets"
+    assert upgraded["market_size_fallback_used"] is False
+    assert upgraded["market_size_source"] is None
 
 
 def test_fund_metadata_errors_and_invalid_values_are_non_fatal(monkeypatch):

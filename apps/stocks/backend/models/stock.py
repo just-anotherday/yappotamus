@@ -73,9 +73,11 @@ class WatchlistItem(BaseModel):
     market_session: Optional[str] = None
     market_cap: Optional[float] = None
     fund_assets: Optional[float] = None
+    etf_market_cap: Optional[float] = None
     market_size_value: Optional[float] = None
-    market_size_type: Optional[Literal["market_cap", "fund_assets"]] = None
+    market_size_type: Optional[Literal["market_cap", "fund_assets", "etf_market_cap"]] = None
     market_size_currency: Optional[str] = None
+    market_size_source: Optional[str] = None
     market_size_fallback_used: bool = False
     market_size_status: Literal["available", "unsupported", "provider_failed", "rate_limited", "unauthorized", "stale_cache"] = "available"
 

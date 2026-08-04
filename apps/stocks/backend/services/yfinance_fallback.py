@@ -5,8 +5,8 @@ Pure yfinance fallback service — used ONLY when Finnhub fails or for ETFs/non-
 This module provides the same output shape as finnhub_service but tags every field
 with `data_source: "yf"` so the frontend can display a purple "YF" badge.
 
-ETF support: For ETFs that don't provide marketCap/sharesOutstanding/analyst targets,
-uses totalAssets/netAssets as market_cap fallback and beta3Year for beta.
+ETF support: prefers fund assets and uses provider ETF market cap only as an
+explicitly labeled market-size fallback.
 
 Dynamic Security Detection: Uses quoteType metadata from yfinance to classify
 securities as STOCK, ETF, INDEX, CRYPTO, ADR, or UNKNOWN.
@@ -246,6 +246,14 @@ def _resolve_fund_assets(info: Dict[str, Any]) -> float | None:
             return value
     return None
 
+
+def _resolve_fund_assets_with_source(info: Dict[str, Any]) -> tuple[float | None, str | None]:
+    for field in ("totalAssets", "netAssets", "fundTotalAssets"):
+        value = _positive_market_number(info.get(field))
+        if value is not None:
+            return value, f"yfinance_info.{field}"
+    return None, None
+
 def _resolve_fund_assets_from_metadata(ticker_obj: yf.Ticker) -> float | None:
     """Read yfinance 1.5 ``funds_data.fund_operations`` total net assets."""
     try:
@@ -255,6 +263,31 @@ def _resolve_fund_assets_from_metadata(ticker_obj: yf.Ticker) -> float | None:
         logger.debug("[YF-ETF] Fund metadata unavailable for %s: %s", ticker_obj.ticker, type(exc).__name__)
         return None
     return _positive_market_number(value)
+
+
+def _resolve_etf_market_cap(
+    ticker_obj: yf.Ticker, info: Dict[str, Any]
+) -> tuple[float | None, str | None]:
+    """Return Yahoo's absolute ETF market value and its access path."""
+    for field in ("marketCap", "nonDilutedMarketCap"):
+        value = _positive_market_number(info.get(field))
+        if value is not None:
+            return value, f"yfinance_info.{field}"
+    try:
+        fast_info = ticker_obj.fast_info
+        try:
+            raw_value = fast_info["market_cap"]
+        except (KeyError, TypeError):
+            raw_value = getattr(fast_info, "market_cap", None)
+    except Exception as exc:
+        logger.debug(
+            "[YF-ETF] Fast market cap unavailable for %s: %s",
+            ticker_obj.ticker,
+            type(exc).__name__,
+        )
+        return None, None
+    value = _positive_market_number(raw_value)
+    return (value, "yfinance_fast_info.market_cap") if value is not None else (None, None)
 
 def _resolve_shares_outstanding(info: Dict[str, Any], is_etf_flag: bool) -> int | None:
     """Resolve shares outstanding, computing from NAV for ETFs when needed."""
@@ -564,14 +597,24 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
         result["market_size_currency"] = info.get("currency") or info.get("financialCurrency")
         result["market_cap"], result["market_size_fallback_used"] = _resolve_market_cap(info, security_type, current_price)
         if security_type == "ETF":
-            fund_assets = _resolve_fund_assets(info)
+            fund_assets, fund_assets_source = _resolve_fund_assets_with_source(info)
             fund_assets_from_metadata = False
             if fund_assets is None:
                 fund_assets = _resolve_fund_assets_from_metadata(ticker_obj)
                 fund_assets_from_metadata = fund_assets is not None
+                if fund_assets_from_metadata:
+                    fund_assets_source = "yfinance_funds_data.fund_operations.Total Net Assets"
             if fund_assets_from_metadata:
                 result["market_size_currency"] = None
             result["fund_assets"] = fund_assets
+            result["fund_assets_source"] = fund_assets_source
+            etf_market_cap, etf_market_cap_source = (
+                _resolve_etf_market_cap(ticker_obj, info)
+                if fund_assets is None
+                else (None, None)
+            )
+            result["etf_market_cap"] = etf_market_cap
+            result["etf_market_cap_source"] = etf_market_cap_source
         
         # Only include share structure for STOCKs
         if security_type == "STOCK":
@@ -602,9 +645,6 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
             result,
             default_source="yf",
         )
-        if security_type == "ETF" and normalized["fund_assets"] is None:
-            normalized["market_size_type"] = "fund_assets"
-            normalized["market_size_status"] = "unsupported"
         return normalized
     except Exception as exc:
         failure_class = _record_yfinance_outage_failure(exc)

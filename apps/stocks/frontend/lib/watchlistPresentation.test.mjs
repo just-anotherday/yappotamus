@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from './watchlistPresentation.ts';
-import { formatEmployeeCount, formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistPercent, formatWatchlistRange, formatWatchlistRecommendation, getCompanySize, getWatchlistDataWarning, getWatchlistDisplayPrice, hasWatchlistRecommendation, mergeLiveQuote, mergeWatchlistRefresh } from './watchlistPresentation.ts';
+import { formatEmployeeCount, formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistPercent, formatWatchlistRange, formatWatchlistRecommendation, getCompanySize, getMarketSizeLabel, getWatchlistDataWarning, getWatchlistDisplayPrice, hasWatchlistRecommendation, mergeLiveQuote, mergeWatchlistRefresh } from './watchlistPresentation.ts';
 
 const item = (ticker, company_name, current_price, previous_close, market_cap) => ({ ticker, company_name, current_price, previous_close, market_cap });
 const items = [item('BBB', 'Beta', 90, 100, 20), item('AAA', 'Alpha', 110, 100, 10)];
@@ -173,9 +173,15 @@ test('late WebSocket quote changes price and change only, preserving metadata', 
 });
 
 test('renders fund assets and non-USD market sizes without a dollar prefix', () => {
-  assert.equal(formatMarketSize({ market_size_type: 'fund_assets', market_size_value: 10_000_000_000, market_size_currency: 'USD' }), '$10.00B');
+  const fund = { security_type: 'ETF', market_size_type: 'fund_assets', market_size_value: 10_000_000_000, market_size_currency: 'USD' };
+  const fallback = { security_type: 'ETF', market_size_type: 'etf_market_cap', market_size_value: 9_000_000_000, market_size_currency: 'USD' };
+  assert.equal(formatMarketSize(fund), '$10.00B');
+  assert.equal(getMarketSizeLabel(fund), 'Fund Size');
+  assert.equal(formatMarketSize(fallback), '$9.00B');
+  assert.equal(getMarketSizeLabel(fallback), 'Fund Market Value');
   assert.equal(formatMarketSize({ market_size_type: 'market_cap', market_size_value: 62_890_000_000_000, market_size_currency: 'TWD' }), 'TWD 62.89T');
   assert.equal(formatMarketSize({ market_size_status: 'provider_failed' }), 'Unavailable');
+  assert.equal(getMarketSizeLabel({ security_type: 'ETF', market_size_status: 'provider_failed' }), 'Fundamentals temporarily unavailable.');
 });
 
 test('price-only WebSocket ticks retain the official close and never become daily change', () => {
@@ -261,6 +267,28 @@ test('provider failure retains the complete prior market-size identity as stale 
   assert.equal(merged.market_size_type, 'fund_assets');
   assert.equal(merged.market_size_currency, 'USD');
   assert.equal(merged.market_size_status, 'stale_cache');
+});
+test('ETF refresh keeps fund assets over a newer market-cap fallback and preserves null fallback data', () => {
+  const priorFund = { ticker: 'SPY', company_name: 'SPDR', security_type: 'ETF', fund_assets: 100, etf_market_cap: null, market_size_value: 100, market_size_type: 'fund_assets', market_size_currency: 'USD', market_size_source: 'yfinance_info.totalAssets', market_size_status: 'available' };
+  const capOnly = { ticker: 'SPY', company_name: 'SPDR', security_type: 'ETF', fund_assets: null, etf_market_cap: 120, market_size_value: 120, market_size_type: 'etf_market_cap', market_size_currency: 'USD', market_size_source: 'yfinance_info.marketCap', market_size_status: 'available' };
+  const [fundPreserved] = mergeWatchlistRefresh([priorFund], [capOnly]);
+  assert.equal(fundPreserved.market_size_value, 100);
+  assert.equal(fundPreserved.market_size_type, 'fund_assets');
+  assert.equal(fundPreserved.market_size_source, 'yfinance_info.totalAssets');
+
+  const priorCap = { ...capOnly, etf_market_cap: 120 };
+  const nullRefresh = { ...capOnly, etf_market_cap: null, market_size_value: null, market_size_type: null, market_size_source: null };
+  const [capPreserved] = mergeWatchlistRefresh([priorCap], [nullRefresh]);
+  assert.equal(capPreserved.etf_market_cap, 120);
+  assert.equal(capPreserved.market_size_value, 120);
+  assert.equal(capPreserved.market_size_type, 'etf_market_cap');
+});
+test('market-size sorting uses displayed ETF values without company classification', () => {
+  const fund = { ticker: 'FUND', company_name: 'Fund', security_type: 'ETF', market_size_value: 90, market_size_type: 'fund_assets' };
+  const fallback = { ticker: 'CAP', company_name: 'Cap ETF', security_type: 'ETF', market_size_value: 110, market_size_type: 'etf_market_cap' };
+  const equity = { ticker: 'EQ', company_name: 'Equity', security_type: 'STOCK', market_size_value: 100, market_size_type: 'market_cap' };
+  assert.deepEqual(presentWatchlist([fund, fallback, equity], [], {}, '', 'market-cap', 'all').map(row => row.ticker), ['CAP', 'EQ', 'FUND']);
+  assert.equal(getCompanySize(fallback).label, 'Not applicable');
 });
 test('normalizes valid currencies and labels missing currency explicitly', () => {
   assert.equal(formatMarketSize({ market_size_value: 4_860_000_000_000, market_size_currency: 'usd' }), '$4.86T');

@@ -15,7 +15,10 @@ export function formatWatchlistCurrency(value: unknown): string {
 }
 
 export function getMarketSizeLabel(item: WatchlistItem): string {
-  return item.market_size_type === 'fund_assets' ? 'Fund Assets' : 'Market Cap';
+  if (item.market_size_type === 'fund_assets') return 'Fund Size';
+  if (item.market_size_type === 'etf_market_cap') return 'Fund Market Value';
+  if (item.security_type === 'ETF') return 'Fundamentals temporarily unavailable.';
+  return 'Market Cap';
 }
 
 export function getMarketSizeValue(item: WatchlistItem): number | null {
@@ -121,9 +124,11 @@ const PRESERVE_WHEN_MISSING: readonly (keyof WatchlistItem)[] = [
   'exchange',
   'security_type',
   'fund_assets',
+  'etf_market_cap',
   'market_size_value',
   'market_size_type',
   'market_size_currency',
+  'market_size_source',
   'market_size_fallback_used',
   'market_size_status',
   'shares_outstanding',
@@ -244,6 +249,19 @@ export function mergeWatchlistRefresh(
     }
     if (incoming.recommendation_key === 'N/A' && previous.recommendation_key !== 'N/A') {
       merged.recommendation_key = previous.recommendation_key;
+    }
+    if (
+      merged.security_type === 'ETF'
+      && isFiniteWatchlistNumber(previous.fund_assets)
+      && previous.fund_assets > 0
+      && !(isFiniteWatchlistNumber(incoming.fund_assets) && incoming.fund_assets > 0)
+    ) {
+      merged.fund_assets = previous.fund_assets;
+      merged.market_size_value = previous.fund_assets;
+      merged.market_size_type = 'fund_assets';
+      merged.market_size_currency = previous.market_size_currency;
+      merged.market_size_source = previous.market_size_source;
+      merged.market_size_fallback_used = false;
     }
 
     merged.etf_data = incoming.etf_data == null
