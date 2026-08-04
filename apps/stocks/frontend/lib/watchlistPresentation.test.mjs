@@ -181,7 +181,7 @@ test('renders fund assets and non-USD market sizes without a dollar prefix', () 
   assert.equal(getMarketSizeLabel(fallback), 'Fund Market Value');
   assert.equal(formatMarketSize({ market_size_type: 'market_cap', market_size_value: 62_890_000_000_000, market_size_currency: 'TWD' }), 'TWD 62.89T');
   assert.equal(formatMarketSize({ market_size_status: 'provider_failed' }), 'Unavailable');
-  assert.equal(getMarketSizeLabel({ security_type: 'ETF', market_size_status: 'provider_failed' }), 'Fundamentals temporarily unavailable.');
+  assert.equal(getMarketSizeLabel({ security_type: 'ETF', market_size_status: 'provider_failed' }), 'Fund Size');
 });
 
 test('price-only WebSocket ticks retain the official close and never become daily change', () => {
@@ -235,13 +235,16 @@ test('renders unavailable measurements truthfully while preserving provider zero
   assert.equal(formatEmployeeCount(null), '—');
 });
 
-test('exposes partial and stale warnings but leaves complete rows quiet', () => {
-  assert.match(getWatchlistDataWarning({ data_status: 'partial' }), /Partial data/);
-  assert.match(getWatchlistDataWarning({ data_status: 'stale' }), /Stale data/);
-  assert.match(getWatchlistDataWarning({
+test('exposes one explicit fundamentals warning but leaves complete rows quiet', () => {
+  assert.equal(getWatchlistDataWarning({ data_status: 'partial' }), 'Fundamentals temporarily unavailable.');
+  assert.equal(getWatchlistDataWarning({ data_status: 'stale' }), 'Last known fundamentals');
+  assert.equal(getWatchlistDataWarning({
     data_status: 'stale',
     provider_status: { finnhub: 'healthy', yfinance: 'degraded' },
-  }), /Stale fundamentals/);
+  }), 'Last known fundamentals');
+  assert.equal(getWatchlistDataWarning({
+    data_status: 'complete', fundamentals_status: 'stale', fundamentals_is_stale: true,
+  }), 'Last known fundamentals');
   assert.equal(getWatchlistDataWarning({ data_status: 'complete' }), null);
 });
 

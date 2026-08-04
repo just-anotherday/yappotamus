@@ -120,6 +120,9 @@ export interface WatchlistItem {
   // Fields filled by yfinance enrichment (when primary is Finnhub)
   yf_enriched_fields?: string[];
   data_status?: WatchlistDataStatus;
+  fundamentals_status?: WatchlistDataStatus;
+  fundamentals_as_of?: string | null;
+  fundamentals_is_stale?: boolean;
   provider_status?: Partial<Record<"finnhub" | "yfinance", ProviderState>>;
   missing_fields?: string[];
 }

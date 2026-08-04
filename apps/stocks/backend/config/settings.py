@@ -396,6 +396,28 @@ class Settings:
         )
 
     @property
+    def MARKET_DATA_BATCH_BUDGET_S(self) -> float:
+        """Total synchronous watchlist budget before partial results are returned."""
+        return self._number("MARKET_DATA_BATCH_BUDGET_S", "8", float, minimum=0.1)
+
+    @property
+    def HYBRID_REFRESH_BACKOFF_S(self) -> float:
+        """Per-symbol delay after a failed background fundamentals refresh."""
+        return self._number("HYBRID_REFRESH_BACKOFF_S", "30", float, minimum=0.1)
+
+    @property
+    def HYBRID_BACKGROUND_REFRESH_TIMEOUT_S(self) -> float:
+        """Hard lifetime for one off-path fundamentals refresh."""
+        return self._number(
+            "HYBRID_BACKGROUND_REFRESH_TIMEOUT_S", "45", float, minimum=0.1
+        )
+
+    @property
+    def HYBRID_SHUTDOWN_TIMEOUT_S(self) -> float:
+        """Maximum shutdown wait for non-cancellable provider threads."""
+        return self._number("HYBRID_SHUTDOWN_TIMEOUT_S", "5", float, minimum=0.1)
+
+    @property
     def YFINANCE_CACHE_DIR(self) -> Optional[str]:
         """Optional writable yfinance cache directory."""
         return (os.getenv("YFINANCE_CACHE_DIR") or "").strip() or None

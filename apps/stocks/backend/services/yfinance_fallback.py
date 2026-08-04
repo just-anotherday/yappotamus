@@ -14,6 +14,7 @@ securities as STOCK, ETF, INDEX, CRYPTO, ADR, or UNKNOWN.
 
 import logging
 import math
+import socket
 import threading
 import time
 from numbers import Real
@@ -22,6 +23,7 @@ from typing import Any, Dict, List, Optional
 import yfinance as yf
 from yfinance.exceptions import YFRateLimitError
 
+from backend.lib.constants import KNOWN_ETF_NAMES
 from backend.lib.error_fallback import create_error_fallback
 from backend.lib.market_data_normalization import normalize_market_data_payload
 from backend.lib.risk_metrics import _compute_composite_risk, _safe_pct
@@ -33,42 +35,62 @@ _YFINANCE_COOLDOWN_SECONDS = 120
 _yfinance_cooldown_until = 0.0
 _yfinance_last_failure_class: Optional[str] = None
 _yfinance_cooldown_lock = threading.Lock()
+_yfinance_half_open_probe_in_progress = False
+
+_COOLDOWN_FAILURES = {"rate_limit", "invalid_crumb", "unauthorized"}
 
 
-def _classify_yfinance_outage(exception: BaseException) -> Optional[str]:
-    """Classify only explicit Yahoo rate-limit or access failures."""
+def _raise_programmer_error(exception: BaseException) -> None:
+    """Do not convert coding/test-contract failures into provider degradation."""
+    if isinstance(exception, (AssertionError, NameError, UnboundLocalError)):
+        raise exception
+
+
+def _classify_yfinance_outage(exception: BaseException) -> str:
+    """Normalize provider failures without relying on exception class names alone."""
     message = str(exception).strip().casefold()
     if "invalid crumb" in message:
         return "invalid_crumb"
     if isinstance(exception, YFRateLimitError):
-        return "yf_rate_limit"
+        return "rate_limit"
 
     response = getattr(exception, "response", None)
     status_code = getattr(exception, "status_code", None) or getattr(
         response, "status_code", None
     )
     if status_code == 429:
-        return "http_429"
+        return "rate_limit"
     if "too many requests" in message or "http 429" in message:
-        return "rate_limited"
-    if any(marker in message for marker in ("unauthorized", "access denied", "forbidden")):
-        return "yahoo_access_denied"
-    return None
+        return "rate_limit"
+    if status_code in {401, 403} or any(
+        marker in message for marker in ("unauthorized", "access denied", "forbidden")
+    ):
+        return "unauthorized"
+    if isinstance(exception, (TimeoutError, socket.timeout)) or "timed out" in message or "timeout" in message:
+        return "timeout"
+    if any(marker in message for marker in ("json", "decode", "parse")):
+        return "parse_error"
+    if any(marker in message for marker in ("empty response", "no data", "no info")):
+        return "empty_response"
+    if any(marker in message for marker in ("unsupported", "not applicable")):
+        return "unsupported_field"
+    return "transport_error"
 
 
 def _record_yfinance_outage_failure(exception: BaseException) -> Optional[str]:
     """Open the bounded process-local cooldown for a recognized Yahoo outage."""
     failure_class = _classify_yfinance_outage(exception)
-    if failure_class is None:
+    if failure_class not in _COOLDOWN_FAILURES:
         return None
 
-    global _yfinance_cooldown_until, _yfinance_last_failure_class
+    global _yfinance_cooldown_until, _yfinance_last_failure_class, _yfinance_half_open_probe_in_progress
     with _yfinance_cooldown_lock:
         now = time.monotonic()
         opened = now >= _yfinance_cooldown_until
         if opened:
             _yfinance_cooldown_until = now + _YFINANCE_COOLDOWN_SECONDS
             _yfinance_last_failure_class = failure_class
+            _yfinance_half_open_probe_in_progress = False
     if opened:
         logger.warning(
             "[YF-Fallback] event=yfinance_cooldown_opened failure_class=%s cooldown_seconds=%s",
@@ -80,36 +102,39 @@ def _record_yfinance_outage_failure(exception: BaseException) -> Optional[str]:
     return failure_class
 
 
-def _invalidate_yfinance_crumb() -> None:
-    """Discard only the shared anonymous Yahoo crumb/cookie state for one retry."""
-    try:
-        from yfinance.data import YfData
-
-        data = YfData()
-        with data._cookie_lock:
-            data._crumb = None
-            if not getattr(data, "_logged_in", False):
-                data._cookie = None
-        logger.info("[YF-Fallback] event=yfinance_crumb_reset")
-    except Exception as exc:
-        logger.debug("[YF-Fallback] event=yfinance_crumb_reset_failed exception_type=%s", type(exc).__name__)
-
-
 def _load_yfinance_info(ticker: str) -> tuple[yf.Ticker, Dict[str, Any]]:
-    """Fetch metadata with at most one bounded retry for an expired crumb."""
-    for attempt in range(2):
-        ticker_obj = yf.Ticker(ticker.upper())
-        try:
-            info = ticker_obj.info
-        except Exception as exc:
-            if attempt == 0 and _classify_yfinance_outage(exc) == "invalid_crumb":
-                _invalidate_yfinance_crumb()
-                continue
-            raise
-        if info:
-            return ticker_obj, info
-        return ticker_obj, {}
-    return yf.Ticker(ticker.upper()), {}
+    """Fetch metadata once; yfinance owns its cookie-strategy switching internally."""
+    ticker_obj = yf.Ticker(ticker.upper())
+    return ticker_obj, ticker_obj.info or {}
+
+
+def _begin_yfinance_fundamentals_attempt() -> tuple[bool, Optional[str], bool]:
+    """Atomically authorize a normal attempt or the sole half-open probe."""
+    global _yfinance_half_open_probe_in_progress
+    now = time.monotonic()
+    with _yfinance_cooldown_lock:
+        if now < _yfinance_cooldown_until:
+            return False, "cooldown_open", False
+        if _yfinance_last_failure_class in _COOLDOWN_FAILURES:
+            if _yfinance_half_open_probe_in_progress:
+                return False, "cooldown_open", False
+            _yfinance_half_open_probe_in_progress = True
+            return True, _yfinance_last_failure_class, True
+        return True, None, False
+
+
+def _complete_yfinance_fundamentals_attempt(*, probe: bool, succeeded: bool) -> None:
+    """Close a half-open probe, clearing the outage only after provider success."""
+    global _yfinance_cooldown_until, _yfinance_last_failure_class, _yfinance_half_open_probe_in_progress
+    if not probe:
+        return
+    with _yfinance_cooldown_lock:
+        _yfinance_half_open_probe_in_progress = False
+        if succeeded:
+            _yfinance_cooldown_until = 0.0
+            _yfinance_last_failure_class = None
+        else:
+            _yfinance_cooldown_until = time.monotonic() + _YFINANCE_COOLDOWN_SECONDS
 
 
 def _yfinance_cooldown_status() -> tuple[bool, Optional[str]]:
@@ -121,10 +146,11 @@ def _yfinance_cooldown_status() -> tuple[bool, Optional[str]]:
 
 def _reset_yfinance_cooldown_for_tests() -> None:
     """Reset bounded process-local cooldown state for test isolation."""
-    global _yfinance_cooldown_until, _yfinance_last_failure_class
+    global _yfinance_cooldown_until, _yfinance_last_failure_class, _yfinance_half_open_probe_in_progress
     with _yfinance_cooldown_lock:
         _yfinance_cooldown_until = 0.0
         _yfinance_last_failure_class = None
+        _yfinance_half_open_probe_in_progress = False
 
 
 # ==============================================================================
@@ -240,7 +266,7 @@ def _resolve_market_cap(info: Dict[str, Any], security_type: str, current_price:
 
 
 def _resolve_fund_assets(info: Dict[str, Any]) -> float | None:
-    for field in ("totalAssets", "netAssets", "fundTotalAssets"):
+    for field in ("totalAssets", "netAssets"):
         value = _positive_market_number(info.get(field))
         if value is not None:
             return value
@@ -248,22 +274,11 @@ def _resolve_fund_assets(info: Dict[str, Any]) -> float | None:
 
 
 def _resolve_fund_assets_with_source(info: Dict[str, Any]) -> tuple[float | None, str | None]:
-    for field in ("totalAssets", "netAssets", "fundTotalAssets"):
+    for field in ("totalAssets", "netAssets"):
         value = _positive_market_number(info.get(field))
         if value is not None:
             return value, f"yfinance_info.{field}"
     return None, None
-
-def _resolve_fund_assets_from_metadata(ticker_obj: yf.Ticker) -> float | None:
-    """Read yfinance 1.5 ``funds_data.fund_operations`` total net assets."""
-    try:
-        operations = ticker_obj.funds_data.fund_operations
-        value = operations.loc["Total Net Assets", ticker_obj.ticker]
-    except Exception as exc:
-        logger.debug("[YF-ETF] Fund metadata unavailable for %s: %s", ticker_obj.ticker, type(exc).__name__)
-        return None
-    return _positive_market_number(value)
-
 
 def _resolve_etf_market_cap(
     ticker_obj: yf.Ticker, info: Dict[str, Any]
@@ -280,6 +295,7 @@ def _resolve_etf_market_cap(
         except (KeyError, TypeError):
             raw_value = getattr(fast_info, "market_cap", None)
     except Exception as exc:
+        _raise_programmer_error(exc)
         logger.debug(
             "[YF-ETF] Fast market cap unavailable for %s: %s",
             ticker_obj.ticker,
@@ -291,23 +307,27 @@ def _resolve_etf_market_cap(
 
 def _resolve_shares_outstanding(info: Dict[str, Any], is_etf_flag: bool) -> int | None:
     """Resolve shares outstanding, computing from NAV for ETFs when needed."""
-    value = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
-    if not value and is_etf_flag:
-        total_assets = info.get("totalAssets") or info.get("netAssets")
-        nav_price = info.get("navPrice")
-        if total_assets and nav_price and nav_price > 0:
-            value = int(total_assets / nav_price)
-    return int(value) if value else None
+    value = _positive_market_number(
+        info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+    )
+    if value is None and is_etf_flag:
+        total_assets = _positive_market_number(
+            info.get("totalAssets") or info.get("netAssets")
+        )
+        nav_price = _positive_market_number(info.get("navPrice"))
+        if total_assets is not None and nav_price is not None:
+            value = total_assets / nav_price
+    return int(value) if value is not None else None
 
 
 def _resolve_float_shares(
     info: Dict[str, Any], shares_outstanding: int | None, is_etf_flag: bool
 ) -> int | None:
     """Resolve float shares, using outstanding as fallback for ETFs."""
-    value = info.get("floatShares")
-    if is_etf_flag and not value:
-        value = shares_outstanding
-    return int(value) if value else None
+    value = _positive_market_number(info.get("floatShares"))
+    if is_etf_flag and value is None:
+        value = _positive_market_number(shares_outstanding)
+    return int(value) if value is not None else None
 
 
 def _resolve_beta(info: Dict[str, Any]) -> float | None:
@@ -336,12 +356,6 @@ def _assemble_price_fields(info: Dict[str, Any]) -> Dict[str, Any]:
     
     previous_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
 
-    change = round(current_price - previous_close, 2) if current_price and previous_close else None
-    change_pct = _safe_pct(
-        (current_price - previous_close) if current_price and previous_close else 0,
-        previous_close,
-    ) if previous_close else None
-
     return {
         "current_price": current_price,
         "open_price": info.get("open") or info.get("regularMarketOpen"),
@@ -350,63 +364,206 @@ def _assemble_price_fields(info: Dict[str, Any]) -> Dict[str, Any]:
         "day_high": info.get("dayHigh") or info.get("regularMarketDayHigh"),
         "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
         "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
-        "change": change,
-        "change_percent": change_pct,
-        "volume": (
-            int(info["regularMarketVolume"])
-            if info.get("regularMarketVolume") is not None
-            else None
-        ),
+        "change": None,
+        "change_percent": None,
+        "volume": info.get("regularMarketVolume"),
     }
 
 
-def _assemble_risk_fields(beta: float | None, current_price: float | None, info: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_price_fields(fields: Dict[str, Any]) -> None:
+    """Reject placeholder numerics and keep range/change fields internally consistent."""
+    for field in (
+        "current_price", "open_price", "previous_close", "day_low", "day_high",
+        "fifty_two_week_high", "fifty_two_week_low",
+    ):
+        fields[field] = _positive_market_number(fields.get(field))
+    volume = fields.get("volume")
+    if isinstance(volume, bool) or not isinstance(volume, Real) or not math.isfinite(float(volume)) or volume < 0:
+        fields["volume"] = None
+    else:
+        fields["volume"] = int(volume)
+    high = fields.get("fifty_two_week_high")
+    low = fields.get("fifty_two_week_low")
+    if high is not None and low is not None and low > high:
+        fields["fifty_two_week_high"] = None
+        fields["fifty_two_week_low"] = None
+    current = fields.get("current_price")
+    previous = fields.get("previous_close")
+    if current is not None and previous is not None:
+        fields["change"] = round(current - previous, 2)
+        fields["change_percent"] = _safe_pct(current - previous, previous)
+    else:
+        fields["change"] = None
+        fields["change_percent"] = None
+
+
+def _fast_info_value(fast_info: Any, *names: str) -> Any:
+    for name in names:
+        try:
+            value = fast_info[name]
+        except (KeyError, TypeError):
+            value = getattr(fast_info, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _recover_fast_info_fields(ticker_obj: yf.Ticker, fields: Dict[str, Any]) -> None:
+    """Fill only missing quote/range fields from the independent fast-info path."""
+    mapping = {
+        "current_price": ("last_price", "lastPrice"),
+        "previous_close": ("previous_close", "previousClose"),
+        "open_price": ("open",),
+        "day_low": ("day_low", "dayLow"),
+        "day_high": ("day_high", "dayHigh"),
+        "fifty_two_week_low": ("year_low", "yearLow"),
+        "fifty_two_week_high": ("year_high", "yearHigh"),
+        "volume": ("last_volume", "lastVolume"),
+    }
+    if all(fields.get(output_field) is not None for output_field in mapping):
+        return
+    fast_info = ticker_obj.fast_info
+    for output_field, names in mapping.items():
+        if fields.get(output_field) is None:
+            value = _fast_info_value(fast_info, *names)
+            if output_field == "volume":
+                normalized = _finite_real(value)
+                if normalized is not None and normalized >= 0:
+                    fields[output_field] = int(normalized)
+            elif _positive_market_number(value) is not None:
+                fields[output_field] = float(value)
+
+
+def _recover_history_fields(
+    ticker_obj: yf.Ticker,
+    fields: Dict[str, Any],
+    cached_fields: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Use one bounded one-year history request for range/volume gaps only."""
+    wanted = {
+        "fifty_two_week_high": "High",
+        "fifty_two_week_low": "Low",
+        "volume": "Volume",
+    }
+    cached_fields = cached_fields or {}
+    missing = {
+        name for name in wanted
+        if fields.get(name) is None and _positive_market_number(cached_fields.get(name)) is None
+    }
+    if not missing:
+        return
+    history = ticker_obj.history(period="1y", auto_adjust=True, keepna=True, timeout=10)
+    if history is None or getattr(history, "empty", True):
+        return
+    recovered: Dict[str, Any] = {}
+    for output_field, column_name in wanted.items():
+        if output_field not in missing or column_name not in history:
+            continue
+        series = history[column_name].dropna()
+        if getattr(series, "empty", True):
+            continue
+        if output_field == "fifty_two_week_high":
+            value = series.max()
+        elif output_field == "fifty_two_week_low":
+            value = series.min()
+        else:
+            value = series.iloc[-1]
+        if output_field == "volume":
+            normalized = _finite_real(value)
+            if normalized is not None and normalized >= 0:
+                recovered[output_field] = int(normalized)
+        elif _positive_market_number(value) is not None:
+            recovered[output_field] = float(value)
+    candidate_high = recovered.get("fifty_two_week_high", fields.get("fifty_two_week_high"))
+    candidate_low = recovered.get("fifty_two_week_low", fields.get("fifty_two_week_low"))
+    if candidate_high is not None and candidate_low is not None and candidate_low > candidate_high:
+        recovered.pop("fifty_two_week_high", None)
+        recovered.pop("fifty_two_week_low", None)
+    fields.update(recovered)
+
+
+def _assemble_risk_fields(
+    beta: float | None,
+    current_price: float | None,
+    info: Dict[str, Any],
+    high: float | None,
+    low: float | None,
+) -> Dict[str, Any]:
     """Extract risk + demand signal fields."""
-    short_pct = info.get("shortPercentOfFloat")
-    debt_to_equity = info.get("debtToEquity")
-    high = info.get("fiftyTwoWeekHigh")
-    low = info.get("fiftyTwoWeekLow")
+    short_pct = _nonnegative_real(info.get("shortPercentOfFloat"))
+    debt_to_equity = _finite_real(info.get("debtToEquity"))
     inputs = (beta, short_pct, debt_to_equity, high, low, current_price)
     risk = (
         _compute_composite_risk(
             beta=float(beta), short_pct_of_float=float(short_pct), debt_eq=float(debt_to_equity),
             high52=float(high), low52=float(low), current_price=float(current_price),
         )
-        if all(isinstance(value, Real) and math.isfinite(float(value)) for value in inputs)
+        if all(value is not None for value in inputs) and low <= high
         else None
     )
     return {
         "beta": beta,
         "short_percent_of_float": round(short_pct, 4) if short_pct is not None else None,
-        "shares_short": int(info["sharesShort"]) if info.get("sharesShort") is not None else None,
-        "insider_percent": round(info["heldPercentInsiders"], 4) if info.get("heldPercentInsiders") is not None else None,
-        "institution_percent": round(info["heldPercentInstitutions"], 4) if info.get("heldPercentInstitutions") is not None else None,
+        "shares_short": _positive_int(info.get("sharesShort")),
+        "insider_percent": _rounded_nonnegative(info.get("heldPercentInsiders")),
+        "institution_percent": _rounded_nonnegative(info.get("heldPercentInstitutions")),
         "debt_to_equity": debt_to_equity,
         "overall_risk": risk,
     }
 
 
+def _finite_real(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    normalized = float(value)
+    return normalized if math.isfinite(normalized) else None
+
+
+def _positive_int(value: Any) -> int | None:
+    normalized = _positive_market_number(value)
+    return int(normalized) if normalized is not None else None
+
+
+def _nonnegative_real(value: Any) -> float | None:
+    normalized = _finite_real(value)
+    return normalized if normalized is not None and normalized >= 0 else None
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    normalized = _nonnegative_real(value)
+    return int(normalized) if normalized is not None else None
+
+
+def _rounded_nonnegative(value: Any) -> float | None:
+    normalized = _nonnegative_real(value)
+    return round(normalized, 4) if normalized is not None else None
+
+
 def _assemble_analyst_fields(info: Dict[str, Any]) -> Dict[str, Any]:
     """Extract analyst target and recommendation fields."""
     return {
-        "target_mean_price": info.get("targetMeanPrice"),
-        "target_median_price": info.get("targetMedianPrice"),
-        "target_high_price": info.get("targetHighPrice"),
-        "target_low_price": info.get("targetLowPrice"),
+        "target_mean_price": _positive_market_number(info.get("targetMeanPrice")),
+        "target_median_price": _positive_market_number(info.get("targetMedianPrice")),
+        "target_high_price": _positive_market_number(info.get("targetHighPrice")),
+        "target_low_price": _positive_market_number(info.get("targetLowPrice")),
         "recommendation_key": info.get("recommendationKey") or None,
-        "number_of_analysts": info.get("numberOfAnalystOpinions"),
+        "number_of_analysts": _nonnegative_int(info.get("numberOfAnalystOpinions")),
     }
 
 
 def _extract_ceo_name(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Optional[str]:
-    """Extract CEO name from yfinance.
-
-    NOTE: CEO enrichment via ticker.officers makes a separate HTTP call per ticker
-    and adds ~15-20s to batch watchlist loads (22+ tickers × 0.5-1s each).
-    Disabled by default to keep API response times fast (~3-5s for full watchlist).
-    Re-enable only if you accept the latency trade-off, or move to background task.
-    """
-    # Fast path: skip the slow ticker.officers HTTP call (TD-CQ fix — CEO enrichment latency)
+    """Read CEO only from already-fetched info; never call ``ticker.officers``."""
+    officers = info.get("companyOfficers")
+    if isinstance(officers, list):
+        for officer in officers:
+            if not isinstance(officer, dict):
+                continue
+            title = str(officer.get("title") or "").casefold()
+            name = officer.get("name")
+            if (
+                "chief executive officer" in title or title == "ceo"
+            ) and isinstance(name, str) and name.strip():
+                return name.strip()
     return None
 
 
@@ -418,21 +575,17 @@ def _resolve_fund_name(info: Dict[str, Any], ticker: str) -> str:
             return value.strip()
     return ticker.upper()
 def _assemble_company_fields(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract company profile fields.
-
-    NOTE: ticker_obj is passed but CEO extraction is disabled for performance.
-    The parameter is retained for future re-enablement if needed.
-    """
+    """Extract company profile fields without additional provider calls."""
     return {
         "company_name": _resolve_fund_name(info, ticker_obj.ticker),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
         "long_business_summary": info.get("longBusinessSummary"),
         "website": info.get("website"),
-        "full_time_employees": info.get("fullTimeEmployees"),
+        "full_time_employees": _positive_int(info.get("fullTimeEmployees")),
         "average_analyst_rating": info.get("recommendationKey"),
         "forward_pe": info.get("forwardPE"),
-        "ceo_name": None,  # CEO enrichment moved to background (disabled for latency)
+        "ceo_name": _extract_ceo_name(ticker_obj, info),
         "exchange": info.get("exchange"),
     }
 
@@ -468,6 +621,7 @@ def _fetch_etf_data_lazy(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Optiona
         if holdings:
             etf_data["top_holdings"] = holdings
     except Exception as e:
+        _raise_programmer_error(e)
         logger.debug("[YF-ETF] Failed to fetch holdings for %s: %s", ticker_obj.ticker, e)
         etf_data["top_holdings"] = None
     
@@ -477,6 +631,7 @@ def _fetch_etf_data_lazy(ticker_obj: yf.Ticker, info: Dict[str, Any]) -> Optiona
         if sector_alloc:
             etf_data["sector_allocation"] = sector_alloc
     except Exception as e:
+        _raise_programmer_error(e)
         logger.debug("[YF-ETF] Failed to fetch sector allocation for %s: %s", ticker_obj.ticker, e)
         etf_data["sector_allocation"] = None
     
@@ -493,7 +648,8 @@ def _format_date(date_val: Any) -> Optional[str]:
             from datetime import datetime
             return datetime.fromtimestamp(date_val).strftime("%Y-%m-%d")
         return str(date_val)
-    except Exception:
+    except Exception as exc:
+        _raise_programmer_error(exc)
         return None
 
 
@@ -522,18 +678,8 @@ def _get_top_holdings(ticker_obj: yf.Ticker) -> Optional[List[Dict[str, Any]]]:
                     "weight": float(row.get("Weight", 0)),
                 })
             return result[:10]  # Limit to top 10
-    except Exception:
-        pass
-    
-    # Fallback: try ETF specific holdings attribute
-    try:
-        info = ticker_obj.info
-        if info.get("holdings"):
-            raw_holdings = info["holdings"]
-            if isinstance(raw_holdings, list):
-                return [{"name": str(h), "ticker": "", "weight": 0} for h in raw_holdings[:10]]
-    except Exception:
-        pass
+    except Exception as exc:
+        _raise_programmer_error(exc)
     
     return None
 
@@ -558,7 +704,11 @@ def _get_sector_allocation(info: Dict[str, Any]) -> Optional[List[Dict[str, Any]
 # Main API Functions
 # ==============================================================================
 
-def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
+def get_stock_price_yf(
+    ticker: str,
+    *,
+    cached_fundamentals: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Fetch stock data via yfinance (fallback). Returns None on failure.
     
     Includes dynamic security type detection and lazy ETF data fetching.
@@ -573,13 +723,21 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
 
     configure_yfinance_cache(yf)
     try:
-        ticker_obj, info = _load_yfinance_info(ticker)
-        if not info:
-            logger.warning("[YF-Fallback] No info for %s", ticker)
-            return None
+        ticker_obj = yf.Ticker(ticker.upper())
+        info_error: BaseException | None = None
+        try:
+            info = ticker_obj.info or {}
+        except Exception as exc:
+            _raise_programmer_error(exc)
+            info_error = exc
+            if _classify_yfinance_outage(exc) in _COOLDOWN_FAILURES:
+                raise
+            info = {}
 
         security_type = _detect_security_type(info)
-        etf = _is_etf(info)
+        if security_type == "UNKNOWN" and ticker.upper() in KNOWN_ETF_NAMES:
+            security_type = "ETF"
+        etf = security_type == "ETF"
         # Prefer post-market price for after-hours trading, fall back to regular market price
         current_price = info.get("postMarketPrice") or info.get("currentPrice") or info.get("regularMarketPrice")
         beta = _resolve_beta(info)
@@ -593,19 +751,45 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
             "provider_status": {"finnhub": "degraded", "yfinance": "healthy"},
         }
         result.update(_assemble_company_fields(ticker_obj, info))
-        result.update(_assemble_price_fields(info))
+        if security_type == "ETF":
+            for field in ("ceo_name", "full_time_employees", "average_analyst_rating", "forward_pe"):
+                result[field] = None
+        if security_type == "ETF" and not result.get("long_business_summary"):
+            try:
+                description = ticker_obj.funds_data.description
+            except Exception as exc:
+                _raise_programmer_error(exc)
+                logger.debug("[YF-ETF] Fund description unavailable for %s: %s", ticker, type(exc).__name__)
+            else:
+                if isinstance(description, str) and description.strip():
+                    result["long_business_summary"] = description.strip()
+        price_fields = _assemble_price_fields(info)
+        _normalize_price_fields(price_fields)
+        try:
+            _recover_fast_info_fields(ticker_obj, price_fields)
+        except Exception as exc:
+            _raise_programmer_error(exc)
+            logger.debug("[YF-Fallback] fast_info unavailable for %s: %s", ticker, type(exc).__name__)
+        try:
+            _normalize_price_fields(price_fields)
+            _recover_history_fields(ticker_obj, price_fields, cached_fundamentals)
+        except Exception as exc:
+            _raise_programmer_error(exc)
+            logger.debug("[YF-Fallback] history unavailable for %s: %s", ticker, type(exc).__name__)
+        _normalize_price_fields(price_fields)
+        result.update(price_fields)
+        current_price = result.get("current_price")
+        if not info and not any(
+            _positive_market_number(result.get(field)) is not None
+            for field in ("current_price", "previous_close", "fifty_two_week_high", "fifty_two_week_low", "volume")
+        ):
+            if info_error is not None:
+                raise info_error
+            raise RuntimeError("empty response")
         result["market_size_currency"] = info.get("currency") or info.get("financialCurrency")
         result["market_cap"], result["market_size_fallback_used"] = _resolve_market_cap(info, security_type, current_price)
         if security_type == "ETF":
             fund_assets, fund_assets_source = _resolve_fund_assets_with_source(info)
-            fund_assets_from_metadata = False
-            if fund_assets is None:
-                fund_assets = _resolve_fund_assets_from_metadata(ticker_obj)
-                fund_assets_from_metadata = fund_assets is not None
-                if fund_assets_from_metadata:
-                    fund_assets_source = "yfinance_funds_data.fund_operations.Total Net Assets"
-            if fund_assets_from_metadata:
-                result["market_size_currency"] = None
             result["fund_assets"] = fund_assets
             result["fund_assets_source"] = fund_assets_source
             etf_market_cap, etf_market_cap_source = (
@@ -625,7 +809,13 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
         
         # Only include stock-specific risk fields for STOCKs
         if security_type == "STOCK":
-            result.update(_assemble_risk_fields(beta, current_price, info))
+            result.update(_assemble_risk_fields(
+                beta,
+                current_price,
+                info,
+                result.get("fifty_two_week_high"),
+                result.get("fifty_two_week_low"),
+            ))
         
         # Beta is always useful
         result["beta"] = beta
@@ -647,13 +837,16 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
         )
         return normalized
     except Exception as exc:
-        failure_class = _record_yfinance_outage_failure(exc)
-        if failure_class is None:
-            logger.error(
-                "[YF-Fallback] Failed for %s: exception_type=%s",
-                ticker,
-                type(exc).__name__,
-            )
+        _raise_programmer_error(exc)
+        failure_class = _classify_yfinance_outage(exc)
+        _record_yfinance_outage_failure(exc)
+        logger.log(
+            logging.WARNING if failure_class in _COOLDOWN_FAILURES else logging.ERROR,
+            "[YF-Fallback] Failed for %s: failure_class=%s exception_type=%s",
+            ticker,
+            failure_class,
+            type(exc).__name__,
+        )
         return None
 
 

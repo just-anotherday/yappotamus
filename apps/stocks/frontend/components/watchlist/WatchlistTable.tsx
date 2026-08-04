@@ -277,6 +277,11 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                           <span className="text-gray-500 text-xs truncate max-w-[120px]">
                             {item.company_name || "Unknown Company"}
                           </span>
+                          {dataWarning && (
+                            <span role="status" className="mt-1 max-w-[150px] whitespace-normal text-[10px] font-medium text-amber-700" title={dataWarning}>
+                              {dataWarning}
+                            </span>
+                          )}
                         </div>
                         <TickerTooltip item={item} />
                       </td>
@@ -384,11 +389,6 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               {item.long_business_summary && (
                                 <p className="text-gray-600 text-sm leading-relaxed whitespace-pre-line">
                                   {item.long_business_summary}
-                                </p>
-                              )}
-                              {dataWarning && (
-                                <p role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800" title={dataWarning}>
-                                  {dataWarning}
                                 </p>
                               )}
                                {/* Badges: Market Cap Size, Analyst Rec */}

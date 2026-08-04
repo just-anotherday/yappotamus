@@ -45,10 +45,11 @@ def _stock_payload(ticker: str, *, source: str = "yf") -> dict:
 
 
 @pytest.fixture(autouse=True)
-def clear_hybrid_cache():
+async def clear_hybrid_cache(monkeypatch):
     hybrid_data_service._cache.clear()
     yfinance_fallback._reset_yfinance_cooldown_for_tests()
     yield
+    await hybrid_data_service.shutdown_hybrid_data_service()
     hybrid_data_service._cache.clear()
     yfinance_fallback._reset_yfinance_cooldown_for_tests()
 
@@ -56,11 +57,11 @@ def clear_hybrid_cache():
 @pytest.mark.parametrize(
     ("exception", "expected_class"),
     [
-        (yfinance_fallback.YFRateLimitError(), "yf_rate_limit"),
-        (RuntimeError("Too Many Requests"), "rate_limited"),
-        (RuntimeError("HTTP 429"), "rate_limited"),
+        (yfinance_fallback.YFRateLimitError(), "rate_limit"),
+        (RuntimeError("Too Many Requests"), "rate_limit"),
+        (RuntimeError("HTTP 429"), "rate_limit"),
         (RuntimeError("Invalid Crumb"), "invalid_crumb"),
-        (RuntimeError("Yahoo unauthorized"), "yahoo_access_denied"),
+        (RuntimeError("Yahoo unauthorized"), "unauthorized"),
     ],
 )
 def test_yfinance_cooldown_opens_for_recognized_outages(
@@ -1085,7 +1086,7 @@ async def test_identity_only_etf_uses_stale_assets_without_overwriting_them(monk
     assert result["market_size_status"] == "stale_cache"
 
 
-def test_invalid_crumb_is_distinct_and_retries_once_with_reset(monkeypatch):
+def test_invalid_crumb_is_distinct_and_does_not_mutate_private_auth_state(monkeypatch):
     calls: list[str] = []
 
     class FakeTicker:
@@ -1094,18 +1095,15 @@ def test_invalid_crumb_is_distinct_and_retries_once_with_reset(monkeypatch):
 
         @property
         def info(self):
-            if calls.count("ticker") == 1:
-                raise RuntimeError("Invalid Crumb")
-            return {"quoteType": "ETF"}
+            raise RuntimeError("Invalid Crumb")
 
     monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
-    monkeypatch.setattr(yfinance_fallback, "_invalidate_yfinance_crumb", lambda: calls.append("reset"))
 
-    _ticker, info = yfinance_fallback._load_yfinance_info("SPY")
+    with pytest.raises(RuntimeError, match="Invalid Crumb"):
+        yfinance_fallback._load_yfinance_info("SPY")
 
     assert yfinance_fallback._classify_yfinance_outage(RuntimeError("Invalid Crumb")) == "invalid_crumb"
-    assert info == {"quoteType": "ETF"}
-    assert calls == ["ticker", "reset", "ticker"]
+    assert calls == ["ticker"]
 
 
 @pytest.mark.asyncio
@@ -1213,7 +1211,7 @@ async def test_partial_refresh_uses_bounded_stale_complete_metadata(monkeypatch)
     result = await hybrid_data_service.get_hybrid_stock_price("ORI")
 
     assert result["data_status"] == "stale"
-    assert result["current_price"] == 44
+    assert result["current_price"] == 42
     assert result["fifty_two_week_high"] == 47
     assert hybrid_data_service._cache["ORI"][1] < time.time() - hybrid_data_service._CACHE_TTL
 
@@ -1272,7 +1270,7 @@ def test_tsm_direct_provider_market_cap_never_uses_calculated_fallback():
     assert cap == 2_090_000_000_000
     assert fallback is False
 
-@pytest.mark.parametrize("field", ["totalAssets", "netAssets", "fundTotalAssets"])
+@pytest.mark.parametrize("field", ["totalAssets", "netAssets"])
 def test_etf_info_asset_fields_and_names_are_supported(monkeypatch, field):
     class FakeTicker:
         ticker = "SPY"
@@ -1291,18 +1289,18 @@ def test_etf_info_asset_fields_and_names_are_supported(monkeypatch, field):
     assert item.market_size_currency is None
 
 
-def test_fund_operations_uses_row_then_ticker_column_and_keeps_currency_unknown(monkeypatch):
+def test_fund_operations_total_net_assets_is_not_used(monkeypatch):
     class FakeTicker:
         ticker = "DIA"
         holdings = None
         info = {"quoteType": "ETF", "currentPrice": 1, "currency": "USD"}
-        def __init__(self, _ticker):
-            self.funds_data = type("Funds", (), {"fund_operations": pd.DataFrame({"DIA": [np.float64(700)], "Category Average": [1]}, index=["Total Net Assets"])})()
+        funds_data = type("Funds", (), {"description": None})()
+        def __init__(self, _ticker): pass
     monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
     monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
     item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("DIA"))
-    assert (item.market_cap, item.fund_assets, item.market_size_value, item.market_size_currency) == (None, 700, 700, None)
-    assert item.market_size_source == "yfinance_funds_data.fund_operations.Total Net Assets"
+    assert (item.market_cap, item.fund_assets, item.market_size_value) == (None, None, None)
+    assert item.market_size_source is None
 
 
 def test_etf_info_market_cap_is_a_distinct_market_size_fallback(monkeypatch):
@@ -1390,6 +1388,13 @@ def test_fund_assets_take_precedence_over_etf_market_cap_without_fast_info_call(
         info = {
             "quoteType": "ETF",
             "currentPrice": 200,
+            "previousClose": 199,
+            "open": 199,
+            "dayLow": 198,
+            "dayHigh": 201,
+            "fiftyTwoWeekLow": 150,
+            "fiftyTwoWeekHigh": 210,
+            "regularMarketVolume": 100,
             "totalAssets": 80_000_000_000,
             "marketCap": 79_000_000_000,
             "currency": "USD",

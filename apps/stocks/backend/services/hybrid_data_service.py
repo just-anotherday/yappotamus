@@ -19,6 +19,7 @@ import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from backend.config.settings import settings
@@ -45,8 +46,90 @@ _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="yf-fallback")
 _CACHE_TTL = settings.HYBRID_CACHE_TTL_S  # default 5 minutes
 _STALE_CACHE_TTL = settings.HYBRID_STALE_CACHE_TTL_S
 _PROVIDER_TIMEOUT_S = settings.MARKET_DATA_PROVIDER_TIMEOUT_S
+_BATCH_BUDGET_S = settings.MARKET_DATA_BATCH_BUDGET_S
+_REFRESH_BACKOFF_S = settings.HYBRID_REFRESH_BACKOFF_S
+_BACKGROUND_REFRESH_TIMEOUT_S = settings.HYBRID_BACKGROUND_REFRESH_TIMEOUT_S
+_SHUTDOWN_TIMEOUT_S = settings.HYBRID_SHUTDOWN_TIMEOUT_S
 _CACHE_MAX_SIZE = settings.HYBRID_CACHE_MAX_SIZE
 _cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+_refresh_retry_after: Dict[str, float] = {}
+
+_coordination_loop: asyncio.AbstractEventLoop | None = None
+_yfinance_gate: asyncio.Lock | None = None
+_singleflight_lock: asyncio.Lock | None = None
+_yfinance_flights: Dict[str, asyncio.Task[Optional[Dict[str, Any]]]] = {}
+_background_tasks: Set[asyncio.Task[Any]] = set()
+_refresh_tasks_by_symbol: Dict[str, asyncio.Task[Any]] = {}
+
+_FUNDAMENTALS_FIELDS = {
+    "company_name", "sector", "industry", "long_business_summary", "website",
+    "full_time_employees", "average_analyst_rating", "forward_pe", "ceo_name",
+    "exchange", "security_type", "fund_assets", "fund_assets_source",
+    "etf_market_cap", "etf_market_cap_source", "market_size_value",
+    "market_size_type", "market_size_currency", "market_size_source",
+    "market_size_fallback_used", "market_size_status", "shares_outstanding",
+    "float_shares", "insider_percent", "institution_percent",
+    "short_percent_of_float", "shares_short", "target_mean_price",
+    "target_median_price", "target_high_price", "target_low_price",
+    "recommendation_key", "number_of_analysts", "fifty_two_week_high",
+    "fifty_two_week_low", "beta", "debt_to_equity", "overall_risk", "etf_data",
+}
+
+
+def _raise_programmer_error(exception: BaseException) -> None:
+    if isinstance(exception, (AssertionError, NameError, UnboundLocalError)):
+        raise exception
+
+
+def _coordination_locks() -> tuple[asyncio.Lock, asyncio.Lock]:
+    """Create loop-local coordination primitives (pytest uses multiple loops)."""
+    global _coordination_loop, _yfinance_gate, _singleflight_lock
+    loop = asyncio.get_running_loop()
+    if _coordination_loop is not loop:
+        _coordination_loop = loop
+        _yfinance_gate = asyncio.Lock()
+        _singleflight_lock = asyncio.Lock()
+        _yfinance_flights.clear()
+    assert _yfinance_gate is not None and _singleflight_lock is not None
+    return _yfinance_gate, _singleflight_lock
+
+
+def _track_background_task(task: asyncio.Task[Any]) -> None:
+    """Retain background work and consume every terminal exception."""
+    _background_tasks.add(task)
+
+    def _finished(completed: asyncio.Task[Any]) -> None:
+        _background_tasks.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            completed.exception()
+        except Exception:
+            logger.exception("[Hybrid] event=background_refresh_callback_failed")
+
+    task.add_done_callback(_finished)
+
+
+async def shutdown_hybrid_data_service() -> None:
+    """Cancel tracked refresh tasks without allowing provider threads to hang shutdown."""
+    current_loop = asyncio.get_running_loop()
+    tasks = [task for task in _background_tasks if task.get_loop() is current_loop]
+    foreign_tasks = [task for task in _background_tasks if task.get_loop() is not current_loop]
+    for task in foreign_tasks:
+        _background_tasks.discard(task)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_TIMEOUT_S)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        if pending:
+            logger.warning(
+                "[Hybrid] event=background_shutdown_timeout pending_tasks=%d timeout_seconds=%s",
+                len(pending),
+                _SHUTDOWN_TIMEOUT_S,
+            )
 
 def _has_usable_finnhub_quote(data: Any) -> bool:
     """Accept only Finnhub payloads with a finite positive current price."""
@@ -116,12 +199,58 @@ def _cache_get_stale(ticker: str) -> Optional[Dict[str, Any]]:
 
 
 def _cache_set(ticker: str, data: Dict[str, Any]) -> None:
-    """Store a cached entry, evicting oldest entries if at capacity."""
-    if len(_cache) >= _CACHE_MAX_SIZE:
+    """Merge recovered fundamentals without erasing still-valid cached fields."""
+    stored = data.copy()
+    existing_entry = _cache.get(ticker)
+    preserved = False
+    if existing_entry is not None:
+        existing, _ = existing_entry
+        merged = existing.copy()
+        for field, value in stored.items():
+            if field not in _FUNDAMENTALS_FIELDS or value is not None:
+                merged[field] = value
+        for field in _FUNDAMENTALS_FIELDS:
+            if stored.get(field) is None and existing.get(field) is not None:
+                preserved = True
+        stored = merged
+
+        # Valid absolute fund assets are stronger than an ETF market-value fallback.
+        if _positive_cache_number(existing.get("fund_assets")) is not None and _positive_cache_number(data.get("fund_assets")) is None:
+            stored["fund_assets"] = existing["fund_assets"]
+            stored["market_size_value"] = existing["fund_assets"]
+            stored["market_size_type"] = "fund_assets"
+            stored["market_size_source"] = existing.get("fund_assets_source") or existing.get("market_size_source")
+            stored["market_size_fallback_used"] = False
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if preserved:
+        stored["fundamentals_status"] = "stale"
+        stored["fundamentals_is_stale"] = True
+        stored["fundamentals_as_of"] = (
+            existing_entry[0].get("fundamentals_as_of") if existing_entry else None
+        ) or now_iso
+    else:
+        status = "complete" if stored.get("data_status") == "complete" else "partial"
+        stored["fundamentals_status"] = status
+        stored["fundamentals_is_stale"] = False
+        stored["fundamentals_as_of"] = stored.get("fundamentals_as_of") or now_iso
+
+    if stored.get("security_type") != "ETF":
+        _recompute_final_risk(stored)
+
+    if ticker not in _cache and len(_cache) >= _CACHE_MAX_SIZE:
         # Remove the oldest entry by timestamp
         oldest_key = min(_cache, key=lambda k: _cache[k][1])
         del _cache[oldest_key]
-    _cache[ticker] = (data.copy(), time.time())
+    cache_timestamp = existing_entry[1] if preserved and existing_entry is not None else time.time()
+    _cache[ticker] = (stored, cache_timestamp)
+
+
+def _positive_cache_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    normalized = float(value)
+    return normalized if math.isfinite(normalized) and normalized > 0 else None
 
 
 _FRESH_QUOTE_FIELDS = {
@@ -140,6 +269,8 @@ def _merge_stale_static_metadata(stale: Dict[str, Any], partial: Dict[str, Any])
     merged["provider_status"] = partial.get("provider_status", {})
     merged["missing_fields"] = partial.get("missing_fields", [])
     merged["data_status"] = "stale"
+    merged["fundamentals_status"] = "stale"
+    merged["fundamentals_is_stale"] = True
     if merged.get("market_size_value") is not None:
         merged["market_size_status"] = "stale_cache"
     if merged.get("security_type") != "ETF":
@@ -152,6 +283,9 @@ def _recompute_final_risk(payload: Dict[str, Any]) -> None:
     fields = ("beta", "short_percent_of_float", "debt_to_equity", "fifty_two_week_high", "fifty_two_week_low", "current_price")
     values = [payload.get(field) for field in fields]
     if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) for value in values):
+        payload["overall_risk"] = None
+        return
+    if values[1] < 0 or values[3] <= 0 or values[4] <= 0 or values[5] <= 0 or values[4] > values[3]:
         payload["overall_risk"] = None
         return
     payload["overall_risk"] = _compute_composite_risk(
@@ -253,17 +387,75 @@ def _normalize_meaningful_enrichment_value(value: Any, field: str) -> Any:
 
 def _yf_sync(ticker: str) -> Optional[Dict[str, Any]]:
     """Run yfinance in a thread (called from executor)."""
-    data = get_stock_price_yf(ticker)
+    cached_entry = _cache.get(ticker.upper())
+    cached_fundamentals = cached_entry[0].copy() if cached_entry is not None else None
+    data = get_stock_price_yf(ticker, cached_fundamentals=cached_fundamentals)
     if data:
         data["data_source"] = "yf"
     return data
 
 
 async def _yf_async(ticker: str) -> Optional[Dict[str, Any]]:
-    """Offload blocking yfinance call to thread pool executor."""
-    loop = asyncio.get_running_loop()
-    data = await loop.run_in_executor(_executor, _yf_sync, ticker)
-    return data
+    """Serialize Yahoo fundamentals and re-check cooldown after waiting."""
+    gate, _ = _coordination_locks()
+    async with gate:
+        allowed, reason, probe = yfinance_fallback._begin_yfinance_fundamentals_attempt()
+        if not allowed:
+            logger.debug(
+                "[Hybrid] event=yfinance_cooldown_skip failure_class=%s",
+                reason,
+            )
+            return None
+        loop = asyncio.get_running_loop()
+        succeeded = False
+        future = loop.run_in_executor(_executor, _yf_sync, ticker)
+        try:
+            try:
+                data = await asyncio.shield(future)
+            except asyncio.CancelledError:
+                # A running thread cannot be cancelled. Keep the global gate
+                # until it actually exits, then propagate caller cancellation.
+                await future
+                raise
+            succeeded = data is not None
+            return data
+        finally:
+            yfinance_fallback._complete_yfinance_fundamentals_attempt(
+                probe=probe,
+                succeeded=succeeded,
+            )
+
+
+async def _yf_singleflight(ticker: str) -> Optional[Dict[str, Any]]:
+    """Share one cancellation-safe Yahoo fundamentals task per normalized symbol."""
+    ticker_upper = ticker.strip().upper()
+    cooldown_active, failure_class = yfinance_fallback._yfinance_cooldown_status()
+    if cooldown_active:
+        logger.debug(
+            "[Hybrid] event=yfinance_cooldown_skip failure_class=%s",
+            failure_class,
+        )
+        return None
+    _, flight_lock = _coordination_locks()
+
+    async with flight_lock:
+        task = _yfinance_flights.get(ticker_upper)
+        if task is None or task.done():
+            async def _run() -> Optional[Dict[str, Any]]:
+                try:
+                    return await _yf_async(ticker_upper)
+                finally:
+                    current = asyncio.current_task()
+                    _, cleanup_lock = _coordination_locks()
+                    async with cleanup_lock:
+                        if _yfinance_flights.get(ticker_upper) is current:
+                            _yfinance_flights.pop(ticker_upper, None)
+
+            task = asyncio.create_task(_run(), name=f"yf-fundamentals-{ticker_upper}")
+            _yfinance_flights[ticker_upper] = task
+            _track_background_task(task)
+
+    return await asyncio.shield(task)
 
 
 def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
@@ -366,7 +558,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             ticker=ticker_upper,
             provider="yf",
             timeout_s=_PROVIDER_TIMEOUT_S,
-            operation=lambda: _yf_async(ticker_upper),
+            operation=lambda: _yf_singleflight(ticker_upper),
             result_is_usable=_has_usable_etf_financial_data,
         )
         if failure is not None:
@@ -417,7 +609,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
                     logger.debug("[Hybrid] Enriching %s from yfinance (gaps=%s, bad_name=%s).", ticker_upper, has_gaps, bad_company_name)
                     try:
                         async def validated_yf_enrichment():
-                            yf_data = await _yf_async(ticker_upper)
+                            yf_data = await _yf_singleflight(ticker_upper)
                             if not yf_data:
                                 return None
                             merged_data, enriched_fields = _enrich_with_yf(data, yf_data)
@@ -441,6 +633,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
                             data["data_status"] = "partial"
                             data["provider_status"]["yfinance"] = "unavailable" if enrichment_failure else "degraded"
                     except Exception as exc:
+                        _raise_programmer_error(exc)
                         failure_class = yfinance_fallback._record_yfinance_outage_failure(exc)
                         data["data_status"] = "partial"
                         data["provider_status"]["yfinance"] = "degraded"
@@ -453,6 +646,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             
             return data
     except Exception as e:
+        _raise_programmer_error(e)
         logger.warning("[Hybrid] Finnhub failed for %s: %s", ticker_upper, e)
 
     # Fallback to yfinance
@@ -461,12 +655,12 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
         ticker=ticker_upper,
         provider="yf",
         timeout_s=_PROVIDER_TIMEOUT_S,
-        operation=lambda: _yf_async(ticker_upper),
+        operation=lambda: _yf_singleflight(ticker_upper),
     )
     return data
 
 
-async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
+async def _refresh_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     """Collect, normalize, cache, and diagnose one watchlist symbol."""
     ticker_upper = ticker.strip().upper()
     started = time.monotonic()
@@ -495,6 +689,7 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        _raise_programmer_error(exc)
         logger.warning(
             "[MarketData] event=collection_exception correlation_id=%s "
             "symbol=%s exception_type=%s",
@@ -513,9 +708,20 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             data,
             default_source=selected_provider,
         )
+        if normalized.get("data_status") != "unavailable" and not normalized.get("fundamentals_as_of"):
+            normalized["fundamentals_as_of"] = datetime.now(timezone.utc).isoformat()
+        normalized["fundamentals_status"] = normalized.get("fundamentals_status") or normalized.get("data_status")
+        normalized["fundamentals_is_stale"] = bool(
+            normalized.get("fundamentals_is_stale")
+            or normalized.get("fundamentals_status") == "stale"
+        )
         if normalized.get("data_status") in {"partial", "unavailable"}:
             stale = _cache_get_stale(ticker_upper)
             if stale is not None and _is_cacheable_financial_data(stale):
+                if _is_cacheable_financial_data(normalized) or normalized.get("data_status") == "partial":
+                    _cache_set(ticker_upper, normalized)
+                    merged_entry = _cache.get(ticker_upper)
+                    stale = merged_entry[0].copy() if merged_entry else stale
                 normalized = _merge_stale_static_metadata(stale, normalized)
         if normalized.get("data_status") != "stale" and _is_cacheable_financial_data(normalized):
             _cache_set(ticker_upper, normalized)
@@ -541,6 +747,8 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
         stale = stale.copy()
         stale["market_size_status"] = "stale_cache"
         stale["data_status"] = "stale"
+        stale["fundamentals_status"] = "stale"
+        stale["fundamentals_is_stale"] = True
         stale["provider_status"] = {
             "finnhub": "unavailable",
             "yfinance": "unavailable",
@@ -573,6 +781,87 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _schedule_symbol_refresh(ticker: str) -> None:
+    ticker_upper = ticker.strip().upper()
+    existing = _refresh_tasks_by_symbol.get(ticker_upper)
+    if existing is not None and not existing.done():
+        return
+    if time.monotonic() < _refresh_retry_after.get(ticker_upper, 0.0):
+        return
+
+    refresh_task = asyncio.create_task(
+        _refresh_hybrid_stock_price(ticker_upper),
+        name=f"fundamentals-provider-{ticker_upper}",
+    )
+    _refresh_tasks_by_symbol[ticker_upper] = refresh_task
+    _track_background_task(refresh_task)
+
+    def _clear_symbol(completed: asyncio.Task[Any]) -> None:
+        if _refresh_tasks_by_symbol.get(ticker_upper) is completed:
+            _refresh_tasks_by_symbol.pop(ticker_upper, None)
+
+    refresh_task.add_done_callback(_clear_symbol)
+
+    async def _monitor() -> None:
+        try:
+            done, _ = await asyncio.wait(
+                {refresh_task}, timeout=_BACKGROUND_REFRESH_TIMEOUT_S,
+            )
+            if not done:
+                _refresh_retry_after[ticker_upper] = time.monotonic() + _REFRESH_BACKOFF_S
+                logger.warning(
+                    "[Hybrid] event=background_refresh_timeout symbol=%s timeout_seconds=%s",
+                    ticker_upper,
+                    _BACKGROUND_REFRESH_TIMEOUT_S,
+                )
+                return
+            result = refresh_task.result()
+            if result is None or result.get("data_status") in {"stale", "unavailable"}:
+                _refresh_retry_after[ticker_upper] = time.monotonic() + _REFRESH_BACKOFF_S
+            else:
+                _refresh_retry_after.pop(ticker_upper, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _refresh_retry_after[ticker_upper] = time.monotonic() + _REFRESH_BACKOFF_S
+            logger.exception("[Hybrid] event=background_refresh_failed symbol=%s", ticker_upper)
+
+    monitor_task = asyncio.create_task(
+        _monitor(), name=f"fundamentals-monitor-{ticker_upper}"
+    )
+    _track_background_task(monitor_task)
+
+
+async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
+    """Serve fresh/stale data immediately and refresh stale fundamentals off-path."""
+    ticker_upper = ticker.strip().upper()
+    stale = _cache_get_stale(ticker_upper)
+    if stale is not None and _is_cacheable_financial_data(stale):
+        started = time.monotonic()
+        stale["data_status"] = "stale"
+        stale["fundamentals_status"] = "stale"
+        stale["fundamentals_is_stale"] = True
+        stale["market_size_status"] = "stale_cache"
+        stale["provider_status"] = {"finnhub": "unavailable", "yfinance": "unavailable"}
+        _schedule_symbol_refresh(ticker_upper)
+        normalized = normalize_market_data_payload(
+            ticker_upper,
+            stale,
+            default_source=str(stale.get("data_source") or "yf"),
+        )
+        log_collection_result(
+            ticker=ticker_upper,
+            selected_provider=str(normalized.get("data_source") or "yf"),
+            fallback_provider=None,
+            started=started,
+            payload=normalized,
+            cache_state="stale",
+            failure_reason=None,
+        )
+        return normalized
+    return await _refresh_hybrid_stock_price(ticker_upper)
+
+
 async def _fetch_one(ticker: str) -> Tuple[str, Optional[Dict[str, Any]]]:
     """Fetch a single ticker and return (ticker, data) tuple.
     
@@ -583,6 +872,7 @@ async def _fetch_one(ticker: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         data = await get_hybrid_stock_price(ticker)
         return (ticker, data)
     except Exception as e:
+        _raise_programmer_error(e)
         logger.error("[Hybrid] Fetch failed for %s: %s", ticker, e)
     # Fallback: return cached data if available to avoid nulling out fundamentals
     cached = _cache_get(ticker.upper())
@@ -593,13 +883,7 @@ async def _fetch_one(ticker: str) -> Tuple[str, Optional[Dict[str, Any]]]:
 
 
 async def get_hybrid_batch_prices(tickers: List[str]) -> List[Dict[str, Any]]:
-    """Fetch multiple tickers using hybrid logic.
-
-    Performance optimization:
-      - Finnhub candidates process in small batches (rate limit friendly)
-      - yfinance calls run concurrently in thread pool executor
-      - Both groups start together for parallel execution
-    """
+    """Fetch a watchlist within one explicit budget, preserving max concurrency six."""
     # Deduplicate while preserving order
     seen = set()
     unique_tickers = []
@@ -609,54 +893,53 @@ async def get_hybrid_batch_prices(tickers: List[str]) -> List[Dict[str, Any]]:
             seen.add(key)
             unique_tickers.append(t)
 
-    # Split into two groups
-    finnhub_candidates = [t for t in unique_tickers if t.upper() not in KNOWN_NON_STOCK_SYMBOLS]
-    yf_only = [t for t in unique_tickers if t.upper() in KNOWN_NON_STOCK_SYMBOLS]
-
     results: Dict[str, Dict[str, Any]] = {}
+    semaphore = asyncio.Semaphore(6)
 
-    # Build coroutines list
-    coros = []
+    async def _bounded_fetch(ticker: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        async with semaphore:
+            return await _fetch_one(ticker)
 
-    # Finnhub group: batched with stagger delays
-    async def finnhub_batch_task():
-        batch_size = 6
-        for i in range(0, len(finnhub_candidates), batch_size):
-            batch = finnhub_candidates[i:i + batch_size]
-            batch_coros = [_fetch_one(t) for t in batch]
-            batch_results = await asyncio.gather(*batch_coros, return_exceptions=True)
-            for item in batch_results:
-                if isinstance(item, tuple) and len(item) == 2:
-                    tk, data = item
-                    if data:
-                        results[tk.upper()] = data
-                elif isinstance(item, Exception):
-                    logger.error("[Hybrid] Finnhub batch exception: %s", item)
-            if i + batch_size < len(finnhub_candidates):
-                await asyncio.sleep(0.3)
+    tasks = {
+        asyncio.create_task(_bounded_fetch(ticker), name=f"watchlist-fetch-{ticker.upper()}"): ticker
+        for ticker in unique_tickers
+    }
+    if not tasks:
+        return []
+    for task in tasks:
+        _track_background_task(task)
+    done, pending = await asyncio.wait(tasks, timeout=_BATCH_BUDGET_S)
+    for task in done:
+        try:
+            ticker, data = task.result()
+        except Exception as exc:
+            _raise_programmer_error(exc)
+            logger.exception("[Hybrid] event=batch_symbol_failed symbol=%s", tasks[task].upper())
+            continue
+        if data:
+            results[ticker.upper()] = data
 
-    # yfinance group: all concurrent via thread pool
-    async def yf_batch_task():
-        if not yf_only:
-            return
-        yf_coros = [_fetch_one(t) for t in yf_only]
-        yf_results = await asyncio.gather(*yf_coros, return_exceptions=True)
-        for item in yf_results:
-            if isinstance(item, tuple) and len(item) == 2:
-                tk, data = item
-                if data:
-                    results[tk.upper()] = data
-            elif isinstance(item, Exception):
-                logger.error("[Hybrid] YF batch exception: %s", item)
-
-    # Run both groups concurrently
-    await asyncio.gather(
-        finnhub_batch_task(),
-        yf_batch_task(),
-    )
-
+    # Do not cancel shared provider work at the response boundary. It will warm
+    # the bounded cache and every terminal exception is consumed by the tracker.
     # Return in original order
-    return [results.get(t.upper(), create_error_fallback(t, "yf")) for t in tickers]
+    output: List[Dict[str, Any]] = []
+    for ticker in tickers:
+        ticker_upper = ticker.upper()
+        data = results.get(ticker_upper)
+        if data is None:
+            stale = _cache_get_stale(ticker_upper) or _cache_get(ticker_upper)
+            if stale is not None:
+                stale["data_status"] = "stale"
+                stale["fundamentals_status"] = "stale"
+                stale["fundamentals_is_stale"] = True
+                data = stale
+            else:
+                data = create_error_fallback(ticker, "yf")
+                data["fundamentals_status"] = "unavailable"
+                data["fundamentals_as_of"] = None
+                data["fundamentals_is_stale"] = False
+        output.append(data)
+    return output
 
 
 async def _fetch_hybrid_safe(ticker: str) -> Optional[Dict[str, Any]]:
@@ -664,5 +947,6 @@ async def _fetch_hybrid_safe(ticker: str) -> Optional[Dict[str, Any]]:
     try:
         return await get_hybrid_stock_price(ticker)
     except Exception as e:
+        _raise_programmer_error(e)
         logger.error("[Hybrid] Final fetch failed for %s: %s", ticker, e)
         return None

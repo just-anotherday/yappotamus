@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from numbers import Real
 from typing import Any, Dict
 
 from backend.lib.constants import KNOWN_ETF_NAMES
@@ -68,18 +69,15 @@ ETF_TEXT_FIELDS = {
 
 
 def _finite_float(value: Any, default: float | None) -> float | None:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, Real):
         return default
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
+    normalized = float(value)
     return normalized if math.isfinite(normalized) else default
 
 
 def _positive_market_size(value: Any) -> float | None:
     """Accept only finite positive provider numbers; reject bools and strings."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, Real):
         return None
     normalized = float(value)
     return normalized if math.isfinite(normalized) and normalized > 0 else None
@@ -253,4 +251,14 @@ def normalize_market_data_payload(
         normalized["data_status"] = "unavailable"
     else:
         normalized["data_status"] = "partial" if normalized["missing_fields"] else "complete"
+    requested_fundamentals_status = _optional_text(payload.get("fundamentals_status"))
+    if requested_fundamentals_status in {"complete", "partial", "stale", "unavailable"}:
+        normalized["fundamentals_status"] = requested_fundamentals_status
+    else:
+        normalized["fundamentals_status"] = normalized["data_status"]
+    normalized["fundamentals_as_of"] = _optional_text(payload.get("fundamentals_as_of"))
+    normalized["fundamentals_is_stale"] = bool(
+        payload.get("fundamentals_is_stale")
+        or normalized["fundamentals_status"] == "stale"
+    )
     return normalized

@@ -17,7 +17,7 @@ export function formatWatchlistCurrency(value: unknown): string {
 export function getMarketSizeLabel(item: WatchlistItem): string {
   if (item.market_size_type === 'fund_assets') return 'Fund Size';
   if (item.market_size_type === 'etf_market_cap') return 'Fund Market Value';
-  if (item.security_type === 'ETF') return 'Fundamentals temporarily unavailable.';
+  if (item.security_type === 'ETF') return 'Fund Size';
   return 'Market Cap';
 }
 
@@ -88,15 +88,15 @@ export function hasWatchlistRecommendation(value: unknown): value is string {
 }
 
 export function getWatchlistDataWarning(item: WatchlistItem): string | null {
-  if (item.data_status === 'stale') {
-    const hasFreshQuoteProvider = item.provider_status?.finnhub === 'healthy'
-      || item.provider_status?.yfinance === 'healthy';
-    return hasFreshQuoteProvider
-      ? 'Stale fundamentals — showing last-known fundamentals with current prices.'
-      : 'Stale data — showing last-known values.';
+  if (item.fundamentals_is_stale || item.fundamentals_status === 'stale' || item.data_status === 'stale') {
+    return 'Last known fundamentals';
   }
-  if (item.data_status === 'partial') return 'Partial data — some fundamentals are temporarily unavailable.';
-  if (item.data_status === 'unavailable') return 'Fundamentals temporarily unavailable.';
+  if (item.fundamentals_status === 'unavailable' || item.data_status === 'unavailable') {
+    return 'Fundamentals temporarily unavailable.';
+  }
+  if (item.fundamentals_status === 'partial' || item.data_status === 'partial') {
+    return 'Fundamentals temporarily unavailable.';
+  }
   return null;
 }
 
@@ -147,6 +147,9 @@ const PRESERVE_WHEN_MISSING: readonly (keyof WatchlistItem)[] = [
   'fifty_two_week_low',
   'beta',
   'overall_risk',
+  'fundamentals_status',
+  'fundamentals_as_of',
+  'fundamentals_is_stale',
 ];
 
 const PRESERVE_WHEN_ZERO: readonly (keyof WatchlistItem)[] = [
@@ -221,6 +224,9 @@ export function mergeWatchlistRefresh(
       return {
         ...previous,
         data_status: 'stale',
+        fundamentals_status: 'stale',
+        fundamentals_is_stale: true,
+        fundamentals_as_of: previous.fundamentals_as_of ?? null,
         market_size_status: previous.market_size_value != null ? 'stale_cache' : incoming.market_size_status,
         post_market_price: incoming.post_market_price ?? previous.post_market_price,
         post_market_change: incoming.post_market_change ?? previous.post_market_change,
@@ -271,6 +277,9 @@ export function mergeWatchlistRefresh(
         : mergeEtfData(previous.etf_data, incoming.etf_data);
     if (incoming.data_status === 'partial' && previous.data_status === 'complete') {
       merged.data_status = 'stale';
+      merged.fundamentals_status = 'stale';
+      merged.fundamentals_is_stale = true;
+      merged.fundamentals_as_of = previous.fundamentals_as_of ?? null;
       if (merged.market_size_value != null) merged.market_size_status = 'stale_cache';
     }
 

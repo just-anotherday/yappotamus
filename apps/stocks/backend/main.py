@@ -30,6 +30,7 @@ from backend.services.asset_sync import sync_watchlist_to_assets
 from backend.services.post_market_service import _post_market_fetch_loop
 from backend.services.ticker_extractor import ticker_extractor
 from backend.services.yfinance_cache import configure_yfinance_cache
+from backend.services.hybrid_data_service import shutdown_hybrid_data_service
 from backend.services.market_data_observability import (
     market_data_correlation,
     normalize_correlation_id,
@@ -179,6 +180,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # ---- Shutdown ----
+    await shutdown_hybrid_data_service()
+
     try:
         market_data = MarketDataService.get_instance()
         market_data.stop()

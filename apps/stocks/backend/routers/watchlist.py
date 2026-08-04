@@ -17,6 +17,7 @@ from backend.services.hybrid_data_service import (
 )
 from backend.services.market_data_service import MarketDataService, merge_live_quote_payload
 from backend.config.watchlist import DEFAULT_TICKERS, MAX_WATCHLIST_SIZE, CONFIG_VERSION
+from backend.config.settings import settings
 from backend.config.database import get_async_session, async_session_factory
 from backend.services.news_ingestion_service import fetch_and_ingest_news
 from backend.services.watchlist_service import seed_defaults, get_all_tickers, add_ticker, remove_ticker, update_order
@@ -25,7 +26,7 @@ from backend.services.post_market_service import PostMarketService
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
 # Timeout for batch price fetching (Finnhub + yfallback hybrid)
-BATCH_TIMEOUT = 90  # seconds - increased for parallel Finnhub batches + concurrent yfinance fallback
+BATCH_TIMEOUT = settings.MARKET_DATA_BATCH_BUDGET_S + 2
 
 
 async def _get_batch_prices_safe(tickers: list[str]) -> list:

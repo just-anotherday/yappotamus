@@ -114,5 +114,8 @@ class WatchlistItem(BaseModel):
     # Fields that were filled by yfinance enrichment (when primary is Finnhub)
     yf_enriched_fields: List[str] = []
     data_status: Literal["complete", "partial", "stale", "unavailable"] = "partial"
+    fundamentals_status: Optional[Literal["complete", "partial", "stale", "unavailable"]] = None
+    fundamentals_as_of: Optional[str] = None
+    fundamentals_is_stale: bool = False
     provider_status: Dict[str, Literal["healthy", "cooldown", "degraded", "unavailable"]] = Field(default_factory=dict)
     missing_fields: List[str] = Field(default_factory=list)
