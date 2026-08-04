@@ -101,6 +101,18 @@ def test_cooldown_reset_and_unrecognized_failures_do_not_leak(monkeypatch):
     assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
 
 
+def test_concurrent_yahoo_failures_do_not_extend_an_open_cooldown(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(yfinance_fallback.time, "monotonic", lambda: now[0])
+
+    yfinance_fallback._record_yfinance_outage_failure(RuntimeError("Invalid Crumb"))
+    now[0] = 101.0
+    yfinance_fallback._record_yfinance_outage_failure(yfinance_fallback.YFRateLimitError())
+
+    now[0] = 220.0
+    assert yfinance_fallback._yfinance_cooldown_status() == (False, "invalid_crumb")
+
+
 @pytest.mark.asyncio
 async def test_yfinance_cooldown_skips_optional_enrichment_and_preserves_finnhub(
     monkeypatch, caplog
@@ -913,6 +925,67 @@ def test_known_etf_failure_has_identity_and_no_numeric_sentinels():
     assert item.beta is None
     assert item.overall_risk is None
     assert item.insider_percent is None
+
+
+@pytest.mark.asyncio
+async def test_identity_only_etf_is_unavailable_and_never_cached_as_fresh(monkeypatch):
+    async def identity_only(_ticker):
+        return {
+            "ticker": "SPY", "symbol": "SPY", "company_name": "State Street SPDR S&P 500 ETF Trust",
+            "security_type": "ETF", "data_source": "yf",
+        }
+
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", identity_only)
+
+    result = await hybrid_data_service.get_hybrid_stock_price("SPY")
+
+    assert result["security_type"] == "ETF"
+    assert result["data_status"] == "unavailable"
+    assert result["fund_assets"] is None
+    assert "SPY" not in hybrid_data_service._cache
+
+
+@pytest.mark.asyncio
+async def test_identity_only_etf_uses_stale_assets_without_overwriting_them(monkeypatch):
+    complete = normalize_market_data_payload("SPY", {
+        "ticker": "SPY", "security_type": "ETF", "current_price": 500,
+        "previous_close": 499, "fund_assets": 600_000_000_000,
+        "data_status": "complete", "data_source": "yf",
+    }, default_source="yf")
+    hybrid_data_service._cache["SPY"] = (complete, time.time() - hybrid_data_service._CACHE_TTL - 1)
+
+    async def identity_only(_ticker):
+        return {"ticker": "SPY", "symbol": "SPY", "security_type": "ETF", "data_source": "yf"}
+
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", identity_only)
+    result = await hybrid_data_service.get_hybrid_stock_price("SPY")
+
+    assert result["data_status"] == "stale"
+    assert result["fund_assets"] == 600_000_000_000
+    assert result["market_size_status"] == "stale_cache"
+
+
+def test_invalid_crumb_is_distinct_and_retries_once_with_reset(monkeypatch):
+    calls: list[str] = []
+
+    class FakeTicker:
+        def __init__(self, _ticker):
+            calls.append("ticker")
+
+        @property
+        def info(self):
+            if calls.count("ticker") == 1:
+                raise RuntimeError("Invalid Crumb")
+            return {"quoteType": "ETF"}
+
+    monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
+    monkeypatch.setattr(yfinance_fallback, "_invalidate_yfinance_crumb", lambda: calls.append("reset"))
+
+    _ticker, info = yfinance_fallback._load_yfinance_info("SPY")
+
+    assert yfinance_fallback._classify_yfinance_outage(RuntimeError("Invalid Crumb")) == "invalid_crumb"
+    assert info == {"quoteType": "ETF"}
+    assert calls == ["ticker", "reset", "ticker"]
 
 
 @pytest.mark.asyncio

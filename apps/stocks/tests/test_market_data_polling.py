@@ -85,6 +85,20 @@ def test_reference_quote_seeding_corrects_live_change_without_replacing_live_pri
     service._broadcast.assert_called_once_with(service.latest_quotes["AAA"])
 
 
+def test_poll_does_not_turn_sequential_ticks_into_daily_change():
+    service = MarketDataService()
+    service.subscribe(["AAA"])
+    service._download_batch = lambda _batch: pd.DataFrame({"Close": [101.0], "Volume": [1]})
+    service._do_poll()
+    assert service.latest_quotes["AAA"]["previous_close"] is None
+    assert service.latest_quotes["AAA"]["change_percent"] is None
+
+    service._download_batch = lambda _batch: pd.DataFrame({"Close": [102.0], "Volume": [2]})
+    service._do_poll()
+    assert service.latest_quotes["AAA"]["previous_close"] is None
+    assert service.latest_quotes["AAA"]["change_percent"] is None
+
+
 def test_single_flight_rejects_overlapping_cycle():
     service = MarketDataService()
     service._poll_guard.acquire()

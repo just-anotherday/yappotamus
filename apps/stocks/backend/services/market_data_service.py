@@ -225,9 +225,16 @@ class MarketDataService:
                     valid += 1
                     with self._lock:
                         previous = self.latest_quotes.get(ticker, {})
-                        previous_close = previous.get("previous_close") or previous.get("price") or values["price"]
-                        change = round(values["price"] - previous_close, 4)
-                        quote = {"ticker": ticker, "price": values["price"], "change": change, "change_percent": round(change / previous_close * 100, 4) if previous_close else 0.0, "volume": values["volume"], "previous_close": previous_close}
+                        previous_close = _finite_positive(previous.get("previous_close"))
+                        change = round(values["price"] - previous_close, 4) if previous_close is not None else None
+                        quote = {
+                            "ticker": ticker,
+                            "price": values["price"],
+                            "change": change,
+                            "change_percent": round(change / previous_close * 100, 4) if previous_close is not None else None,
+                            "volume": values["volume"],
+                            "previous_close": previous_close,
+                        }
                         changed = quote != previous
                         self.latest_quotes[ticker] = quote
                     if changed and self._broadcast(quote):

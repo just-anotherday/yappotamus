@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from './watchlistPresentation.ts';
-import { formatEmployeeCount, formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistPercent, formatWatchlistRange, formatWatchlistRecommendation, getCompanySize, getWatchlistDataWarning, getWatchlistDisplayPrice, hasWatchlistRecommendation, mergeWatchlistRefresh } from './watchlistPresentation.ts';
+import { formatEmployeeCount, formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistPercent, formatWatchlistRange, formatWatchlistRecommendation, getCompanySize, getWatchlistDataWarning, getWatchlistDisplayPrice, hasWatchlistRecommendation, mergeLiveQuote, mergeWatchlistRefresh } from './watchlistPresentation.ts';
 
 const item = (ticker, company_name, current_price, previous_close, market_cap) => ({ ticker, company_name, current_price, previous_close, market_cap });
 const items = [item('BBB', 'Beta', 90, 100, 20), item('AAA', 'Alpha', 110, 100, 10)];
@@ -176,6 +176,17 @@ test('renders fund assets and non-USD market sizes without a dollar prefix', () 
   assert.equal(formatMarketSize({ market_size_type: 'fund_assets', market_size_value: 10_000_000_000, market_size_currency: 'USD' }), '$10.00B');
   assert.equal(formatMarketSize({ market_size_type: 'market_cap', market_size_value: 62_890_000_000_000, market_size_currency: 'TWD' }), 'TWD 62.89T');
   assert.equal(formatMarketSize({ market_size_status: 'provider_failed' }), 'Unavailable');
+});
+
+test('price-only WebSocket ticks retain the official close and never become daily change', () => {
+  const first = mergeLiveQuote(undefined, { ticker: 'SPY', price: 505, change: null, change_percent: null, volume: 1, previous_close: 499 });
+  const second = mergeLiveQuote(first, { ticker: 'SPY', price: 506, change: null, change_percent: null, volume: 2 });
+  assert.equal(second.previous_close, 499);
+  assert.equal(second.change, 7);
+  assert.equal(second.change_percent, (7 / 499) * 100);
+  const noClose = mergeLiveQuote(undefined, { ticker: 'SPY', price: 506, change: 1, change_percent: 0.2, volume: 2 });
+  assert.equal(noClose.change, null);
+  assert.equal(noClose.change_percent, null);
 });
 
 test('maps legacy market_cap responses and distinguishes missing equity from ETFs', () => {

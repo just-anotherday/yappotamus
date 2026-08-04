@@ -275,6 +275,34 @@ export function getWatchlistChange(item: WatchlistItem, live?: LiveQuote): numbe
   return ((price - previousClose) / previousClose) * 100;
 }
 
+/** Preserve the official close across price-only WebSocket messages. */
+export function mergeLiveQuote(previous: LiveQuote | undefined, incoming: LiveQuote): LiveQuote {
+  const price = isFiniteWatchlistNumber(incoming.price) && incoming.price > 0
+    ? incoming.price
+    : previous?.price ?? null;
+  const previousClose = isFiniteWatchlistNumber(incoming.previous_close) && incoming.previous_close > 0
+    ? incoming.previous_close
+    : previous?.previous_close ?? null;
+  const officialPreviousClose = isFiniteWatchlistNumber(previousClose) && previousClose > 0
+    ? previousClose
+    : null;
+  const livePrice = isFiniteWatchlistNumber(price) && price > 0 ? price : null;
+  const change = livePrice != null && officialPreviousClose != null
+    ? livePrice - officialPreviousClose
+    : null;
+  return {
+    ...previous,
+    ...incoming,
+    price: livePrice,
+    previous_close: officialPreviousClose,
+    change,
+    change_percent: livePrice != null && officialPreviousClose != null
+      ? ((livePrice - officialPreviousClose) / officialPreviousClose) * 100
+      : null,
+    volume: incoming.volume ?? previous?.volume ?? 0,
+  };
+}
+
 export function presentWatchlist(
   items: WatchlistItem[],
   order: string[],

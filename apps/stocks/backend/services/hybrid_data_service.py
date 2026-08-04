@@ -61,6 +61,31 @@ def _has_usable_finnhub_quote(data: Any) -> bool:
     )
 
 
+def _has_usable_etf_financial_data(data: Any) -> bool:
+    """Reject identity-only Yahoo ETF shells as financial-provider successes."""
+    if not isinstance(data, dict):
+        return False
+    for field in ("current_price", "previous_close", "fund_assets", "market_size_value"):
+        value = data.get(field)
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and value > 0
+        ):
+            return True
+    return False
+
+
+def _is_cacheable_financial_data(data: Dict[str, Any]) -> bool:
+    """Never admit identity-only or unavailable shells to the fresh cache."""
+    if data.get("data_status") == "unavailable":
+        return False
+    if data.get("security_type") == "ETF":
+        return _has_usable_etf_financial_data(data)
+    return _has_usable_finnhub_quote(data) or isinstance(data.get("market_cap"), (int, float))
+
+
 def _cache_get(ticker: str) -> Optional[Dict[str, Any]]:
     """Retrieve a cached entry if within TTL."""
     entry = _cache.get(ticker)
@@ -342,7 +367,11 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             provider="yf",
             timeout_s=_PROVIDER_TIMEOUT_S,
             operation=lambda: _yf_async(ticker_upper),
+            result_is_usable=_has_usable_etf_financial_data,
         )
+        if failure is not None:
+            logger.info("[Hybrid] %s returned no usable ETF financial fields (reason=%s).", ticker_upper, failure)
+            return create_error_fallback(ticker_upper, "yf")
         if data:
             data["provider_status"] = {"finnhub": "degraded", "yfinance": "healthy"}
         return data
@@ -484,11 +513,11 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             data,
             default_source=selected_provider,
         )
-        if normalized.get("data_status") == "partial":
+        if normalized.get("data_status") in {"partial", "unavailable"}:
             stale = _cache_get_stale(ticker_upper)
-            if stale is not None and stale.get("data_status") == "complete":
+            if stale is not None and _is_cacheable_financial_data(stale):
                 normalized = _merge_stale_static_metadata(stale, normalized)
-        if normalized.get("data_status") != "stale":
+        if normalized.get("data_status") != "stale" and _is_cacheable_financial_data(normalized):
             _cache_set(ticker_upper, normalized)
         fallback_provider = None
         if selected_provider == "fh":

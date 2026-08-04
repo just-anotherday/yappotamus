@@ -266,7 +266,7 @@ async def get_ticker_info(ticker: str) -> Dict[str, Any]:
         "targetHighPrice": None,
         "targetLowPrice": None,
         "recommendationKey": "N/A",
-        "numberOfAnalystOpinions": 0,
+        "numberOfAnalystOpinions": None,
         "regularMarketVolume": 0,
         "currency": profile.get("currency") or "USD",
     }

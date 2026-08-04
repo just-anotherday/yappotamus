@@ -6,6 +6,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { LIVE_PRICES_WS_URL } from '@/lib/serviceUrls';
 import type { LiveQuote } from '@/types/stock';
 import { getAppWebSocketProtocols, invalidateAppToken } from '@/lib/apiFetch';
+import { mergeLiveQuote } from '@/lib/watchlistPresentation';
 
 export function useLivePrices() {
   const [livePrices, setLivePrices] = useState<Record<string, LiveQuote>>({});
@@ -26,7 +27,13 @@ export function useLivePrices() {
     pendingQuotesRef.current = {};
     if (Object.keys(quotes).length === 0) return;
 
-    setLivePrices(prev => ({ ...prev, ...quotes }));
+    setLivePrices(prev => {
+      const next = { ...prev };
+      Object.values(quotes).forEach(quote => {
+        next[quote.ticker] = mergeLiveQuote(prev[quote.ticker], quote);
+      });
+      return next;
+    });
     const flashes: Record<string, 'up' | 'down'> = {};
     Object.values(quotes).forEach(quote => {
       if (quote.price === null) return;

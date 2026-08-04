@@ -37,6 +37,9 @@ _yfinance_cooldown_lock = threading.Lock()
 
 def _classify_yfinance_outage(exception: BaseException) -> Optional[str]:
     """Classify only explicit Yahoo rate-limit or access failures."""
+    message = str(exception).strip().casefold()
+    if "invalid crumb" in message:
+        return "invalid_crumb"
     if isinstance(exception, YFRateLimitError):
         return "yf_rate_limit"
 
@@ -46,12 +49,8 @@ def _classify_yfinance_outage(exception: BaseException) -> Optional[str]:
     )
     if status_code == 429:
         return "http_429"
-
-    message = str(exception).strip().casefold()
     if "too many requests" in message or "http 429" in message:
         return "rate_limited"
-    if "invalid crumb" in message:
-        return "invalid_crumb"
     if any(marker in message for marker in ("unauthorized", "access denied", "forbidden")):
         return "yahoo_access_denied"
     return None
@@ -65,14 +64,52 @@ def _record_yfinance_outage_failure(exception: BaseException) -> Optional[str]:
 
     global _yfinance_cooldown_until, _yfinance_last_failure_class
     with _yfinance_cooldown_lock:
-        _yfinance_cooldown_until = time.monotonic() + _YFINANCE_COOLDOWN_SECONDS
-        _yfinance_last_failure_class = failure_class
-    logger.warning(
-        "[YF-Fallback] event=yfinance_cooldown_opened failure_class=%s cooldown_seconds=%s",
-        failure_class,
-        _YFINANCE_COOLDOWN_SECONDS,
-    )
+        now = time.monotonic()
+        opened = now >= _yfinance_cooldown_until
+        if opened:
+            _yfinance_cooldown_until = now + _YFINANCE_COOLDOWN_SECONDS
+            _yfinance_last_failure_class = failure_class
+    if opened:
+        logger.warning(
+            "[YF-Fallback] event=yfinance_cooldown_opened failure_class=%s cooldown_seconds=%s",
+            failure_class,
+            _YFINANCE_COOLDOWN_SECONDS,
+        )
+    else:
+        logger.debug("[YF-Fallback] event=yfinance_cooldown_already_open failure_class=%s", failure_class)
     return failure_class
+
+
+def _invalidate_yfinance_crumb() -> None:
+    """Discard only the shared anonymous Yahoo crumb/cookie state for one retry."""
+    try:
+        from yfinance.data import YfData
+
+        data = YfData()
+        with data._cookie_lock:
+            data._crumb = None
+            if not getattr(data, "_logged_in", False):
+                data._cookie = None
+        logger.info("[YF-Fallback] event=yfinance_crumb_reset")
+    except Exception as exc:
+        logger.debug("[YF-Fallback] event=yfinance_crumb_reset_failed exception_type=%s", type(exc).__name__)
+
+
+def _load_yfinance_info(ticker: str) -> tuple[yf.Ticker, Dict[str, Any]]:
+    """Fetch metadata with at most one bounded retry for an expired crumb."""
+    for attempt in range(2):
+        ticker_obj = yf.Ticker(ticker.upper())
+        try:
+            info = ticker_obj.info
+        except Exception as exc:
+            if attempt == 0 and _classify_yfinance_outage(exc) == "invalid_crumb":
+                _invalidate_yfinance_crumb()
+                continue
+            raise
+        if info:
+            return ticker_obj, info
+        return ticker_obj, {}
+    return yf.Ticker(ticker.upper()), {}
 
 
 def _yfinance_cooldown_status() -> tuple[bool, Optional[str]]:
@@ -503,8 +540,7 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
 
     configure_yfinance_cache(yf)
     try:
-        ticker_obj = yf.Ticker(ticker.upper())
-        info = ticker_obj.info
+        ticker_obj, info = _load_yfinance_info(ticker)
         if not info:
             logger.warning("[YF-Fallback] No info for %s", ticker)
             return None
