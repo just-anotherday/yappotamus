@@ -241,7 +241,7 @@ def test_sparse_etf_metadata_is_serialization_safe(monkeypatch):
     assert item.current_price == 100
     assert item.etf_data is None
     assert item.shares_outstanding is None
-    assert item.recommendation_key == "N/A"
+    assert item.recommendation_key is None
 
 
 @pytest.mark.asyncio
@@ -290,8 +290,9 @@ async def test_partial_provider_response_is_normalized_without_breaking_batch(mo
 
     assert item.company_name == "PART"
     assert item.current_price == 10
-    assert item.previous_close == 0
-    assert item.beta == 1
+    assert item.previous_close is None
+    assert item.beta is None
+    assert item.data_status == "partial"
     assert item.target_mean_price is None
 
 
@@ -546,6 +547,16 @@ def test_legitimate_zero_enrichment_fields_are_preserved(field):
     assert merged["market_cap"] == 2_000_000_000_000
 
 
+def test_provider_reported_beta_one_is_preserved():
+    merged, enriched_fields = hybrid_data_service._enrich_with_yf(
+        {"ticker": "AMZN", "beta": None},
+        {"beta": 1.0},
+    )
+
+    assert merged["beta"] == 1.0
+    assert enriched_fields == ["beta"]
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -598,13 +609,14 @@ def test_null_and_zero_are_diagnosed_differently():
     )
     present, missing, zero_fields = summarize_normalized_fields(normalized)
 
-    assert normalized["current_price"] == 0
+    assert normalized["current_price"] is None
     assert normalized["market_cap"] is None
     assert normalized["target_mean_price"] is None
     assert "market_cap" in missing
     assert "number_of_analysts" in present
     assert "target_mean_price" in missing
-    assert {"current_price", "number_of_analysts"} <= set(zero_fields)
+    assert "number_of_analysts" in zero_fields
+    assert "current_price" in missing
 
 
 @pytest.mark.asyncio
@@ -629,6 +641,11 @@ async def test_stale_cache_used_only_after_provider_failure(monkeypatch, caplog)
 
     assert result is not None
     assert result["current_price"] == 101
+    assert result["data_status"] == "stale"
+    assert result["provider_status"] == {
+        "finnhub": "unavailable",
+        "yfinance": "unavailable",
+    }
     assert "cache_state=stale" in caplog.text
     assert "stale_cache_used=true" in caplog.text
 
@@ -675,7 +692,7 @@ async def test_unsupported_symbol_returns_safe_per_symbol_fallback(monkeypatch):
     assert item.market_size_status == "provider_failed"
     assert item.market_cap is None
     assert item.fund_assets is None
-    assert item.current_price == 0
+    assert item.current_price is None
     assert item.security_type == "UNKNOWN"
 
 
@@ -886,6 +903,144 @@ def test_yfinance_market_cap_fills_missing_finnhub_profile_value():
     assert "market_cap" in enriched
 
 
+def test_known_etf_failure_has_identity_and_no_numeric_sentinels():
+    item = WatchlistItem.model_validate(hybrid_data_service.create_error_fallback("SPY", "yf"))
+
+    assert item.company_name == "State Street SPDR S&P 500 ETF Trust"
+    assert item.security_type == "ETF"
+    assert item.data_status == "unavailable"
+    assert item.current_price is None
+    assert item.beta is None
+    assert item.overall_risk is None
+    assert item.insider_percent is None
+
+
+@pytest.mark.asyncio
+async def test_equity_enrichment_failure_is_partial_not_complete(monkeypatch):
+    async def finnhub_equity(_ticker):
+        return {
+            "ticker": "ORI", "symbol": "ORI", "company_name": "Old Republic",
+            "security_type": "STOCK", "current_price": 43, "previous_close": 42,
+            "market_cap": 10_000_000_000, "beta": None, "data_source": "fh",
+        }
+
+    async def unavailable_yfinance(_ticker):
+        return None
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub_equity)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", unavailable_yfinance)
+
+    result = await hybrid_data_service.get_hybrid_stock_price("ORI")
+
+    assert result["security_type"] == "STOCK"
+    assert result["data_status"] == "partial"
+    assert result["provider_status"]["finnhub"] == "healthy"
+    assert result["provider_status"]["yfinance"] == "unavailable"
+    assert result["beta"] is None
+    assert result["overall_risk"] is None
+
+
+def test_risk_is_recomputed_from_final_enriched_inputs():
+    finnhub = {
+        "ticker": "ORI", "security_type": "STOCK", "current_price": 80,
+        "fifty_two_week_high": None, "fifty_two_week_low": None, "beta": None,
+        "short_percent_of_float": None, "debt_to_equity": None, "overall_risk": None,
+    }
+    yfinance = {
+        "security_type": "STOCK", "fifty_two_week_high": 100, "fifty_two_week_low": 50,
+        "beta": 2.0, "short_percent_of_float": 0.1, "debt_to_equity": 25.0,
+    }
+
+    merged, _ = hybrid_data_service._enrich_with_yf(finnhub, yfinance)
+
+    assert merged["beta"] == 2.0
+    assert merged["overall_risk"] == hybrid_data_service._compute_composite_risk(
+        beta=2.0, short_pct_of_float=0.1, debt_eq=25.0,
+        high52=100, low52=50, current_price=80,
+    )
+
+
+def test_risk_is_unavailable_when_final_inputs_are_incomplete():
+    payload = {"beta": 2.0, "current_price": 80, "overall_risk": 1.8}
+    hybrid_data_service._recompute_final_risk(payload)
+    assert payload["overall_risk"] is None
+
+
+def test_stale_metadata_risk_is_recomputed_after_fresh_quote_merge():
+    stale = {
+        "ticker": "ORI", "security_type": "STOCK", "current_price": 80,
+        "beta": 2.0, "short_percent_of_float": 0.1, "debt_to_equity": 25.0,
+        "fifty_two_week_high": 100, "fifty_two_week_low": 50, "overall_risk": 1.8,
+    }
+    partial = {
+        "current_price": 90,
+        "provider_status": {"finnhub": "healthy", "yfinance": "degraded"},
+        "missing_fields": ["beta"],
+    }
+
+    merged = hybrid_data_service._merge_stale_static_metadata(stale, partial)
+
+    assert merged["data_status"] == "stale"
+    assert merged["overall_risk"] == hybrid_data_service._compute_composite_risk(
+        beta=2.0, short_pct_of_float=0.1, debt_eq=25.0,
+        high52=100, low52=50, current_price=90,
+    )
+
+
+def test_missing_provider_values_remain_null_while_provider_zero_is_preserved():
+    assert yfinance_fallback._assemble_price_fields({})["volume"] is None
+    assert yfinance_fallback._assemble_price_fields({"regularMarketVolume": 0})["volume"] == 0
+    assert yfinance_fallback._assemble_analyst_fields({})["number_of_analysts"] is None
+    assert yfinance_fallback._assemble_analyst_fields({"numberOfAnalystOpinions": 0})["number_of_analysts"] == 0
+    normalized = normalize_market_data_payload(
+        "ORI", {"ticker": "ORI", "recommendation_key": "N/A"}, default_source="fh"
+    )
+    assert normalized["recommendation_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_partial_refresh_uses_bounded_stale_complete_metadata(monkeypatch):
+    complete = normalize_market_data_payload("ORI", {
+        "ticker": "ORI", "company_name": "Old Republic", "security_type": "STOCK",
+        "current_price": 42, "open_price": 41, "previous_close": 41, "day_low": 40,
+        "day_high": 43, "fifty_two_week_low": 35, "fifty_two_week_high": 47,
+        "market_cap": 10_000_000_000, "beta": 0.6, "overall_risk": 2.0,
+        "data_status": "complete", "data_source": "fh",
+    }, default_source="fh")
+    hybrid_data_service._cache["ORI"] = (complete, time.time() - hybrid_data_service._CACHE_TTL - 1)
+
+    async def partial_finnhub(_ticker):
+        return {"ticker": "ORI", "company_name": "Old Republic", "security_type": "STOCK",
+                "current_price": 44, "previous_close": 43, "market_cap": 10_500_000_000, "data_source": "fh"}
+
+    async def no_yfinance(_ticker): return None
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", partial_finnhub)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", no_yfinance)
+
+    result = await hybrid_data_service.get_hybrid_stock_price("ORI")
+
+    assert result["data_status"] == "stale"
+    assert result["current_price"] == 44
+    assert result["fifty_two_week_high"] == 47
+    assert hybrid_data_service._cache["ORI"][1] < time.time() - hybrid_data_service._CACHE_TTL
+
+
+@pytest.mark.asyncio
+async def test_expired_complete_metadata_is_not_reused(monkeypatch):
+    complete = {"ticker": "ORI", "data_status": "complete", "fifty_two_week_high": 47}
+    hybrid_data_service._cache["ORI"] = (complete, time.time() - hybrid_data_service._STALE_CACHE_TTL - 1)
+    async def partial_finnhub(_ticker):
+        return {"ticker": "ORI", "company_name": "Old Republic", "security_type": "STOCK",
+                "current_price": 44, "market_cap": 10_500_000_000, "data_source": "fh"}
+    async def no_yfinance(_ticker): return None
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", partial_finnhub)
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", no_yfinance)
+
+    result = await hybrid_data_service.get_hybrid_stock_price("ORI")
+    assert result["data_status"] == "partial"
+    assert result["fifty_two_week_high"] is None
+
+
 def test_equity_price_times_shares_fallback_is_not_used_for_etfs():
     assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 10, "currency": "USD"}, "STOCK", 5) == (50, True)
     assert yfinance_fallback._resolve_market_cap({"sharesOutstanding": 10, "currency": "USD"}, "ETF", 5) == (None, False)
@@ -969,7 +1124,8 @@ def test_fund_metadata_errors_and_invalid_values_are_non_fatal(monkeypatch):
     monkeypatch.setattr(yfinance_fallback, "configure_yfinance_cache", lambda _yf: True)
     monkeypatch.setattr(yfinance_fallback.yf, "Ticker", FakeTicker)
     item = WatchlistItem.model_validate(yfinance_fallback.get_stock_price_yf("QQQ"))
-    assert item.company_name == "QQQ"
+    assert item.company_name == "Invesco QQQ Trust"
+    assert item.security_type == "ETF"
     assert item.market_size_status == "unsupported"
     for value in (True, "1", 0, -1, np.nan, np.inf):
         assert yfinance_fallback._positive_market_number(value) is None

@@ -7,6 +7,8 @@ export type DataSource = "fh" | "yf";
 export type SecurityType = "STOCK" | "ETF" | "INDEX" | "CRYPTO" | "ADR" | "UNKNOWN";
 export type MarketSizeType = "market_cap" | "fund_assets";
 export type MarketDataStatus = "available" | "unsupported" | "provider_failed" | "rate_limited" | "unauthorized" | "stale_cache";
+export type WatchlistDataStatus = "complete" | "partial" | "stale" | "unavailable";
+export type ProviderState = "healthy" | "cooldown" | "degraded" | "unavailable";
 
 export interface StockData {
   ticker: string;
@@ -61,15 +63,15 @@ export interface WatchlistItem {
   security_type?: SecurityType | null;
 
   // Price Data
-  current_price: number;
-  open_price: number;
-  previous_close: number;
-  day_low: number;
-  day_high: number;
-  fifty_two_week_high: number;
-  fifty_two_week_low: number;
-  change: number;
-  change_percent: number;
+  current_price: number | null;
+  open_price: number | null;
+  previous_close: number | null;
+  day_low: number | null;
+  day_high: number | null;
+  fifty_two_week_high: number | null;
+  fifty_two_week_low: number | null;
+  change: number | null;
+  change_percent: number | null;
   market_cap: number | null;
   fund_assets?: number | null;
   market_size_value?: number | null;
@@ -86,17 +88,17 @@ export interface WatchlistItem {
   institution_percent?: number | null;
 
   // Risk & Demand Signals (computed heuristic, 0-10 scale)
-  beta: number;
+  beta: number | null;
   short_percent_of_float?: number | null;
   shares_short?: number | null;
-  overall_risk: number;
+  overall_risk: number | null;
 
   // Analyst Targets (STOCK only)
   target_mean_price?: number | null;
   target_median_price?: number | null;
   target_high_price?: number | null;
   target_low_price?: number | null;
-  recommendation_key: string;
+  recommendation_key?: string | null;
   number_of_analysts?: number | null;
 
   // ETF-Specific Data (optional)
@@ -111,6 +113,9 @@ export interface WatchlistItem {
   data_source?: DataSource;
   // Fields filled by yfinance enrichment (when primary is Finnhub)
   yf_enriched_fields?: string[];
+  data_status?: WatchlistDataStatus;
+  provider_status?: Partial<Record<"finnhub" | "yfinance", ProviderState>>;
+  missing_fields?: string[];
 }
 
 export interface LiveQuote {

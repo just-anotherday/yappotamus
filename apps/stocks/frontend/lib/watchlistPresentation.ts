@@ -8,7 +8,7 @@ export function isFiniteWatchlistNumber(value: unknown): value is number {
 }
 
 export function formatWatchlistCurrency(value: unknown): string {
-  if (!isFiniteWatchlistNumber(value)) return 'N/A';
+  if (!isFiniteWatchlistNumber(value)) return '—';
   return new Intl.NumberFormat('en-US', {
     style: 'currency', currency: 'USD',
   }).format(value);
@@ -36,7 +36,7 @@ export function getMarketSizeValue(item: WatchlistItem): number | null {
 export function formatMarketSize(item: WatchlistItem): string {
   if (item.market_size_status === 'provider_failed') return 'Unavailable';
   const value = getMarketSizeValue(item);
-  if (value === null) return item.security_type === 'ETF' ? 'Not applicable' : 'N/A';
+  if (value === null) return item.security_type === 'ETF' ? 'Unavailable' : 'N/A';
   const currency = typeof item.market_size_currency === 'string'
     ? item.market_size_currency.trim().toUpperCase()
     : '';
@@ -61,7 +61,40 @@ export function getCompanySize(item: WatchlistItem): { label: string; color: str
   return { label: 'Nano Cap', color: 'bg-red-100 text-red-700' };
 }
 export function formatWatchlistNumber(value: unknown, decimals = 2): string {
-  return isFiniteWatchlistNumber(value) ? value.toFixed(decimals) : 'N/A';
+  return isFiniteWatchlistNumber(value) ? value.toFixed(decimals) : '—';
+}
+
+export function formatWatchlistPercent(value: unknown, notApplicable = false): string {
+  if (notApplicable) return 'Not applicable';
+  return isFiniteWatchlistNumber(value) ? `${(value * 100).toFixed(2)}%` : '—';
+}
+
+export function formatWatchlistRange(low: unknown, high: unknown): string {
+  if (!isFiniteWatchlistNumber(low) || !isFiniteWatchlistNumber(high)) return '—';
+  return `${formatWatchlistCurrency(low)} - ${formatWatchlistCurrency(high)}`;
+}
+
+export function formatEmployeeCount(value: unknown): string {
+  return isFiniteWatchlistNumber(value) && value >= 0
+    ? new Intl.NumberFormat('en-US').format(value)
+    : '—';
+}
+
+export function hasWatchlistRecommendation(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '' && value.trim().toUpperCase() !== 'N/A';
+}
+
+export function getWatchlistDataWarning(item: WatchlistItem): string | null {
+  if (item.data_status === 'stale') {
+    const hasFreshQuoteProvider = item.provider_status?.finnhub === 'healthy'
+      || item.provider_status?.yfinance === 'healthy';
+    return hasFreshQuoteProvider
+      ? 'Stale fundamentals — showing last-known fundamentals with current prices.'
+      : 'Stale data — showing last-known values.';
+  }
+  if (item.data_status === 'partial') return 'Partial data — some fundamentals are temporarily unavailable.';
+  if (item.data_status === 'unavailable') return 'Fundamentals temporarily unavailable.';
+  return null;
 }
 
 export function formatWatchlistRecommendation(value: unknown): string {
@@ -105,6 +138,10 @@ const PRESERVE_WHEN_MISSING: readonly (keyof WatchlistItem)[] = [
   'target_low_price',
   'recommendation_key',
   'number_of_analysts',
+  'fifty_two_week_high',
+  'fifty_two_week_low',
+  'beta',
+  'overall_risk',
 ];
 
 const PRESERVE_WHEN_ZERO: readonly (keyof WatchlistItem)[] = [
@@ -173,11 +210,13 @@ export function mergeWatchlistRefresh(
     const previous = previousByTicker.get(incoming.ticker);
     if (!previous) return incoming;
 
-    const providerFailed = ['provider_failed', 'rate_limited', 'unauthorized'].includes(incoming.market_size_status ?? '');
+    const providerFailed = incoming.data_status === 'unavailable'
+      || ['provider_failed', 'rate_limited', 'unauthorized'].includes(incoming.market_size_status ?? '');
     if (providerFailed) {
       return {
         ...previous,
-        market_size_status: 'stale_cache',
+        data_status: 'stale',
+        market_size_status: previous.market_size_value != null ? 'stale_cache' : incoming.market_size_status,
         post_market_price: incoming.post_market_price ?? previous.post_market_price,
         post_market_change: incoming.post_market_change ?? previous.post_market_change,
         post_market_change_percent: incoming.post_market_change_percent ?? previous.post_market_change_percent,
@@ -212,6 +251,10 @@ export function mergeWatchlistRefresh(
       : previous.etf_data == null
         ? incoming.etf_data
         : mergeEtfData(previous.etf_data, incoming.etf_data);
+    if (incoming.data_status === 'partial' && previous.data_status === 'complete') {
+      merged.data_status = 'stale';
+      if (merged.market_size_value != null) merged.market_size_status = 'stale_cache';
+    }
 
     return merged;
   });

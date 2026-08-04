@@ -9,7 +9,7 @@ import Link from 'next/link';
 import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { formatLargeNumber, formatShares, formatPercent, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
+import { formatShares, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
 import type { WatchlistItem, LiveQuote } from '@/types/stock';
 import TickerTooltip from './TickerTooltip';
 import { useExtendedHours } from '@/hooks/useExtendedHours';
@@ -20,6 +20,11 @@ import {
   formatWatchlistRecommendation,
   formatMarketSize,
   getCompanySize,
+  formatWatchlistPercent,
+  formatWatchlistRange,
+  formatEmployeeCount,
+  getWatchlistDataWarning,
+  hasWatchlistRecommendation,
   getWatchlistDisplayPrice,
   getWatchlistChange,
   presentWatchlist,
@@ -255,6 +260,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                 const displayPrice = getWatchlistDisplayPrice(item, live);
 
                 const displayChangePct = getWatchlistChange(item, live) ?? undefined;
+                const dataWarning = getWatchlistDataWarning(item);
 
                 return (
                   <Fragment key={item.ticker}>
@@ -287,7 +293,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                           : displayChangePct != null && displayChangePct < 0 ? 'text-red-600'
                           : 'text-gray-500'
                       }`} onClick={() => safeToggleExpand(item.ticker)}>
-                        {displayChangePct != null ? (displayChangePct > 0 ? '+' : '') + displayChangePct.toFixed(2) + '%' : 'N/A'}
+                        {displayChangePct != null ? (displayChangePct > 0 ? '+' : '') + displayChangePct.toFixed(2) + '%' : '—'}
                       </td>
                       {/* Extended-hours column — renders during weekday pre/post-market */}
                       {showAfterHours && (
@@ -359,7 +365,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                                   </svg>
                                   <span className="font-medium">Employees:</span>
-                                  <span>{formatLargeNumber(item.full_time_employees)}</span>
+                                  <span>{formatEmployeeCount(item.full_time_employees)}</span>
                                 </span>
                               )}
                             </div>
@@ -368,6 +374,11 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               {item.long_business_summary && (
                                 <p className="text-gray-600 text-sm leading-relaxed whitespace-pre-line">
                                   {item.long_business_summary}
+                                </p>
+                              )}
+                              {dataWarning && (
+                                <p role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800" title={dataWarning}>
+                                  {dataWarning}
                                 </p>
                               )}
                                {/* Badges: Market Cap Size, Analyst Rec */}
@@ -379,9 +390,11 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${capInfo.color}`}>
                                          {capInfo.label}
                                        </span>
-                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${recommendationBadgeClass(typeof item.recommendation_key === 'string' ? item.recommendation_key : 'N/A')}`}>
-                                          {formatWatchlistRecommendation(item.recommendation_key)}
-                                        </span>
+                                        {hasWatchlistRecommendation(item.recommendation_key) && (
+                                          <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${recommendationBadgeClass(item.recommendation_key)}`}>
+                                            {formatWatchlistRecommendation(item.recommendation_key)}
+                                          </span>
+                                        )}
                                       </>
                                     );
                                   })()}
@@ -446,7 +459,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>52W Range</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.fifty_two_week_low)} - {formatWatchlistCurrency(item.fifty_two_week_high)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistRange(item.fifty_two_week_low, item.fifty_two_week_high)}</span>
                                 </div>
                               </div>
                             </div>
@@ -520,11 +533,11 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Insider Ownership</span>
-                                  <span className="font-semibold text-gray-900">{formatPercent(item.insider_percent)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistPercent(item.insider_percent)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Institution Ownership</span>
-                                  <span className="font-semibold text-gray-900">{formatPercent(item.institution_percent)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistPercent(item.institution_percent)}</span>
                                 </div>
                               </div>
                             </div>
@@ -643,12 +656,12 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Short % of Float</span>
-                                  <span className="font-semibold text-gray-900">{formatPercent(item.short_percent_of_float)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistPercent(item.short_percent_of_float, item.security_type === 'ETF')}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Overall Risk</span>
-                                  <span className={`font-semibold ${riskBadgeClass(item.overall_risk).replace('bg-*', '').split(' ').pop() || ''}`}>
-                                    {formatWatchlistNumber(item.overall_risk, 1)} / 10
+                                  <span className={`font-semibold ${item.overall_risk != null ? riskBadgeClass(item.overall_risk).split(' ').pop() : 'text-gray-500'}`}>
+                                    {item.overall_risk != null ? `${formatWatchlistNumber(item.overall_risk, 1)} / 10` : '—'}
                                   </span>
                                 </div>
                               </div>

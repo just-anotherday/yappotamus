@@ -27,7 +27,7 @@ from backend.config.settings import settings
 from backend.config.polling_settings import polling_settings
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.error_fallback import create_error_fallback
-from backend.lib.risk_metrics import _compute_composite_risk, _safe_pct
+from backend.lib.risk_metrics import _safe_pct
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +246,7 @@ async def get_ticker_info(ticker: str) -> Dict[str, Any]:
         "floatShares": profile.get("dilutedSharesOutstanding") or 0,
 
         # Risk indicators (best-effort from profile)
-        "beta": profile.get("beta") or 1.0,
+        "beta": profile.get("beta"),
 
 	# 52-week range not available on Finnhub free tier — set to 0 so hybrid_data_service
 	# enrichment via yfinance can fill these gap fields correctly.
@@ -256,11 +256,11 @@ async def get_ticker_info(ticker: str) -> Dict[str, Any]:
         # Analyst data (not available on free Finnhub tier — set defaults)
         "forwardPE": None,
         "averageAnalystRating": None,
-        "heldPercentInsiders": 0.0,
-        "heldPercentInstitutions": 0.0,
-        "shortPercentOfFloat": 0.0,
-        "sharesShort": 0,
-        "debtToEquity": 0.0,
+        "heldPercentInsiders": None,
+        "heldPercentInstitutions": None,
+        "shortPercentOfFloat": None,
+        "sharesShort": None,
+        "debtToEquity": None,
         "targetMeanPrice": None,
         "targetMedianPrice": None,
         "targetHighPrice": None,
@@ -287,14 +287,17 @@ async def get_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     if not info:
         return None
 
-    current_price = info.get("currentPrice", 0) or 0
-    previous_close = info.get("previousClose", 0) or 0
+    def positive_or_none(value: Any) -> float | None:
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+    current_price = positive_or_none(info.get("currentPrice"))
+    previous_close = positive_or_none(info.get("previousClose"))
 
     return {
         # Identity
         "ticker": ticker.upper(),
         "symbol": info.get("symbol", ticker.upper()),
-        "company_name": info.get("shortName", info.get("longName", "N/A")),
+        "company_name": info.get("shortName") or info.get("longName") or ticker.upper(),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
         "long_business_summary": info.get("longBusinessSummary"),
@@ -307,46 +310,42 @@ async def get_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
 
         # Price Data
         "current_price": current_price,
-        "open_price": info.get("regularMarketOpen", 0) or 0,
+        "open_price": positive_or_none(info.get("regularMarketOpen")),
         "previous_close": previous_close,
-        "day_low": info.get("regularMarketDayLow", 0) or 0,
-        "day_high": info.get("regularMarketDayHigh", 0) or 0,
-        "fifty_two_week_high": info.get("fiftyTwoWeekHigh", 0) or 0,
-        "fifty_two_week_low": info.get("fiftyTwoWeekLow", 0) or 0,
-        "change": round(current_price - previous_close, 2) if current_price and previous_close else 0,
-        "change_percent": round(info.get("regularMarketChangePercent", 0) or 0, 2),
-        "market_cap": info.get("marketCap", 0) or 0,
+        "day_low": positive_or_none(info.get("regularMarketDayLow")),
+        "day_high": positive_or_none(info.get("regularMarketDayHigh")),
+        "fifty_two_week_high": None,
+        "fifty_two_week_low": None,
+        "change": round(current_price - previous_close, 2) if current_price is not None and previous_close is not None else None,
+        "change_percent": round(info["regularMarketChangePercent"], 2) if previous_close and info.get("regularMarketChangePercent") is not None else None,
+        "market_cap": positive_or_none(info.get("marketCap")),
         "market_size_currency": info.get("currency"),
 
         # Share Structure
-        "shares_outstanding": int(info.get("sharesOutstanding", 0) or 0),
-        "float_shares": int(info.get("floatShares", 0) or 0),
-        "insider_percent": round(info.get("heldPercentInsiders", 0.0) or 0.0, 4),
-        "institution_percent": round(info.get("heldPercentInstitutions", 0.0) or 0.0, 4),
+        "shares_outstanding": int(info["sharesOutstanding"]) if positive_or_none(info.get("sharesOutstanding")) else None,
+        "float_shares": int(info["floatShares"]) if positive_or_none(info.get("floatShares")) else None,
+        "insider_percent": None,
+        "institution_percent": None,
 
         # Risk & Demand Signals (computed)
-        "beta": info.get("beta", 1.0) or 1.0,
-        "short_percent_of_float": round(info.get("shortPercentOfFloat", 0.0) or 0.0, 4),
-        "shares_short": int(info.get("sharesShort", 0) or 0),
-        "overall_risk": _compute_composite_risk(
-            beta=info.get("beta") or 1.0,
-            short_pct_of_float=info.get("shortPercentOfFloat") or 0.0,
-            debt_eq=info.get("debtToEquity") or 0.0,
-            high52=info.get("fiftyTwoWeekHigh") or 0,
-            low52=info.get("fiftyTwoWeekLow") or 0,
-            current_price=current_price,
-        ),
+        "beta": info.get("beta"),
+        "short_percent_of_float": None,
+        "shares_short": None,
+        "overall_risk": None,
+        "debt_to_equity": None,
 
         # Analyst Targets (not available on free tier)
         "target_mean_price": info.get("targetMeanPrice"),
         "target_median_price": info.get("targetMedianPrice"),
         "target_high_price": info.get("targetHighPrice"),
         "target_low_price": info.get("targetLowPrice"),
-        "recommendation_key": info.get("recommendationKey", "N/A") or "N/A",
-        "number_of_analysts": info.get("numberOfAnalystOpinions", 0) or 0,
+        "recommendation_key": info.get("recommendationKey") or None,
+        "number_of_analysts": info.get("numberOfAnalystOpinions"),
 
         # DATA SOURCE TAG
         "data_source": "fh",
+        "security_type": "STOCK",
+        "provider_status": {"finnhub": "healthy", "yfinance": "degraded"},
     }
 
 

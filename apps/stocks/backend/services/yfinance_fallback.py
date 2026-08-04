@@ -219,29 +219,35 @@ def _resolve_fund_assets_from_metadata(ticker_obj: yf.Ticker) -> float | None:
         return None
     return _positive_market_number(value)
 
-def _resolve_shares_outstanding(info: Dict[str, Any], is_etf_flag: bool) -> int:
+def _resolve_shares_outstanding(info: Dict[str, Any], is_etf_flag: bool) -> int | None:
     """Resolve shares outstanding, computing from NAV for ETFs when needed."""
-    value = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding") or 0
+    value = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
     if not value and is_etf_flag:
-        total_assets = info.get("totalAssets") or info.get("netAssets", 0)
+        total_assets = info.get("totalAssets") or info.get("netAssets")
         nav_price = info.get("navPrice")
         if total_assets and nav_price and nav_price > 0:
             value = int(total_assets / nav_price)
-    return int(value) if value else 0
+    return int(value) if value else None
 
 
-def _resolve_float_shares(info: Dict[str, Any], shares_outstanding: int, is_etf_flag: bool) -> int:
+def _resolve_float_shares(
+    info: Dict[str, Any], shares_outstanding: int | None, is_etf_flag: bool
+) -> int | None:
     """Resolve float shares, using outstanding as fallback for ETFs."""
-    value = info.get("floatShares") or 0
+    value = info.get("floatShares")
     if is_etf_flag and not value:
         value = shares_outstanding
-    return int(value) if value else 0
+    return int(value) if value else None
 
 
-def _resolve_beta(info: Dict[str, Any]) -> float:
+def _resolve_beta(info: Dict[str, Any]) -> float | None:
     """Resolve beta value, falling back to beta3Year for ETFs."""
     # beta3Year rarely populated; keep as last resort fallback (TD-CQ-006 noted)
-    return info.get("beta") or info.get("beta3Year") or 1.0  # type: ignore[return-value]
+    for field in ("beta", "beta3Year"):
+        value = info.get(field)
+        if isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value)):
+            return float(value)
+    return None
 
 
 def _assemble_price_fields(info: Dict[str, Any]) -> Dict[str, Any]:
@@ -256,47 +262,57 @@ def _assemble_price_fields(info: Dict[str, Any]) -> Dict[str, Any]:
         current_price = post_market_price
     else:
         # Prefer post-market price (live after-hours), fall back to regular market price
-        current_price = info.get("postMarketPrice") or info.get("currentPrice") or info.get("regularMarketPrice") or 0
+        current_price = info.get("postMarketPrice") or info.get("currentPrice") or info.get("regularMarketPrice")
     
-    previous_close = info.get("previousClose") or info.get("regularMarketPreviousClose") or 0
+    previous_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
 
-    change = round(current_price - previous_close, 2) if current_price and previous_close else 0
+    change = round(current_price - previous_close, 2) if current_price and previous_close else None
     change_pct = _safe_pct(
         (current_price - previous_close) if current_price and previous_close else 0,
         previous_close,
-    )
+    ) if previous_close else None
 
     return {
         "current_price": current_price,
-        "open_price": info.get("open") or info.get("regularMarketOpen", 0) or 0,
+        "open_price": info.get("open") or info.get("regularMarketOpen"),
         "previous_close": previous_close,
-        "day_low": info.get("dayLow") or info.get("regularMarketDayLow", 0) or 0,
-        "day_high": info.get("dayHigh") or info.get("regularMarketDayHigh", 0) or 0,
-        "fifty_two_week_high": info.get("fiftyTwoWeekHigh", 0) or 0,
-        "fifty_two_week_low": info.get("fiftyTwoWeekLow", 0) or 0,
+        "day_low": info.get("dayLow") or info.get("regularMarketDayLow"),
+        "day_high": info.get("dayHigh") or info.get("regularMarketDayHigh"),
+        "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+        "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
         "change": change,
         "change_percent": change_pct,
-        "volume": int(info.get("regularMarketVolume", 0) or 0),
+        "volume": (
+            int(info["regularMarketVolume"])
+            if info.get("regularMarketVolume") is not None
+            else None
+        ),
     }
 
 
-def _assemble_risk_fields(beta: float, current_price: float, info: Dict[str, Any]) -> Dict[str, Any]:
+def _assemble_risk_fields(beta: float | None, current_price: float | None, info: Dict[str, Any]) -> Dict[str, Any]:
     """Extract risk + demand signal fields."""
-    short_pct = info.get("shortPercentOfFloat") or 0.0
+    short_pct = info.get("shortPercentOfFloat")
+    debt_to_equity = info.get("debtToEquity")
+    high = info.get("fiftyTwoWeekHigh")
+    low = info.get("fiftyTwoWeekLow")
+    inputs = (beta, short_pct, debt_to_equity, high, low, current_price)
+    risk = (
+        _compute_composite_risk(
+            beta=float(beta), short_pct_of_float=float(short_pct), debt_eq=float(debt_to_equity),
+            high52=float(high), low52=float(low), current_price=float(current_price),
+        )
+        if all(isinstance(value, Real) and math.isfinite(float(value)) for value in inputs)
+        else None
+    )
     return {
         "beta": beta,
-        "short_percent_of_float": round(short_pct, 4),
-        "shares_short": int(info.get("sharesShort", 0) or 0),
-        "insider_percent": round(info.get("heldPercentInsiders", 0.0) or 0.0, 4),
-        "institution_percent": round(info.get("heldPercentInstitutions", 0.0) or 0.0, 4),
-        "overall_risk": _compute_composite_risk(
-            beta=beta,
-            short_pct_of_float=short_pct,
-            debt_eq=info.get("debtToEquity") or 0.0,
-            high52=info.get("fiftyTwoWeekHigh") or 0,
-            low52=info.get("fiftyTwoWeekLow") or 0,
-            current_price=current_price,
-        ),
+        "short_percent_of_float": round(short_pct, 4) if short_pct is not None else None,
+        "shares_short": int(info["sharesShort"]) if info.get("sharesShort") is not None else None,
+        "insider_percent": round(info["heldPercentInsiders"], 4) if info.get("heldPercentInsiders") is not None else None,
+        "institution_percent": round(info["heldPercentInstitutions"], 4) if info.get("heldPercentInstitutions") is not None else None,
+        "debt_to_equity": debt_to_equity,
+        "overall_risk": risk,
     }
 
 
@@ -307,8 +323,8 @@ def _assemble_analyst_fields(info: Dict[str, Any]) -> Dict[str, Any]:
         "target_median_price": info.get("targetMedianPrice"),
         "target_high_price": info.get("targetHighPrice"),
         "target_low_price": info.get("targetLowPrice"),
-        "recommendation_key": info.get("recommendationKey", "N/A") or "N/A",
-        "number_of_analysts": info.get("numberOfAnalystOpinions", 0) or 0,
+        "recommendation_key": info.get("recommendationKey") or None,
+        "number_of_analysts": info.get("numberOfAnalystOpinions"),
     }
 
 
@@ -496,7 +512,7 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
         security_type = _detect_security_type(info)
         etf = _is_etf(info)
         # Prefer post-market price for after-hours trading, fall back to regular market price
-        current_price = info.get("postMarketPrice") or info.get("currentPrice") or info.get("regularMarketPrice") or 0
+        current_price = info.get("postMarketPrice") or info.get("currentPrice") or info.get("regularMarketPrice")
         beta = _resolve_beta(info)
 
         # Build result by composing helpers
@@ -505,6 +521,7 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
             "symbol": ticker.upper(),
             "data_source": "yf",
             "security_type": security_type,
+            "provider_status": {"finnhub": "degraded", "yfinance": "healthy"},
         }
         result.update(_assemble_company_fields(ticker_obj, info))
         result.update(_assemble_price_fields(info))
@@ -524,7 +541,7 @@ def get_stock_price_yf(ticker: str) -> Optional[Dict[str, Any]]:
         if security_type == "STOCK":
             result["shares_outstanding"] = _resolve_shares_outstanding(info, etf)
             result["float_shares"] = _resolve_float_shares(
-                info, result.get("shares_outstanding", 0), etf
+                info, result.get("shares_outstanding"), etf
             )
         
         # Only include stock-specific risk fields for STOCKs

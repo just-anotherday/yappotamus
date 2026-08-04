@@ -12,23 +12,16 @@ import math
 from collections.abc import Mapping
 from typing import Any, Dict
 
+from backend.lib.constants import KNOWN_ETF_NAMES
+
 
 SECURITY_TYPES = {"STOCK", "ETF", "INDEX", "CRYPTO", "ADR", "UNKNOWN"}
 DATA_SOURCES = {"fh", "yf"}
 
-REQUIRED_NUMERIC_DEFAULTS: Dict[str, float] = {
-    "current_price": 0.0,
-    "open_price": 0.0,
-    "previous_close": 0.0,
-    "day_low": 0.0,
-    "day_high": 0.0,
-    "fifty_two_week_high": 0.0,
-    "fifty_two_week_low": 0.0,
-    "change": 0.0,
-    "change_percent": 0.0,
-    "market_cap": 0.0,
-    "beta": 1.0,
-    "overall_risk": 5.0,
+NULLABLE_MEASUREMENT_FIELDS = {
+    "current_price", "open_price", "previous_close", "day_low", "day_high",
+    "fifty_two_week_high", "fifty_two_week_low", "change", "change_percent",
+    "beta", "overall_risk",
 }
 
 OPTIONAL_FLOAT_FIELDS = {
@@ -134,9 +127,7 @@ def normalize_market_data_payload(
 ) -> Dict[str, Any]:
     """Return a finite, serialization-safe watchlist payload.
 
-    Zero remains zero and optional ``None`` remains ``None``.  Only required
-    numeric fields use defaults because the public response model requires
-    numbers for those fields.
+    Legitimate zero remains zero and unavailable measurements remain ``None``.
     """
 
     ticker_upper = ticker.strip().upper()
@@ -148,8 +139,8 @@ def normalize_market_data_payload(
         _optional_text(payload.get("company_name")) or normalized["ticker"]
     )
 
-    for field, default in REQUIRED_NUMERIC_DEFAULTS.items():
-        normalized[field] = _finite_float(payload.get(field), default)
+    for field in NULLABLE_MEASUREMENT_FIELDS:
+        normalized[field] = _finite_float(payload.get(field), None)
 
     normalized["market_cap"] = _positive_market_size(payload.get("market_cap"))
 
@@ -162,18 +153,25 @@ def normalize_market_data_payload(
     for field in OPTIONAL_TEXT_FIELDS:
         normalized[field] = _optional_text(payload.get(field))
 
-    normalized["volume"] = _finite_int(payload.get("volume"), 0) or 0
+    normalized["volume"] = _finite_int(payload.get("volume"), None)
 
     source = str(payload.get("data_source") or default_source).strip().lower()
     normalized["data_source"] = source if source in DATA_SOURCES else default_source
 
     security_type = str(payload.get("security_type") or "UNKNOWN").strip().upper()
+    if security_type == "UNKNOWN" and ticker_upper in KNOWN_ETF_NAMES:
+        security_type = "ETF"
     normalized["security_type"] = (
         security_type if security_type in SECURITY_TYPES else "UNKNOWN"
     )
+    if normalized["company_name"] == normalized["ticker"] and ticker_upper in KNOWN_ETF_NAMES:
+        normalized["company_name"] = KNOWN_ETF_NAMES[ticker_upper]
 
     recommendation = _optional_text(payload.get("recommendation_key"))
-    normalized["recommendation_key"] = recommendation or "N/A"
+    normalized["recommendation_key"] = (
+        None if recommendation and recommendation.casefold() in {"n/a", "none", "null", "unknown", "error"}
+        else recommendation
+    )
 
     enriched_fields = payload.get("yf_enriched_fields")
     normalized["yf_enriched_fields"] = (
@@ -203,4 +201,21 @@ def normalize_market_data_payload(
     valid_statuses = {"available", "unsupported", "provider_failed", "rate_limited", "unauthorized", "stale_cache"}
     normalized["market_size_status"] = status if status in valid_statuses else ("available" if normalized["market_size_value"] else "unsupported")
     normalized["market_size_fallback_used"] = bool(payload.get("market_size_fallback_used"))
+    provider_status = payload.get("provider_status")
+    normalized["provider_status"] = dict(provider_status) if isinstance(provider_status, Mapping) else {}
+    relevant_fields = ["open_price", "previous_close", "day_low", "day_high", "fifty_two_week_low", "fifty_two_week_high"]
+    relevant_fields += ["fund_assets"] if security_type == "ETF" else ["market_cap", "beta", "overall_risk"]
+    supplied_missing = payload.get("missing_fields")
+    normalized["missing_fields"] = (
+        sorted({str(field) for field in supplied_missing})
+        if isinstance(supplied_missing, list)
+        else [field for field in relevant_fields if normalized.get(field) is None]
+    )
+    requested_status = _optional_text(payload.get("data_status"))
+    if requested_status in {"complete", "partial", "stale", "unavailable"}:
+        normalized["data_status"] = requested_status
+    elif normalized["market_size_status"] == "provider_failed" and normalized["current_price"] is None:
+        normalized["data_status"] = "unavailable"
+    else:
+        normalized["data_status"] = "partial" if normalized["missing_fields"] else "complete"
     return normalized

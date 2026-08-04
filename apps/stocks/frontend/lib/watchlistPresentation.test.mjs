@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canReorderWatchlist, getWatchlistChange, presentWatchlist, watchlistColumnCount } from './watchlistPresentation.ts';
-import { formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistRecommendation, getCompanySize, getWatchlistDisplayPrice, mergeWatchlistRefresh } from './watchlistPresentation.ts';
+import { formatEmployeeCount, formatMarketSize, formatWatchlistCurrency, formatWatchlistNumber, formatWatchlistPercent, formatWatchlistRange, formatWatchlistRecommendation, getCompanySize, getWatchlistDataWarning, getWatchlistDisplayPrice, hasWatchlistRecommendation, mergeWatchlistRefresh } from './watchlistPresentation.ts';
 
 const item = (ticker, company_name, current_price, previous_close, market_cap) => ({ ticker, company_name, current_price, previous_close, market_cap });
 const items = [item('BBB', 'Beta', 90, 100, 20), item('AAA', 'Alpha', 110, 100, 10)];
@@ -39,11 +39,11 @@ test('column count follows extended-hours visibility', () => {
   assert.equal(watchlistColumnCount(true), 6);
 });
 test('optional watchlist values render safely and zero remains distinct from missing', () => {
-  assert.equal(formatWatchlistCurrency(undefined), 'N/A');
-  assert.equal(formatWatchlistCurrency(null), 'N/A');
-  assert.equal(formatWatchlistCurrency(Number.NaN), 'N/A');
+  assert.equal(formatWatchlistCurrency(undefined), '—');
+  assert.equal(formatWatchlistCurrency(null), '—');
+  assert.equal(formatWatchlistCurrency(Number.NaN), '—');
   assert.equal(formatWatchlistCurrency(0), '$0.00');
-  assert.equal(formatWatchlistNumber(undefined), 'N/A');
+  assert.equal(formatWatchlistNumber(undefined), '—');
   assert.equal(formatWatchlistNumber(0), '0.00');
   assert.equal(formatWatchlistRecommendation(undefined), 'N/A');
   assert.equal(formatWatchlistRecommendation('strong_buy'), 'STRONG BUY');
@@ -184,7 +184,7 @@ test('maps legacy market_cap responses and distinguishes missing equity from ETF
   assert.equal(getCompanySize(equity).label, 'Large Cap');
   assert.equal(formatMarketSize({ security_type: 'STOCK', market_cap: null }), 'N/A');
   assert.equal(getCompanySize({ security_type: 'STOCK', market_cap: null }).label, 'Unavailable');
-  assert.equal(formatMarketSize({ security_type: 'ETF', market_cap: null }), 'Not applicable');
+  assert.equal(formatMarketSize({ security_type: 'ETF', market_cap: null }), 'Unavailable');
   assert.equal(getCompanySize({ security_type: 'ETF', market_cap: null }).label, 'Not applicable');
 });
 
@@ -196,6 +196,41 @@ test('classifies company size at each market-cap boundary', () => {
   assert.equal(size(300_000_000), 'Small Cap');
   assert.equal(size(50_000_000), 'Micro Cap');
   assert.equal(size(49_999_999), 'Nano Cap');
+});
+
+test('renders unavailable measurements truthfully while preserving provider zero', () => {
+  assert.equal(formatWatchlistCurrency(null), '—');
+  assert.equal(formatWatchlistRange(null, 100), '—');
+  assert.equal(formatWatchlistPercent(null), '—');
+  assert.equal(formatWatchlistPercent(0), '0.00%');
+  assert.equal(formatWatchlistPercent(null, true), 'Not applicable');
+  assert.equal(formatEmployeeCount(42_000), '42,000');
+  assert.equal(formatEmployeeCount(null), '—');
+});
+
+test('exposes partial and stale warnings but leaves complete rows quiet', () => {
+  assert.match(getWatchlistDataWarning({ data_status: 'partial' }), /Partial data/);
+  assert.match(getWatchlistDataWarning({ data_status: 'stale' }), /Stale data/);
+  assert.match(getWatchlistDataWarning({
+    data_status: 'stale',
+    provider_status: { finnhub: 'healthy', yfinance: 'degraded' },
+  }), /Stale fundamentals/);
+  assert.equal(getWatchlistDataWarning({ data_status: 'complete' }), null);
+});
+
+test('missing recommendations never qualify for an unlabeled badge', () => {
+  assert.equal(hasWatchlistRecommendation('N/A'), false);
+  assert.equal(hasWatchlistRecommendation(null), false);
+  assert.equal(hasWatchlistRecommendation('buy'), true);
+});
+
+test('partial refresh retains complete static metadata and marks it stale', () => {
+  const previous = { ticker: 'ORI', company_name: 'Old Republic', data_status: 'complete', current_price: 42, fifty_two_week_high: 47, market_cap: 10_000_000_000 };
+  const incoming = { ticker: 'ORI', company_name: 'Old Republic', data_status: 'partial', current_price: 44, fifty_two_week_high: null, market_cap: 10_500_000_000 };
+  const [merged] = mergeWatchlistRefresh([previous], [incoming]);
+  assert.equal(merged.current_price, 44);
+  assert.equal(merged.fifty_two_week_high, 47);
+  assert.equal(merged.data_status, 'stale');
 });
 test('provider failure retains the complete prior market-size identity as stale cache', () => {
   const prior = { ticker: 'SPY', company_name: 'SPDR', market_cap: null, fund_assets: 100, market_size_value: 100, market_size_type: 'fund_assets', market_size_currency: 'USD', market_size_status: 'available' };

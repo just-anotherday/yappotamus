@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Literal, Optional
 
 
@@ -58,15 +58,15 @@ class WatchlistItem(BaseModel):
     security_type: Optional[str] = "UNKNOWN"
 
     # Price Data
-    current_price: float = 0.0
-    open_price: float = 0.0
-    previous_close: float = 0.0
-    day_low: float = 0.0
-    day_high: float = 0.0
-    fifty_two_week_high: float = 0.0
-    fifty_two_week_low: float = 0.0
-    change: float = 0.0
-    change_percent: float = 0.0
+    current_price: Optional[float] = None
+    open_price: Optional[float] = None
+    previous_close: Optional[float] = None
+    day_low: Optional[float] = None
+    day_high: Optional[float] = None
+    fifty_two_week_high: Optional[float] = None
+    fifty_two_week_low: Optional[float] = None
+    change: Optional[float] = None
+    change_percent: Optional[float] = None
     market_cap: Optional[float] = None
     fund_assets: Optional[float] = None
     market_size_value: Optional[float] = None
@@ -82,17 +82,17 @@ class WatchlistItem(BaseModel):
     institution_percent: Optional[float] = None
 
     # Risk & Demand Signals (computed heuristic, 0-10 scale)
-    beta: float = 1.0
+    beta: Optional[float] = None
     short_percent_of_float: Optional[float] = None
     shares_short: Optional[int] = None
-    overall_risk: float = 5.0
+    overall_risk: Optional[float] = None
 
     # Analyst Targets (STOCK only)
     target_mean_price: Optional[float] = None
     target_median_price: Optional[float] = None
     target_high_price: Optional[float] = None
     target_low_price: Optional[float] = None
-    recommendation_key: str = "N/A"
+    recommendation_key: Optional[str] = None
     number_of_analysts: Optional[int] = None
 
     # ETF-Specific Data (optional)
@@ -107,3 +107,6 @@ class WatchlistItem(BaseModel):
     data_source: Literal["fh", "yf"] = "fh"
     # Fields that were filled by yfinance enrichment (when primary is Finnhub)
     yf_enriched_fields: List[str] = []
+    data_status: Literal["complete", "partial", "stale", "unavailable"] = "partial"
+    provider_status: Dict[str, Literal["healthy", "cooldown", "degraded", "unavailable"]] = Field(default_factory=dict)
+    missing_fields: List[str] = Field(default_factory=list)

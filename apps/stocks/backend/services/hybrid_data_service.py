@@ -28,6 +28,7 @@ from backend.services.yfinance_fallback import get_stock_price_yf
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.error_fallback import create_error_fallback
 from backend.lib.market_data_normalization import normalize_market_data_payload
+from backend.lib.risk_metrics import _compute_composite_risk
 from backend.services.market_data_observability import (
     current_correlation_id,
     log_collection_result,
@@ -39,8 +40,8 @@ logger = logging.getLogger(__name__)
 # Thread pool for running blocking yfinance calls without freezing the event loop.
 _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="yf-fallback")
 
-# Bounded TTL cache: stores (data, timestamp) tuples. Entries older than
-# _CACHE_TTL seconds are evicted on access. Max size limits memory growth.
+# Bounded TTL cache: stores (data, timestamp) tuples. Entries can be served as
+# stale only until _STALE_CACHE_TTL; max size limits memory growth.
 _CACHE_TTL = settings.HYBRID_CACHE_TTL_S  # default 5 minutes
 _STALE_CACHE_TTL = settings.HYBRID_STALE_CACHE_TTL_S
 _PROVIDER_TIMEOUT_S = settings.MARKET_DATA_PROVIDER_TIMEOUT_S
@@ -98,6 +99,42 @@ def _cache_set(ticker: str, data: Dict[str, Any]) -> None:
     _cache[ticker] = (data.copy(), time.time())
 
 
+_FRESH_QUOTE_FIELDS = {
+    "current_price", "open_price", "previous_close", "day_low", "day_high",
+    "change", "change_percent", "volume", "post_market_price",
+    "post_market_change", "post_market_change_percent",
+}
+
+
+def _merge_stale_static_metadata(stale: Dict[str, Any], partial: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep bounded last-known static data while accepting fresh quote fields."""
+    merged = stale.copy()
+    for field in _FRESH_QUOTE_FIELDS:
+        if partial.get(field) is not None:
+            merged[field] = partial[field]
+    merged["provider_status"] = partial.get("provider_status", {})
+    merged["missing_fields"] = partial.get("missing_fields", [])
+    merged["data_status"] = "stale"
+    if merged.get("market_size_value") is not None:
+        merged["market_size_status"] = "stale_cache"
+    if merged.get("security_type") != "ETF":
+        _recompute_final_risk(merged)
+    return merged
+
+
+def _recompute_final_risk(payload: Dict[str, Any]) -> None:
+    """Calculate risk only after final provider selection and only with complete inputs."""
+    fields = ("beta", "short_percent_of_float", "debt_to_equity", "fifty_two_week_high", "fifty_two_week_low", "current_price")
+    values = [payload.get(field) for field in fields]
+    if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) for value in values):
+        payload["overall_risk"] = None
+        return
+    payload["overall_risk"] = _compute_composite_risk(
+        beta=float(values[0]), short_pct_of_float=float(values[1]), debt_eq=float(values[2]),
+        high52=float(values[3]), low52=float(values[4]), current_price=float(values[5]),
+    )
+
+
 # Fields that Finnhub free tier cannot provide (return 0/None/N/A).
 # yfinance is used as an enrichment source for these gaps.
 FUNDAMENTAL_GAP_FIELDS: Set[str] = {
@@ -140,6 +177,7 @@ _ZERO_MEANINGFUL_ENRICHMENT_FIELDS = {
     "institution_percent",
     "short_percent_of_float",
     "shares_short",
+    "debt_to_equity",
 }
 
 
@@ -164,9 +202,6 @@ def _is_gap_value(value: Any, field: str) -> bool:
         return True
     # recommendation_key is "N/A" or "error" when not available
     if field == "recommendation_key" and value in ("N/A", "error"):
-        return True
-    # beta defaults to 1.0 when Finnhub doesn't provide it (hardcoded fallback)
-    if field == "beta" and value == 1.0:
         return True
     return False
 
@@ -203,8 +238,6 @@ async def _yf_async(ticker: str) -> Optional[Dict[str, Any]]:
     """Offload blocking yfinance call to thread pool executor."""
     loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(_executor, _yf_sync, ticker)
-    if data:
-        _cache_set(ticker.upper(), data)
     return data
 
 
@@ -258,6 +291,7 @@ def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tu
         "ceo_name": "ceo_name",
         "full_time_employees": "full_time_employees",
         "market_cap": "market_cap",
+        "debt_to_equity": "debt_to_equity",
         "beta": "beta",
         "security_type": "security_type",
     }
@@ -284,6 +318,8 @@ def _enrich_with_yf(finnhub_data: Dict[str, Any], yf_data: Dict[str, Any]) -> Tu
         if yf_etf_data and not merged.get("etf_data"):
             merged["etf_data"] = yf_etf_data
             enriched_fields.append("etf_data")
+    if merged.get("security_type") != "ETF":
+        _recompute_final_risk(merged)
     
     return merged, enriched_fields
 
@@ -301,12 +337,14 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     # ETFs / indices → skip Finnhub, go straight to yfinance
     if ticker_upper in KNOWN_NON_STOCK_SYMBOLS:
         logger.debug("[Hybrid] %s is an ETF/index → routing to yfinance.", ticker_upper)
-        data, _ = await run_provider_attempt(
+        data, failure = await run_provider_attempt(
             ticker=ticker_upper,
             provider="yf",
             timeout_s=_PROVIDER_TIMEOUT_S,
             operation=lambda: _yf_async(ticker_upper),
         )
+        if data:
+            data["provider_status"] = {"finnhub": "degraded", "yfinance": "healthy"}
         return data
 
     # Try Finnhub
@@ -321,6 +359,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
         if data and data.get("current_price", 0) > 0:
             logger.debug("[Hybrid] %s served by Finnhub.", ticker_upper)
             data["data_source"] = "fh"
+            data["provider_status"] = {"finnhub": "healthy", "yfinance": "degraded"}
             
             # Check if there are gap fields that need enrichment
             has_gaps = False
@@ -338,6 +377,8 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             if has_gaps or bad_company_name:
                 cooldown_active, failure_class = yfinance_fallback._yfinance_cooldown_status()
                 if cooldown_active:
+                    data["data_status"] = "partial"
+                    data["provider_status"]["yfinance"] = "cooldown"
                     logger.debug(
                         "[Hybrid] event=yfinance_cooldown_skip failure_class=%s",
                         failure_class,
@@ -353,7 +394,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
                             merged_data, enriched_fields = _enrich_with_yf(data, yf_data)
                             return (merged_data, enriched_fields) if enriched_fields else None
 
-                        enrichment, _ = await run_provider_attempt(
+                        enrichment, enrichment_failure = await run_provider_attempt(
                             ticker=ticker_upper,
                             provider="yf_enrichment",
                             timeout_s=_PROVIDER_TIMEOUT_S,
@@ -362,12 +403,18 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
                         if enrichment:
                             data, enriched_fields = enrichment
                             data["yf_enriched_fields"] = enriched_fields
+                            data["provider_status"]["yfinance"] = "healthy"
                             logger.debug(
                                 "[Hybrid] %s enriched %d fields from yfinance.",
                                 ticker_upper, len(enriched_fields)
                             )
+                        else:
+                            data["data_status"] = "partial"
+                            data["provider_status"]["yfinance"] = "unavailable" if enrichment_failure else "degraded"
                     except Exception as exc:
                         failure_class = yfinance_fallback._record_yfinance_outage_failure(exc)
+                        data["data_status"] = "partial"
+                        data["provider_status"]["yfinance"] = "degraded"
                         logger.warning(
                             "[Hybrid] Enrichment failed for %s: failure_class=%s exception_type=%s",
                             ticker_upper,
@@ -375,7 +422,6 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
                             type(exc).__name__,
                         )
             
-            _cache_set(ticker_upper, data)
             return data
     except Exception as e:
         logger.warning("[Hybrid] Finnhub failed for %s: %s", ticker_upper, e)
@@ -438,7 +484,12 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             data,
             default_source=selected_provider,
         )
-        _cache_set(ticker_upper, normalized)
+        if normalized.get("data_status") == "partial":
+            stale = _cache_get_stale(ticker_upper)
+            if stale is not None and stale.get("data_status") == "complete":
+                normalized = _merge_stale_static_metadata(stale, normalized)
+        if normalized.get("data_status") != "stale":
+            _cache_set(ticker_upper, normalized)
         fallback_provider = None
         if selected_provider == "fh":
             if normalized.get("data_source") == "yf":
@@ -460,6 +511,11 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     if stale is not None:
         stale = stale.copy()
         stale["market_size_status"] = "stale_cache"
+        stale["data_status"] = "stale"
+        stale["provider_status"] = {
+            "finnhub": "unavailable",
+            "yfinance": "unavailable",
+        }
         normalized = normalize_market_data_payload(
             ticker_upper,
             stale,
