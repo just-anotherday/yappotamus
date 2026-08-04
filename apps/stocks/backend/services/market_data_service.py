@@ -48,6 +48,80 @@ def _finite_positive(value: Any) -> Optional[float]:
     return result if math.isfinite(result) and result > 0 else None
 
 
+def _regular_session_date(value: Any) -> Any:
+    """Return the US regular-session date for a timestamp, otherwise ``None``."""
+    if not all(hasattr(value, field) for field in ("date", "hour", "minute")):
+        return None
+    local_value = value
+    if getattr(value, "tzinfo", None) is not None:
+        try:
+            local_value = value.tz_convert(ET)
+        except AttributeError:
+            local_value = value.astimezone(ET)
+    minutes = local_value.hour * 60 + local_value.minute
+    if 9 * 60 + 30 <= minutes < 16 * 60:
+        return local_value.date()
+    return None
+
+
+def merge_live_quote_payload(
+    payload: Dict[str, Any], quote: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Overlay trustworthy live quote fields without altering fundamentals.
+
+    A price-only quote is still useful, but it cannot establish a session
+    baseline.  An official close may come from either the live provider or the
+    already-normalized REST payload; the previous WebSocket price is never a
+    candidate.
+    """
+    if not quote:
+        return dict(payload)
+
+    merged = dict(payload)
+    current_price = (
+        _finite_positive(quote.get("current_price"))
+        or _finite_positive(quote.get("price"))
+        or _finite_positive(payload.get("current_price"))
+    )
+    previous_close = (
+        _finite_positive(quote.get("previous_close"))
+        or _finite_positive(payload.get("previous_close"))
+    )
+    merged["current_price"] = current_price
+    merged["previous_close"] = previous_close
+
+    for field in ("open_price", "day_low", "day_high"):
+        merged[field] = (
+            _finite_positive(quote.get(field))
+            or _finite_positive(payload.get(field))
+        )
+
+    if current_price is not None and previous_close is not None:
+        change = current_price - previous_close
+        merged["change"] = change
+        merged["change_percent"] = change / previous_close * 100
+    else:
+        merged["change"] = None
+        merged["change_percent"] = None
+
+    if quote.get("volume") is not None:
+        merged["volume"] = quote["volume"]
+    for field in (
+        "quote_timestamp",
+        "previous_close_timestamp",
+        "quote_provider",
+        "market_session",
+    ):
+        if quote.get(field) is not None:
+            merged[field] = quote[field]
+
+    # These describe the pre-overlay payload.  Let the normalizer recompute
+    # availability from the combined quote + fundamental result.
+    merged.pop("missing_fields", None)
+    merged.pop("data_status", None)
+    return merged
+
+
 def parse_download_quotes(frame: Any, tickers: List[str]) -> Dict[str, Dict[str, Any]]:
     """Parse single- or multi-symbol yfinance download frames independently."""
     if frame is None or getattr(frame, "empty", True):
@@ -59,6 +133,22 @@ def parse_download_quotes(frame: Any, tickers: List[str]) -> Dict[str, Dict[str,
     for ticker in tickers:
         try:
             symbol_frame = frame.xs(ticker, axis=1, level=1 if field_first else 0) if multi else frame
+            index = symbol_frame.index
+            if hasattr(index, "duplicated"):
+                symbol_frame = symbol_frame.loc[~index.duplicated(keep="last")].sort_index()
+            timestamp_index = all(
+                hasattr(value, "date") and hasattr(value, "hour")
+                for value in symbol_frame.index
+            )
+            if timestamp_index:
+                session_dates = [_regular_session_date(value) for value in symbol_frame.index]
+                symbol_frame = symbol_frame.loc[[value is not None for value in session_dates]]
+                session_dates = [value for value in session_dates if value is not None]
+                if symbol_frame.empty:
+                    continue
+            else:
+                session_dates = []
+
             closes = symbol_frame["Close"].dropna()
             if closes.empty:
                 continue
@@ -67,7 +157,41 @@ def parse_download_quotes(frame: Any, tickers: List[str]) -> Dict[str, Dict[str,
                 continue
             volumes = symbol_frame["Volume"].dropna() if "Volume" in symbol_frame else []
             volume = int(volumes.iloc[-1]) if len(volumes) else 0
-            results[ticker] = {"price": price, "volume": volume}
+            quote: Dict[str, Any] = {"price": price, "volume": volume}
+
+            # Recent minute bars give us today's session values and the prior
+            # trading session's close without another provider call.
+            # Range-indexed test/partial frames intentionally remain price-only.
+            latest_timestamp = closes.index[-1]
+            latest_date = _regular_session_date(latest_timestamp)
+            if latest_date is not None:
+                current_mask = [value == latest_date for value in session_dates]
+                current_session = symbol_frame.loc[current_mask]
+                for output_field, source_field, reducer in (
+                    ("open_price", "Open", lambda values: values.iloc[0]),
+                    ("day_low", "Low", lambda values: values.min()),
+                    ("day_high", "High", lambda values: values.max()),
+                ):
+                    if source_field in current_session:
+                        source_values = current_session[source_field].dropna()
+                        value = _finite_positive(reducer(source_values)) if not source_values.empty else None
+                        if value is not None:
+                            quote[output_field] = value
+                prior_dates = [value for value in session_dates if value < latest_date]
+                if prior_dates and "Close" in symbol_frame:
+                    previous_date = max(prior_dates)
+                    prior_session = symbol_frame.loc[
+                        [value == previous_date for value in session_dates]
+                    ]
+                    prior_closes = prior_session["Close"].dropna()
+                    previous_close = _finite_positive(prior_closes.iloc[-1] if not prior_closes.empty else None)
+                    if previous_close is not None:
+                        quote["previous_close"] = previous_close
+                        quote["previous_close_timestamp"] = str(prior_closes.index[-1])
+                quote["quote_timestamp"] = str(latest_timestamp)
+                quote["quote_provider"] = "yfinance_download"
+                quote["market_session"] = "regular"
+            results[ticker] = quote
         except (KeyError, TypeError, ValueError, IndexError):
             continue
     return results
@@ -149,12 +273,13 @@ class MarketDataService:
                 price = _finite_positive(previous.get("price")) or _finite_positive(item.get("current_price"))
                 if price is None:
                     continue
-                change = round(price - previous_close, 4)
+                change = price - previous_close
                 quote = {
+                    **previous,
                     "ticker": ticker,
                     "price": price,
                     "change": change,
-                    "change_percent": round(change / previous_close * 100, 4),
+                    "change_percent": change / previous_close * 100,
                     "volume": int(previous.get("volume") or item.get("volume") or 0),
                     "previous_close": previous_close,
                 }
@@ -202,7 +327,7 @@ class MarketDataService:
 
     def _download_batch(self, tickers: List[str]):
         configure_yfinance_cache(yf)
-        return yf.download(tickers=tickers if len(tickers) > 1 else tickers[0], period="1d", interval="1m", group_by="column", auto_adjust=False, prepost=False, progress=False, threads=True, timeout=10)
+        return yf.download(tickers=tickers if len(tickers) > 1 else tickers[0], period="5d", interval="1m", group_by="column", auto_adjust=False, prepost=False, progress=False, threads=True, timeout=10)
 
     def _do_poll(self) -> bool:
         if not self._poll_guard.acquire(blocking=False):
@@ -225,18 +350,31 @@ class MarketDataService:
                     valid += 1
                     with self._lock:
                         previous = self.latest_quotes.get(ticker, {})
-                        previous_close = _finite_positive(previous.get("previous_close"))
-                        change = round(values["price"] - previous_close, 4) if previous_close is not None else None
+                        previous_close = _finite_positive(values.get("previous_close")) or _finite_positive(previous.get("previous_close"))
+                        change = values["price"] - previous_close if previous_close is not None else None
                         quote = {
+                            **previous,
                             "ticker": ticker,
+                            "symbol": ticker,
                             "price": values["price"],
+                            "current_price": values["price"],
                             "change": change,
-                            "change_percent": round(change / previous_close * 100, 4) if previous_close is not None else None,
+                            "change_percent": change / previous_close * 100 if previous_close is not None else None,
                             "volume": values["volume"],
                             "previous_close": previous_close,
                         }
+                        for field in ("open_price", "day_low", "day_high", "quote_timestamp", "quote_provider", "market_session", "previous_close_timestamp"):
+                            if values.get(field) is not None:
+                                quote[field] = values[field]
                         changed = quote != previous
                         self.latest_quotes[ticker] = quote
+                    if ticker in {"SPY", "QQQ", "IWM", "DIA"}:
+                        logger.debug(
+                            "[MarketData] event=etf_quote_completeness symbol=%s current_price_present=%s previous_close_present=%s open_present=%s day_range_present=%s daily_change_present=%s provider=%s source_timestamp=%s",
+                            ticker, True, previous_close is not None, quote.get("open_price") is not None,
+                            quote.get("day_low") is not None and quote.get("day_high") is not None,
+                            change is not None, quote.get("quote_provider", "none"), quote.get("quote_timestamp", "none"),
+                        )
                     if changed and self._broadcast(quote):
                         broadcasts += 1
             success = failures == 0 and (not tickers or valid > 0)

@@ -67,6 +67,10 @@ class WatchlistItem(BaseModel):
     fifty_two_week_low: Optional[float] = None
     change: Optional[float] = None
     change_percent: Optional[float] = None
+    quote_timestamp: Optional[str] = None
+    previous_close_timestamp: Optional[str] = None
+    quote_provider: Optional[str] = None
+    market_session: Optional[str] = None
     market_cap: Optional[float] = None
     fund_assets: Optional[float] = None
     market_size_value: Optional[float] = None

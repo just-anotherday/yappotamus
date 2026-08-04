@@ -72,6 +72,10 @@ export interface WatchlistItem {
   fifty_two_week_low: number | null;
   change: number | null;
   change_percent: number | null;
+  quote_timestamp?: string | null;
+  previous_close_timestamp?: string | null;
+  quote_provider?: string | null;
+  market_session?: string | null;
   market_cap: number | null;
   fund_assets?: number | null;
   market_size_value?: number | null;
@@ -120,11 +124,20 @@ export interface WatchlistItem {
 
 export interface LiveQuote {
   ticker: string;
+  symbol?: string;
   price: number | null;
+  current_price?: number | null;
   change: number | null;
   change_percent: number | null;
   volume: number;
   previous_close?: number | null;
+  open_price?: number | null;
+  day_low?: number | null;
+  day_high?: number | null;
+  quote_timestamp?: string | null;
+  previous_close_timestamp?: string | null;
+  quote_provider?: string | null;
+  market_session?: string | null;
 }
 
 export interface StockNews {

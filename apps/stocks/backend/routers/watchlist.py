@@ -8,13 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 from backend.lib.tickers import normalize_ticker
+from backend.lib.market_data_normalization import normalize_market_data_payload
 from backend.models.stock import WatchlistItem
 from backend.models.watchlist_schemas import AddTickerRequest, WatchlistResponse, WatchlistConfigResponse
 from backend.services.hybrid_data_service import (
     get_hybrid_stock_price as get_stock_price,
     get_hybrid_batch_prices as get_batch_prices,
 )
-from backend.services.market_data_service import MarketDataService
+from backend.services.market_data_service import MarketDataService, merge_live_quote_payload
 from backend.config.watchlist import DEFAULT_TICKERS, MAX_WATCHLIST_SIZE, CONFIG_VERSION
 from backend.config.database import get_async_session, async_session_factory
 from backend.services.news_ingestion_service import fetch_and_ingest_news
@@ -87,7 +88,21 @@ async def get_watchlist(
             ticker_key = item.get("ticker", "")
             if ticker_key and ticker_key in pm_data:
                 item.update(pm_data[ticker_key])
-        MarketDataService.get_instance().seed_reference_quotes(results)
+        market_data = MarketDataService.get_instance()
+        live_quotes = market_data.get_latest_quotes()
+        combined_results = []
+        for item in results:
+            ticker_key = str(item.get("ticker") or "").strip().upper()
+            live_quote = live_quotes.get(ticker_key)
+            if item.get("security_type") == "ETF" and live_quote:
+                item = normalize_market_data_payload(
+                    ticker_key,
+                    merge_live_quote_payload(item, live_quote),
+                    default_source=str(item.get("data_source") or "yf"),
+                )
+            combined_results.append(item)
+        results = combined_results
+        market_data.seed_reference_quotes(results)
         return [WatchlistItem(**item) for item in results]
     except HTTPException:
         raise

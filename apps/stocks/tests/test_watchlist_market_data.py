@@ -10,11 +10,13 @@ import time
 
 import pytest
 
+from backend.routers import watchlist as watchlist_router
 from backend.lib.constants import KNOWN_NON_STOCK_SYMBOLS
 from backend.lib.market_data_normalization import normalize_market_data_payload
 from backend.models.stock import WatchlistItem
 from backend.services import hybrid_data_service, yfinance_fallback
 from backend.services import finnhub_service
+from backend.services.market_data_service import MarketDataService
 from backend.services.market_data_observability import (
     market_data_correlation,
     normalize_correlation_id,
@@ -943,6 +945,124 @@ async def test_identity_only_etf_is_unavailable_and_never_cached_as_fresh(monkey
     assert result["data_status"] == "unavailable"
     assert result["fund_assets"] is None
     assert "SPY" not in hybrid_data_service._cache
+
+
+@pytest.mark.asyncio
+async def test_cold_etf_watchlist_uses_live_quote_when_fundamentals_are_unavailable(
+    monkeypatch,
+):
+    async def unavailable_yfinance(_ticker):
+        return None
+
+    market_data = MarketDataService()
+    market_data.latest_quotes["SPY"] = {
+        "ticker": "SPY",
+        "price": 502.0,
+        "current_price": 502.0,
+        "previous_close": 500.0,
+        "open_price": 501.0,
+        "day_low": 499.5,
+        "day_high": 503.0,
+        "change": 2.0,
+        "change_percent": 0.4,
+        "volume": 100,
+        "quote_timestamp": "2026-08-04 10:00:00-04:00",
+        "previous_close_timestamp": "2026-08-03 16:00:00-04:00",
+        "quote_provider": "yfinance_download",
+        "market_session": "regular",
+    }
+
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", unavailable_yfinance)
+    monkeypatch.setattr(
+        watchlist_router.MarketDataService,
+        "get_instance",
+        classmethod(lambda _cls: market_data),
+    )
+
+    items = await watchlist_router.get_watchlist(tickers="SPY", session=None)
+
+    assert hybrid_data_service._cache == {}
+    assert len(items) == 1
+    item = items[0]
+    assert item.security_type == "ETF"
+    assert item.current_price == 502.0
+    assert item.previous_close == 500.0
+    assert item.open_price == 501.0
+    assert item.day_low == 499.5
+    assert item.day_high == 503.0
+    assert item.change == 2.0
+    assert item.change_percent == 0.4
+    assert item.quote_provider == "yfinance_download"
+    assert item.fund_assets is None
+    assert item.fifty_two_week_low is None
+    assert item.fifty_two_week_high is None
+    assert item.number_of_analysts is None
+    assert item.data_status == "partial"
+    assert "fund_assets" in item.missing_fields
+
+
+@pytest.mark.asyncio
+async def test_cold_etf_price_only_quote_never_creates_session_baseline(monkeypatch):
+    async def unavailable_yfinance(_ticker):
+        return None
+
+    market_data = MarketDataService()
+    market_data.latest_quotes["SPY"] = {
+        "ticker": "SPY",
+        "price": 502.0,
+        "volume": 100,
+    }
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", unavailable_yfinance)
+    monkeypatch.setattr(
+        watchlist_router.MarketDataService,
+        "get_instance",
+        classmethod(lambda _cls: market_data),
+    )
+
+    item = (await watchlist_router.get_watchlist(tickers="SPY", session=None))[0]
+
+    assert item.current_price == 502.0
+    assert item.previous_close is None
+    assert item.open_price is None
+    assert item.day_low is None
+    assert item.day_high is None
+    assert item.change is None
+    assert item.change_percent is None
+    assert item.fund_assets is None
+    assert item.data_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_live_quote_rest_overlay_does_not_change_equity_payload(monkeypatch):
+    equity = _stock_payload("ORI", source="fh")
+
+    async def equity_batch(_tickers):
+        return [equity.copy()]
+
+    market_data = MarketDataService()
+    market_data.latest_quotes["ORI"] = {
+        "ticker": "ORI",
+        "price": 999.0,
+        "previous_close": 998.0,
+        "open_price": 997.0,
+        "day_low": 996.0,
+        "day_high": 1000.0,
+        "volume": 100,
+    }
+    monkeypatch.setattr(watchlist_router, "_get_batch_prices_safe", equity_batch)
+    monkeypatch.setattr(
+        watchlist_router.MarketDataService,
+        "get_instance",
+        classmethod(lambda _cls: market_data),
+    )
+
+    item = (await watchlist_router.get_watchlist(tickers="ORI", session=None))[0]
+
+    assert item.security_type == "STOCK"
+    assert item.current_price == equity["current_price"]
+    assert item.previous_close == equity["previous_close"]
+    assert item.change == equity["change"]
+    assert item.change_percent == equity["change_percent"]
 
 
 @pytest.mark.asyncio

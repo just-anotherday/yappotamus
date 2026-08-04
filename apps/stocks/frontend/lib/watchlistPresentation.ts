@@ -287,6 +287,12 @@ export function mergeLiveQuote(previous: LiveQuote | undefined, incoming: LiveQu
     ? previousClose
     : null;
   const livePrice = isFiniteWatchlistNumber(price) && price > 0 ? price : null;
+  const retainedQuoteField = (field: 'open_price' | 'day_low' | 'day_high') => {
+    const value = incoming[field];
+    return isFiniteWatchlistNumber(value) && value > 0
+      ? value
+      : previous?.[field] ?? null;
+  };
   const change = livePrice != null && officialPreviousClose != null
     ? livePrice - officialPreviousClose
     : null;
@@ -294,12 +300,20 @@ export function mergeLiveQuote(previous: LiveQuote | undefined, incoming: LiveQu
     ...previous,
     ...incoming,
     price: livePrice,
+    current_price: livePrice,
     previous_close: officialPreviousClose,
+    open_price: retainedQuoteField('open_price'),
+    day_low: retainedQuoteField('day_low'),
+    day_high: retainedQuoteField('day_high'),
     change,
     change_percent: livePrice != null && officialPreviousClose != null
       ? ((livePrice - officialPreviousClose) / officialPreviousClose) * 100
       : null,
     volume: incoming.volume ?? previous?.volume ?? 0,
+    quote_timestamp: incoming.quote_timestamp ?? previous?.quote_timestamp ?? null,
+    previous_close_timestamp: incoming.previous_close_timestamp ?? previous?.previous_close_timestamp ?? null,
+    quote_provider: incoming.quote_provider ?? previous?.quote_provider ?? null,
+    market_session: incoming.market_session ?? previous?.market_session ?? null,
   };
 }
 

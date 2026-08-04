@@ -255,6 +255,10 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                    {orderedWatchlist.map((item) => {
                 const live = livePrices[item.ticker];
                 const isExpanded = expandedTickers.has(item.ticker);
+                const liveOpen = live?.open_price ?? item.open_price;
+                const livePreviousClose = live?.previous_close ?? item.previous_close;
+                const liveDayLow = live?.day_low ?? item.day_low;
+                const liveDayHigh = live?.day_high ?? item.day_high;
 
                 // Use live price if available, fall back to static fundamental data
                 const displayPrice = getWatchlistDisplayPrice(item, live);
@@ -443,19 +447,19 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Open</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.open_price)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(liveOpen)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Prev Close</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.previous_close)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(livePreviousClose)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Day Low</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.day_low)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(liveDayLow)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Day High</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(item.day_high)}</span>
+                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(liveDayHigh)}</span>
                                 </div>
                                 <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
                                   <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>52W Range</span>

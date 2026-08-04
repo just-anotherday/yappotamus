@@ -179,14 +179,24 @@ test('renders fund assets and non-USD market sizes without a dollar prefix', () 
 });
 
 test('price-only WebSocket ticks retain the official close and never become daily change', () => {
-  const first = mergeLiveQuote(undefined, { ticker: 'SPY', price: 505, change: null, change_percent: null, volume: 1, previous_close: 499 });
-  const second = mergeLiveQuote(first, { ticker: 'SPY', price: 506, change: null, change_percent: null, volume: 2 });
+  const first = mergeLiveQuote(undefined, { ticker: 'SPY', price: 505, change: null, change_percent: null, volume: 1, previous_close: 499, open_price: 500, day_low: 498, day_high: 506 });
+  const second = mergeLiveQuote(first, { ticker: 'SPY', price: 506, change: null, change_percent: null, volume: 2, previous_close: null, open_price: null, day_low: null, day_high: null });
   assert.equal(second.previous_close, 499);
+  assert.equal(second.open_price, 500);
+  assert.equal(second.day_low, 498);
+  assert.equal(second.day_high, 506);
   assert.equal(second.change, 7);
   assert.equal(second.change_percent, (7 / 499) * 100);
   const noClose = mergeLiveQuote(undefined, { ticker: 'SPY', price: 506, change: 1, change_percent: 0.2, volume: 2 });
   assert.equal(noClose.change, null);
   assert.equal(noClose.change_percent, null);
+  const completed = mergeLiveQuote(noClose, { ticker: 'SPY', price: 507, change: null, change_percent: null, volume: 3, previous_close: 500, open_price: 501, day_low: 499, day_high: 508 });
+  assert.equal(completed.previous_close, 500);
+  assert.equal(completed.open_price, 501);
+  assert.equal(completed.day_low, 499);
+  assert.equal(completed.day_high, 508);
+  assert.equal(completed.change, 7);
+  assert.equal(completed.change_percent, (7 / 500) * 100);
 });
 
 test('maps legacy market_cap responses and distinguishes missing equity from ETFs', () => {
