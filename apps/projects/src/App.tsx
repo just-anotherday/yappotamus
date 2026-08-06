@@ -43,7 +43,7 @@ function AuthenticatedOrganizer({
   user: User
   onSignOut: () => Promise<unknown>
 }) {
-  const { theme, toggleTheme } = useTheme()
+  const { resolvedTheme, toggleTheme } = useTheme()
   const { boardType, setBoardType } = useBoardPreference(user.id)
   const [selections, setSelections] = useState<DirectorySelections>(emptySelections)
 
@@ -57,7 +57,7 @@ function AuthenticatedOrganizer({
     <OrganizerShell
       boardType={boardType}
       userEmail={user.email}
-      theme={theme}
+      theme={resolvedTheme}
       onBoardTypeChange={setBoardType}
       onToggleTheme={toggleTheme}
       onSignOut={onSignOut}

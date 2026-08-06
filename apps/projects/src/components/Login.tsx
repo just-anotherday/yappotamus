@@ -9,7 +9,7 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const { signIn, signUp } = useAuth()
-  const { theme, toggleTheme } = useTheme()
+  const { resolvedTheme, toggleTheme } = useTheme()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -20,14 +20,14 @@ export default function Login() {
       if (isSignUp) {
         const { error } = await signUp(email, password)
         if (error) {
-          setError(error.message)
+          setError(error)
         } else {
           // Check email confirmation needed
           setError('Check your email for the confirmation link.')
         }
       } else {
         const { error } = await signIn(email, password)
-        if (error) setError(error.message)
+        if (error) setError(error)
       }
     } catch (err) {
       setError('An unexpected error occurred.')
@@ -41,9 +41,9 @@ export default function Login() {
       <button
         onClick={toggleTheme}
         className="absolute top-4 right-4 p-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 rounded-md hover:bg-gray-300 dark:hover:bg-gray-600 transition cursor-pointer"
-        title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+        title={resolvedTheme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
       >
-        {theme === 'light' ? '🌙' : '☀️'}
+        {resolvedTheme === 'light' ? '🌙' : '☀️'}
       </button>
       <div className="bg-white border border-gray-200 dark:border-slate-700 dark:bg-gray-900 p-8 rounded-lg shadow-md w-full max-w-sm">
         <h1 className="mb-6 text-center text-2xl font-bold text-gray-800 dark:text-gray-50">
