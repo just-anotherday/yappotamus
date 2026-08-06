@@ -6,6 +6,7 @@
 -- Task Boards still use public.projects, Shopping Lists are transitioning
 -- storage, and Recipe Books use dedicated tables. The frontend must validate a
 -- saved selection against rows visible to the authenticated user.--
+--
 -- Deferred frontend preference import:
 --   theme
 --     -> user_settings.theme
