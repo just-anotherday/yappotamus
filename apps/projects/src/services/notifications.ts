@@ -55,6 +55,7 @@ const NOTIFICATION_COLUMNS = [
   'dedupe_key',
   'is_read',
   'read_at',
+  'archived_at',
   'expires_at',
   'created_at',
 ].join(',')
@@ -67,8 +68,9 @@ export interface FetchNotificationsOptions {
 const DEFAULT_LIMIT = 25
 const MAX_LIMIT = 100
 
-export async function fetchNotifications(
+async function fetchNotificationsForLifecycleState(
   userId: string,
+  archived: boolean,
   options?: FetchNotificationsOptions,
 ): Promise<NotificationRow[]> {
   if (!userId || typeof userId !== 'string' || userId.trim() === '') {
@@ -99,6 +101,10 @@ export async function fetchNotifications(
     .from('notifications')
     .select(NOTIFICATION_COLUMNS)
     .eq('user_id', userId)
+
+  query = archived
+    ? query.not('archived_at', 'is', null)
+    : query.is('archived_at', null)
 
   if (options?.includeExpired !== true) {
     query = query.or(`expires_at.is.null,expires_at.gt.${now}`)
@@ -138,6 +144,20 @@ export async function fetchNotifications(
   return parsed
 }
 
+export function fetchActiveNotifications(
+  userId: string,
+  options?: FetchNotificationsOptions,
+): Promise<NotificationRow[]> {
+  return fetchNotificationsForLifecycleState(userId, false, options)
+}
+
+export function fetchArchivedNotifications(
+  userId: string,
+  options?: FetchNotificationsOptions,
+): Promise<NotificationRow[]> {
+  return fetchNotificationsForLifecycleState(userId, true, options)
+}
+
 export async function fetchUnreadNotificationCount(
   userId: string,
 ): Promise<number> {
@@ -152,6 +172,7 @@ export async function fetchUnreadNotificationCount(
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
     .eq('is_read', false)
+    .is('archived_at', null)
     .or(`expires_at.is.null,expires_at.gt.${now}`)
 
   if (error) throw safeFetchError(error)
@@ -194,6 +215,7 @@ export async function updateNotificationReadState(
     .update({ is_read: isRead })
     .eq('id', notificationId)
     .eq('user_id', userId)
+    .is('archived_at', null)
     .select(NOTIFICATION_COLUMNS)
     .single()
 
@@ -226,4 +248,119 @@ export async function updateNotificationReadState(
   }
 
   return parsed
+}
+
+function validateNotificationMutation(
+  userId: string,
+  notificationId: string,
+): void {
+  if (!userId || typeof userId !== 'string' || userId.trim() === '') {
+    throw new NotificationServiceError('Unable to update the notification.')
+  }
+
+  if (
+    !notificationId ||
+    typeof notificationId !== 'string' ||
+    notificationId.trim() === ''
+  ) {
+    throw new NotificationServiceError(
+      'Notification was not found or is unavailable.',
+    )
+  }
+}
+
+async function updateLifecycleState(
+  userId: string,
+  notificationId: string,
+  archivedAt: string | null,
+  requiredArchived: boolean,
+): Promise<NotificationRow> {
+  validateNotificationMutation(userId, notificationId)
+
+  const query = supabase
+    .from('notifications')
+    .update({ archived_at: archivedAt })
+    .eq('id', notificationId)
+    .eq('user_id', userId)
+
+  const { data, error } = await (requiredArchived
+    ? query.not('archived_at', 'is', null)
+    : query.is('archived_at', null))
+    .select(NOTIFICATION_COLUMNS)
+    .single()
+
+  if (error) throw safeUpdateError(error)
+
+  const parsed = parseNotificationRow(data)
+  if (!parsed || parsed.user_id !== userId || parsed.id !== notificationId) {
+    throw new NotificationServiceError(
+      'Notification data returned by the server was invalid.',
+    )
+  }
+
+  if ((parsed.archived_at !== null) !== (archivedAt !== null)) {
+    throw new NotificationServiceError(
+      'Notification state could not be confirmed.',
+    )
+  }
+
+  return parsed
+}
+
+export function archiveNotification(
+  userId: string,
+  notificationId: string,
+): Promise<NotificationRow> {
+  return updateLifecycleState(
+    userId,
+    notificationId,
+    new Date().toISOString(),
+    false,
+  )
+}
+
+export function restoreNotification(
+  userId: string,
+  notificationId: string,
+): Promise<NotificationRow> {
+  return updateLifecycleState(userId, notificationId, null, true)
+}
+
+export async function deleteArchivedNotification(
+  userId: string,
+  notificationId: string,
+): Promise<void> {
+  validateNotificationMutation(userId, notificationId)
+
+  const { data, error } = await supabase
+    .from('notifications')
+    .delete()
+    .eq('id', notificationId)
+    .eq('user_id', userId)
+    .not('archived_at', 'is', null)
+    .select('id')
+
+  if (error) throw safeUpdateError(error)
+  if (!Array.isArray(data) || data.length !== 1 || data[0]?.id !== notificationId) {
+    throw new NotificationServiceError(
+      'Notification was not found or is unavailable.',
+    )
+  }
+}
+
+export async function clearActiveNotifications(userId: string): Promise<void> {
+  if (!userId || typeof userId !== 'string' || userId.trim() === '') {
+    throw new NotificationServiceError('Unable to update the notification.')
+  }
+
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('notifications')
+    .update({ is_read: true })
+    .eq('user_id', userId)
+    .eq('is_read', false)
+    .is('archived_at', null)
+    .or(`expires_at.is.null,expires_at.gt.${now}`)
+
+  if (error) throw safeUpdateError(error)
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useCallback, useState, type KeyboardEvent } from 'react'
 import { useNotifications } from '../../hooks/useNotifications'
 import { NotificationItem } from './NotificationItem'
 
@@ -8,9 +8,10 @@ interface NotificationPanelProps {
 }
 
 export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
-  const { notifications, unreadCount, loading, refreshing, error, refresh } =
+  const { notifications, archivedNotifications, unreadCount, loading, archivedLoading, refreshing, error, refresh, clearActive, clearing } =
     useNotifications()
   const panelRef = useRef<HTMLDivElement>(null)
+  const [view, setView] = useState<'active' | 'archived'>('active')
 
   // Close on Escape
   const handleKeyDown = useCallback(
@@ -58,6 +59,10 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
     void refresh()
   }, [refresh])
 
+  const isArchived = view === 'archived'
+  const visibleNotifications = isArchived ? archivedNotifications : notifications
+  const visibleLoading = isArchived ? archivedLoading : loading
+
   if (!isOpen) return null
 
   return (
@@ -78,15 +83,28 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-stone-200 px-5 py-4 dark:border-stone-800">
           <div className="flex items-center gap-3">
-            <h2 className="text-sm font-bold uppercase tracking-[0.18em] text-stone-500 dark:text-stone-400">
-              Notifications
-            </h2>
+            <div className="flex rounded-lg bg-stone-100 p-0.5 dark:bg-stone-800">
+              <button type="button" onClick={() => setView('active')} className={`rounded-md px-2 py-1 text-[11px] font-bold uppercase tracking-wide ${!isArchived ? 'bg-white text-stone-700 shadow-sm dark:bg-stone-700 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'}`}>Notifications</button>
+              <button type="button" onClick={() => setView('archived')} className={`rounded-md px-2 py-1 text-[11px] font-bold uppercase tracking-wide ${isArchived ? 'bg-white text-stone-700 shadow-sm dark:bg-stone-700 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'}`}>Archived</button>
+            </div>
             {unreadCount > 0 && (
               <span className="inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-emerald-600 px-1.5 py-0.5 text-[11px] font-bold text-white">
                 {unreadCount}
               </span>
             )}
           </div>
+
+          {!isArchived && (
+            <button
+              type="button"
+              onClick={() => void clearActive()}
+              disabled={unreadCount === 0 || clearing}
+              aria-label="Mark all active notifications as read"
+              className="rounded px-2 py-1 text-[11px] font-semibold text-stone-500 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-stone-400 dark:hover:bg-stone-800"
+            >
+              {clearing ? 'Clearing…' : 'Clear'}
+            </button>
+          )}
 
           <button
             type="button"
@@ -152,12 +170,12 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
 
         {/* Content */}
         <div className="overflow-y-auto" role="list">
-          {loading && !refreshing ? (
+          {visibleLoading && !refreshing ? (
             <div className="flex flex-col items-center gap-4 py-16 px-5 text-stone-400 dark:text-stone-600">
               <span className="inline-block h-6 w-6 animate-spin rounded-full border-[2px] border-current border-t-transparent" />
-              <p className="text-xs font-medium">Loading notifications…</p>
+              <p className="text-xs font-medium">Loading {isArchived ? 'archived notifications' : 'notifications'}…</p>
             </div>
-          ) : notifications.length === 0 && !loading ? (
+          ) : visibleNotifications.length === 0 && !visibleLoading ? (
             <div className="flex flex-col items-center gap-4 py-16 px-5 text-stone-400 dark:text-stone-600">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -172,13 +190,13 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
                 <path d="M6 8a4 4 0 0 1 8 0c0 3 2 7 2 9H4c0-2 2-6 2-9Z" />
                 <path d="M10 18h4" />
               </svg>
-              <p className="text-sm font-medium">You're all caught up.</p>
+              <p className="text-sm font-medium">{isArchived ? 'No archived notifications.' : "You're all caught up."}</p>
             </div>
           ) : (
             <ul className="divide-y divide-stone-200 dark:divide-stone-800/60">
-              {notifications.map((notification) => (
+              {visibleNotifications.map((notification) => (
                 <li key={notification.id} className="p-0">
-                  <NotificationItem notification={notification} />
+                  <NotificationItem notification={notification} archived={isArchived} />
                 </li>
               ))}
             </ul>

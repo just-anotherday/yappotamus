@@ -31,6 +31,7 @@ export interface NotificationRow {
   dedupe_key: string | null;
   is_read: boolean;
   read_at: string | null;
+  archived_at: string | null;
   expires_at: string | null;
   created_at: string;
 }
@@ -106,6 +107,7 @@ export function parseNotificationRow(
     dedupe_key,
     is_read,
     read_at,
+    archived_at,
     expires_at,
     created_at,
   } = value;
@@ -154,7 +156,11 @@ export function parseNotificationRow(
     return null;
   }
 
-  if (!isNullableString(read_at) || !isNullableString(expires_at)) {
+  if (
+    !isNullableString(read_at) ||
+    !isNullableString(archived_at) ||
+    !isNullableString(expires_at)
+  ) {
     return null;
   }
 
@@ -175,6 +181,7 @@ export function parseNotificationRow(
     dedupe_key,
     is_read,
     read_at,
+    archived_at,
     expires_at,
     created_at,
   };

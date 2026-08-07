@@ -51,10 +51,11 @@ function TypeBadge({ type }: { type: NotificationRow['type'] }) {
 
 interface NotificationItemProps {
   notification: NotificationRow
+  archived?: boolean
 }
 
-export function NotificationItem({ notification }: NotificationItemProps) {
-  const { markRead, markUnread, isUpdating } = useNotifications()
+export function NotificationItem({ notification, archived = false }: NotificationItemProps) {
+  const { markRead, markUnread, archive, restore, deleteArchived, isUpdating } = useNotifications()
   const updating = isUpdating(notification.id)
 
   const handleToggleRead = () => {
@@ -62,6 +63,12 @@ export function NotificationItem({ notification }: NotificationItemProps) {
       void markUnread(notification.id)
     } else {
       void markRead(notification.id)
+    }
+  }
+
+  const handleDelete = () => {
+    if (window.confirm('Delete this archived notification permanently?')) {
+      void deleteArchived(notification.id)
     }
   }
 
@@ -99,29 +106,54 @@ export function NotificationItem({ notification }: NotificationItemProps) {
           {notification.message}
         </p>
 
-        <button
-          type="button"
-          onClick={handleToggleRead}
-          disabled={updating}
-          className={[
-            'mt-2 inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-semibold transition',
-            notification.is_read
-              ? 'text-stone-500 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-800'
-              : 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/30',
-            updating ? 'cursor-wait opacity-60' : '',
-          ].join(' ')}
-          aria-label={notification.is_read ? 'Mark as unread' : 'Mark as read'}
-        >
-          {updating
-            ? (
-              <span className="inline-block h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
-            )
-            : (
-              notification.is_read
-                ? 'Mark as unread'
-                : 'Mark as read'
-            )}
-        </button>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {archived ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void restore(notification.id)}
+                disabled={updating}
+                className="rounded px-2 py-0.5 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-wait disabled:opacity-60 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+              >
+                Restore
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={updating}
+                className="rounded px-2 py-0.5 text-[11px] font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-wait disabled:opacity-60 dark:text-red-400 dark:hover:bg-red-950/30"
+              >
+                Delete
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={handleToggleRead}
+                disabled={updating}
+                className={[
+                  'inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-semibold transition',
+                  notification.is_read
+                    ? 'text-stone-500 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-800'
+                    : 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/30',
+                  updating ? 'cursor-wait opacity-60' : '',
+                ].join(' ')}
+                aria-label={notification.is_read ? 'Mark as unread' : 'Mark as read'}
+              >
+                {updating ? <span className="inline-block h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" /> : notification.is_read ? 'Mark as unread' : 'Mark as read'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void archive(notification.id)}
+                disabled={updating}
+                className="rounded px-2 py-0.5 text-[11px] font-semibold text-stone-500 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60 dark:text-stone-400 dark:hover:bg-stone-800"
+              >
+                Archive
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
