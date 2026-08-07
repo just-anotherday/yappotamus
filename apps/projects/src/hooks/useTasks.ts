@@ -6,12 +6,14 @@ import type {
   TaskPriority,
   TaskStatus,
 } from '../lib/types/database.types'
+import { legacyDueDateFromDueOn } from '../utils/calendarDate'
 
 export interface AddTaskOptions {
   title: string
   description?: string
   status?: TaskStatus
   priority?: TaskPriority
+  due_on?: string | null
   due_date?: string | null
   is_pinned?: boolean
   is_archived?: boolean
@@ -24,6 +26,7 @@ export interface UpdateTaskOptions {
   completed?: boolean
   status?: TaskStatus
   priority?: TaskPriority
+  due_on?: string | null
   due_date?: string | null
   is_pinned?: boolean
   is_archived?: boolean
@@ -105,7 +108,13 @@ export function useTasks(projectId: string | null) {
 
     if (normalizedOptions.status !== undefined) insertData.status = normalizedOptions.status
     if (normalizedOptions.priority !== undefined) insertData.priority = normalizedOptions.priority
-    if (normalizedOptions.due_date !== undefined) insertData.due_date = normalizedOptions.due_date
+    if (normalizedOptions.due_on !== undefined) {
+      // Transitional dual-write: legacy due_date remains UTC midnight.
+      insertData.due_on = normalizedOptions.due_on
+      insertData.due_date = legacyDueDateFromDueOn(normalizedOptions.due_on)
+    } else if (normalizedOptions.due_date !== undefined) {
+      insertData.due_date = normalizedOptions.due_date
+    }
     if (normalizedOptions.is_pinned !== undefined) insertData.is_pinned = normalizedOptions.is_pinned
     if (normalizedOptions.is_archived !== undefined) insertData.is_archived = normalizedOptions.is_archived
     if (normalizedOptions.metadata !== undefined) insertData.metadata = normalizedOptions.metadata
@@ -128,6 +137,11 @@ export function useTasks(projectId: string | null) {
     } else {
       for (const [key, value] of Object.entries(options)) {
         if (value !== undefined) updates[key] = value
+      }
+      if (options.due_on !== undefined) {
+        // Transitional dual-write: legacy due_date remains UTC midnight.
+        updates.due_on = options.due_on
+        updates.due_date = legacyDueDateFromDueOn(options.due_on)
       }
     }
 

@@ -30,10 +30,10 @@ function compare(a: Task, b: Task, config: SortConfig): number {
 
     case 'dueDate':
       // Null due dates always last
-      if (!a.due_date && !b.due_date) result = 0
-      else if (!a.due_date) result = 1
-      else if (!b.due_date) result = -1
-      else result = a.due_date.localeCompare(b.due_date)
+      if (!a.due_on && !b.due_on) result = 0
+      else if (!a.due_on) result = 1
+      else if (!b.due_on) result = -1
+      else result = a.due_on.localeCompare(b.due_on)
       break
 
     case 'priority':

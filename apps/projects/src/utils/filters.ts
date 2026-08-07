@@ -1,4 +1,5 @@
 import type { Task, TaskStatus, TaskPriority } from '../lib/types/database.types'
+import { currentCalendarDate } from './calendarDate'
 
 export interface TaskFilters {
   status: 'ALL' | TaskStatus
@@ -14,20 +15,8 @@ export const defaultFilters: TaskFilters = {
   showArchived: false,
 }
 
-const todayStart = new Date()
-todayStart.setHours(0, 0, 0, 0)
-
-function isDueToday(dateStr: string): boolean {
-  const date = new Date(dateStr)
-  return date >= todayStart && date < new Date(todayStart.getTime() + 86400000)
-}
-
-function isOverdue(dateStr: string): boolean {
-  const date = new Date(dateStr)
-  return date < todayStart
-}
-
 export function applyFilters(tasks: Task[], filters: TaskFilters): Task[] {
+  const today = currentCalendarDate()
   return tasks.filter(task => {
     // Archive filter: when showArchived is false, hide archived tasks; when true, show only archived
     if (!filters.showArchived && task.is_archived) return false
@@ -41,9 +30,9 @@ export function applyFilters(tasks: Task[], filters: TaskFilters): Task[] {
 
     // Due date filter
     if (filters.dueDate !== 'ALL') {
-      if (filters.dueDate === 'DUE_TODAY' && (!task.due_date || !isDueToday(task.due_date))) return false
-      if (filters.dueDate === 'OVERDUE' && (!task.due_date || !isOverdue(task.due_date))) return false
-      if (filters.dueDate === 'NO_DUE_DATE' && task.due_date) return false
+      if (filters.dueDate === 'DUE_TODAY' && task.due_on !== today) return false
+      if (filters.dueDate === 'OVERDUE' && (!task.due_on || task.due_on >= today)) return false
+      if (filters.dueDate === 'NO_DUE_DATE' && task.due_on) return false
     }
 
     return true

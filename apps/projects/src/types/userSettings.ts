@@ -21,6 +21,7 @@ export interface UserSettingsRow {
   task_sort_field: TaskSortField
   task_sort_direction: TaskSortDirection
   hide_purchased_items: boolean
+  timezone: string | null
   created_at: string
   updated_at: string
 }
@@ -36,6 +37,7 @@ export type UserSettingsWritableFields = Pick<
   | 'task_sort_field'
   | 'task_sort_direction'
   | 'hide_purchased_items'
+  | 'timezone'
 >
 
 export type UserSettingsInsert = UserSettingsWritableFields & {
@@ -54,6 +56,7 @@ export const DEFAULT_USER_SETTINGS: Readonly<UserSettingsWritableFields> = {
   task_sort_field: 'manual',
   task_sort_direction: 'asc',
   hide_purchased_items: false,
+  timezone: null,
 }
 
 const themes: readonly ThemePreference[] = ['system', 'light', 'dark']
@@ -106,6 +109,10 @@ export function isUuidOrNull(value: unknown): value is string | null {
   return value === null || (typeof value === 'string' && uuidPattern.test(value))
 }
 
+export function isTimezoneOrNull(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && value.trim().length > 0)
+}
+
 export function validateUserSettingsRow(value: unknown): UserSettingsRow {
   if (!isRecord(value)) {
     throw new Error('The settings response was not a valid record.')
@@ -122,6 +129,7 @@ export function validateUserSettingsRow(value: unknown): UserSettingsRow {
     || !isTaskSortField(value.task_sort_field)
     || !isTaskSortDirection(value.task_sort_direction)
     || typeof value.hide_purchased_items !== 'boolean'
+    || !isTimezoneOrNull(value.timezone)
     || typeof value.created_at !== 'string'
     || typeof value.updated_at !== 'string'
   ) {
@@ -139,6 +147,7 @@ export function validateUserSettingsRow(value: unknown): UserSettingsRow {
     task_sort_field: value.task_sort_field,
     task_sort_direction: value.task_sort_direction,
     hide_purchased_items: value.hide_purchased_items,
+    timezone: value.timezone,
     created_at: value.created_at,
     updated_at: value.updated_at,
   }
@@ -185,6 +194,9 @@ export function validateUserSettingsUpdate(
     && typeof value.hide_purchased_items !== 'boolean'
   ) {
     throw new Error('The purchased-item visibility preference is invalid.')
+  }
+  if (value.timezone !== undefined && !isTimezoneOrNull(value.timezone)) {
+    throw new Error('The timezone is invalid.')
   }
   return value
 }

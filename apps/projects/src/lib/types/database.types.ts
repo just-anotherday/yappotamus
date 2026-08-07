@@ -36,6 +36,8 @@ export interface Task {
   // New fields from Phase 1B
   status: TaskStatus
   priority: TaskPriority
+  due_on?: string | null
+  // Transitional UTC-midnight representation for older browser clients.
   due_date?: string | null
   is_pinned: boolean
   is_archived: boolean
@@ -45,6 +47,22 @@ export interface Task {
   order: number
   user_id: string
   created_at: string
+}
+
+export interface UserSettings {
+  user_id: string
+  timezone: string | null
+  theme: 'system' | 'light' | 'dark'
+  default_workspace: 'last' | 'projects' | 'shopping' | 'recipes'
+  last_workspace: 'projects' | 'shopping' | 'recipes'
+  selected_task_board_id: string | null
+  selected_shopping_list_id: string | null
+  selected_recipe_book_id: string | null
+  task_sort_field: string
+  task_sort_direction: 'asc' | 'desc'
+  hide_purchased_items: boolean
+  created_at: string
+  updated_at: string
 }
 
 export interface Database {
@@ -59,6 +77,11 @@ export interface Database {
         Row: Task
         Insert: Omit<Task, 'id' | 'created_at' | 'updated_at' | 'status' | 'priority' | 'is_pinned' | 'is_archived'>
         Update: Partial<Task>
+      }
+      user_settings: {
+        Row: UserSettings
+        Insert: Omit<UserSettings, 'created_at' | 'updated_at'>
+        Update: Partial<UserSettings>
       }
     }
   }

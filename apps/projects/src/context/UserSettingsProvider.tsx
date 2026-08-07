@@ -52,6 +52,7 @@ interface UserSettingsContextValue {
   updatePurchasedItemVisibility: (hidden: boolean) => Promise<boolean>
 }
 
+// oxlint-disable-next-line react/only-export-components
 export const UserSettingsContext =
   createContext<UserSettingsContextValue | null>(null)
 
@@ -106,6 +107,15 @@ function errorMessage(error: unknown): string {
     : 'Your settings could not be loaded. Please try again.'
 }
 
+function detectedBrowserTimezone(): string | null {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return typeof timezone === 'string' && timezone.trim() ? timezone : null
+  } catch {
+    return null
+  }
+}
+
 function patchMatches(
   settings: UserSettingsRow,
   patch: UserSettingsUpdate,
@@ -132,6 +142,7 @@ export function UserSettingsProvider({
   const writeQueue = useRef<Promise<void>>(Promise.resolve())
   const settingsRef = useRef<UserSettingsRow | null>(null)
   const confirmedSettingsRef = useRef<UserSettingsRow | null>(null)
+  const timezoneInitializationUserId = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (pendingCount.current > 0) return
@@ -175,6 +186,7 @@ export function UserSettingsProvider({
 
     void (async () => {
       try {
+        let timezoneInitializationError: string | null = null
         let nextSettings = await fetchCurrentUserSettings(userId)
         if (!nextSettings) {
           nextSettings = await insertInitialSettings(
@@ -183,11 +195,27 @@ export function UserSettingsProvider({
           )
         }
         if (currentGeneration !== generation.current) return
+        if (
+          nextSettings.timezone === null
+          && timezoneInitializationUserId.current !== userId
+        ) {
+          const timezone = detectedBrowserTimezone()
+          if (timezone) {
+            timezoneInitializationUserId.current = userId
+            try {
+              nextSettings = await updateCurrentUserSettings(userId, { timezone })
+            } catch {
+              // Keep timezone NULL. A later authenticated session can retry safely.
+              timezoneInitializationError = 'Your timezone could not be saved. Please refresh and try again.'
+            }
+          }
+        }
+        if (currentGeneration !== generation.current) return
         confirmedSettingsRef.current = nextSettings
         settingsRef.current = nextSettings
         setSettings(nextSettings)
         clearImportedUserKeys(userId)
-        setError(null)
+        setError(timezoneInitializationError)
       } catch (caught) {
         if (currentGeneration === generation.current) {
           setError(errorMessage(caught))

@@ -73,7 +73,7 @@ export function BoardProject({
               title: title.trim(),
               description: description.trim() || undefined,
               priority,
-              due_date: dueDate,
+              due_on: dueDate,
             })
           }}
         />
@@ -123,7 +123,7 @@ export function BoardProject({
               }}
               onUpdateStatus={(status: TaskStatus) => updateStatus(task.id, status)}
               onUpdatePriority={(priority: TaskPriority) => onUpdateTask(task.id, { priority })}
-              onUpdateDueDate={dueDate => onUpdateTask(task.id, { due_date: dueDate })}
+              onUpdateDueDate={dueDate => onUpdateTask(task.id, { due_on: dueDate })}
               onTogglePin={() => onUpdateTask(task.id, { is_pinned: !task.is_pinned })}
               onToggleArchive={() => onUpdateTask(task.id, { is_archived: !task.is_archived })}
               onDelete={() => onDeleteTask(task.id)}

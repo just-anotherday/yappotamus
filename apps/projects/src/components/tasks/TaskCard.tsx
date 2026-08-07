@@ -1,6 +1,7 @@
 import type { Task, TaskStatus, TaskPriority } from '../../lib/types/database.types'
 import TaskStatusBadge from './TaskStatusBadge'
 import TaskPriorityBadge from './TaskPriorityBadge'
+import { formatCalendarDate } from '../../utils/calendarDate'
 
 interface TaskCardProps {
   task: Task
@@ -19,16 +20,6 @@ interface TaskCardProps {
   onDelete: () => void
   onChangeEditTitle: (title: string) => void
   onChangeEditDescription: (desc: string) => void
-}
-
-const formatDate = (dateStr: string | null | undefined) => {
-  if (!dateStr) return ''
-  try {
-    const date = new Date(dateStr)
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-  } catch {
-    return ''
-  }
 }
 
 export default function TaskCard({
@@ -105,9 +96,9 @@ export default function TaskCard({
             )}
 
             {/* Due date row */}
-            {task.due_date && (
+            {task.due_on && (
               <div className="mt-1 flex items-center gap-1">
-                <span className="text-xs text-gray-400 dark:text-gray-500">📅 {formatDate(task.due_date)}</span>
+                <span className="text-xs text-gray-400 dark:text-gray-500">📅 {formatCalendarDate(task.due_on)}</span>
               </div>
             )}
           </div>
@@ -153,7 +144,7 @@ export default function TaskCard({
           {isEditing !== true && (
             <input
               type="date"
-              value={task.due_date ? task.due_date.split('T')[0] : ''}
+              value={task.due_on ?? ''}
               onChange={e => onUpdateDueDate(e.target.value || null)}
               className="text-xs px-2 py-1 border rounded focus:outline-none dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600"
             />
