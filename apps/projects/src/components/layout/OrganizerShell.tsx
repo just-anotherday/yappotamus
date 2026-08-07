@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import Footer from '../Footer'
 import type { BoardType } from '../../types/boards'
 import { BoardTypeSelector } from './BoardTypeSelector'
+import { NotificationBell } from '../notifications/NotificationBell'
 
 interface OrganizerShellProps {
   boardType: BoardType
@@ -50,6 +51,7 @@ export function OrganizerShell({
             >
               {theme === 'light' ? 'Dark' : 'Light'}
             </button>
+            {userEmail && <NotificationBell />}
             <div className="min-w-0 text-right">
               <p className="max-w-44 truncate text-xs text-stone-500 dark:text-stone-400">{userEmail}</p>
               <button
