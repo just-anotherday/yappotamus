@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import Footer from './components/Footer'
 import Login from './components/Login'
@@ -11,6 +11,7 @@ import { useBoardPreference } from './hooks/useBoardPreference'
 import { useTheme } from './hooks/useTheme'
 import type { BoardType } from './types/boards'
 import { TaskNavigationContext, type TaskNavigationTarget } from './context/TaskNavigationContext'
+import { supabase } from './lib/supabase'
 
 type DirectorySelections = Record<BoardType, string | null>
 
@@ -48,6 +49,7 @@ function AuthenticatedOrganizer({
   const { boardType, setBoardType } = useBoardPreference(user.id)
   const [selections, setSelections] = useState<DirectorySelections>(emptySelections)
   const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(null)
+  const taskNavigationRequestRef = useRef(0)
 
   const selectRecord = useCallback((type: BoardType, recordId: string | null) => {
     setSelections(previous => (
@@ -55,10 +57,23 @@ function AuthenticatedOrganizer({
     ))
   }, [])
 
-  const navigateToTask = useCallback((target: TaskNavigationTarget) => {
+  const navigateToTask = useCallback(async (target: TaskNavigationTarget) => {
+    const requestId = ++taskNavigationRequestRef.current
     setBoardType('projects')
-    selectRecord('projects', target.projectId)
-    setTaskNavigationTarget(target)
+    let projectId = target.projectId
+
+    if (!projectId) {
+      const { data } = await supabase
+        .from('tasks')
+        .select('project_id')
+        .eq('id', target.taskId)
+        .maybeSingle()
+      projectId = data?.project_id
+    }
+
+    if (requestId !== taskNavigationRequestRef.current || !projectId) return
+    selectRecord('projects', projectId)
+    setTaskNavigationTarget({ taskId: target.taskId, projectId })
   }, [selectRecord, setBoardType])
 
   return (

@@ -1,12 +1,12 @@
 import { createContext, useContext } from 'react'
 
 export interface TaskNavigationTarget {
-  projectId: string
   taskId: string
+  projectId?: string
 }
 
 export interface TaskNavigationContextValue {
-  navigateToTask: (target: TaskNavigationTarget) => void
+  navigateToTask: (target: TaskNavigationTarget) => Promise<void>
 }
 
 export const TaskNavigationContext = createContext<TaskNavigationContextValue | null>(null)

@@ -58,17 +58,20 @@ interface NotificationItemProps {
   onNavigate?: () => void
 }
 
-function taskNotificationTarget(notification: NotificationRow): { projectId: string; taskId: string } | null {
+function taskNotificationTarget(notification: NotificationRow): { projectId?: string; taskId: string } | null {
   if (
-    (notification.type !== 'task_due_soon' && notification.type !== 'task_overdue') ||
+    (notification.type !== 'task_due_soon' && notification.type !== 'task_overdue' && notification.type !== 'custom_reminder') ||
     notification.workspace !== 'projects' ||
     notification.entity_type !== 'task' ||
-    !notification.entity_id ||
-    typeof notification.metadata.project_id !== 'string' ||
-    notification.metadata.project_id.trim() === ''
+    !notification.entity_id
   ) return null
 
-  return { projectId: notification.metadata.project_id, taskId: notification.entity_id }
+  const projectId = typeof notification.metadata.project_id === 'string' && notification.metadata.project_id.trim()
+    ? notification.metadata.project_id
+    : undefined
+  if ((notification.type === 'task_due_soon' || notification.type === 'task_overdue') && !projectId) return null
+
+  return { projectId, taskId: notification.entity_id }
 }
 
 function dueOnLabel(notification: NotificationRow): string | null {
@@ -99,7 +102,7 @@ export function NotificationItem({ notification, archived = false, onNavigate }:
 
   const handleViewTask = () => {
     if (!target) return
-    navigateToTask(target)
+    void navigateToTask(target)
     onNavigate?.()
   }
 
