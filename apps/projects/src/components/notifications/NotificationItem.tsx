@@ -1,5 +1,7 @@
 import type { NotificationRow } from '../../types/notifications'
 import { useNotifications } from '../../hooks/useNotifications'
+import { useTaskNavigation } from '../../context/TaskNavigationContext'
+import { formatCalendarDate, isCalendarDate } from '../../utils/calendarDate'
 
 const TYPE_LABELS: Record<NotificationRow['type'], string> = {
   system_message: 'System',
@@ -53,11 +55,33 @@ function TypeBadge({ type }: { type: NotificationRow['type'] }) {
 interface NotificationItemProps {
   notification: NotificationRow
   archived?: boolean
+  onNavigate?: () => void
 }
 
-export function NotificationItem({ notification, archived = false }: NotificationItemProps) {
+function taskNotificationTarget(notification: NotificationRow): { projectId: string; taskId: string } | null {
+  if (
+    (notification.type !== 'task_due_soon' && notification.type !== 'task_overdue') ||
+    notification.workspace !== 'projects' ||
+    notification.entity_type !== 'task' ||
+    !notification.entity_id ||
+    typeof notification.metadata.project_id !== 'string' ||
+    notification.metadata.project_id.trim() === ''
+  ) return null
+
+  return { projectId: notification.metadata.project_id, taskId: notification.entity_id }
+}
+
+function dueOnLabel(notification: NotificationRow): string | null {
+  if ((notification.type !== 'task_due_soon' && notification.type !== 'task_overdue') || typeof notification.metadata.due_on !== 'string') return null
+  return isCalendarDate(notification.metadata.due_on) ? formatCalendarDate(notification.metadata.due_on) : null
+}
+
+export function NotificationItem({ notification, archived = false, onNavigate }: NotificationItemProps) {
   const { markRead, markUnread, archive, restore, deleteArchived, isUpdating } = useNotifications()
+  const { navigateToTask } = useTaskNavigation()
   const updating = isUpdating(notification.id)
+  const target = taskNotificationTarget(notification)
+  const dueOn = dueOnLabel(notification)
 
   const handleToggleRead = () => {
     if (notification.is_read) {
@@ -71,6 +95,12 @@ export function NotificationItem({ notification, archived = false }: Notificatio
     if (window.confirm('Delete this archived notification permanently?')) {
       void deleteArchived(notification.id)
     }
+  }
+
+  const handleViewTask = () => {
+    if (!target) return
+    navigateToTask(target)
+    onNavigate?.()
   }
 
   return (
@@ -106,6 +136,7 @@ export function NotificationItem({ notification, archived = false }: Notificatio
         <p className="mt-0.5 line-clamp-3 text-xs leading-relaxed text-stone-600 dark:text-stone-400">
           {notification.message}
         </p>
+        {dueOn && <p className="mt-1 text-xs font-medium text-stone-600 dark:text-stone-300">Due {dueOn}</p>}
 
         <div className="mt-2 flex flex-wrap gap-1.5">
           {archived ? (
@@ -129,6 +160,15 @@ export function NotificationItem({ notification, archived = false }: Notificatio
             </>
           ) : (
             <>
+              {target && (
+                <button
+                  type="button"
+                  onClick={handleViewTask}
+                  className="rounded px-2 py-0.5 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+                >
+                  View task
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleToggleRead}

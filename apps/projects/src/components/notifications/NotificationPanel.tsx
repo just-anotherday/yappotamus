@@ -196,7 +196,7 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
             <ul className="divide-y divide-stone-200 dark:divide-stone-800/60">
               {visibleNotifications.map((notification) => (
                 <li key={notification.id} className="p-0">
-                  <NotificationItem notification={notification} archived={isArchived} />
+                  <NotificationItem notification={notification} archived={isArchived} onNavigate={onClose} />
                 </li>
               ))}
             </ul>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AddTaskOptions, UpdateTaskOptions } from '../../hooks/useTasks'
 import { useTaskFilters } from '../../hooks/useTaskFilters'
 import { useTaskReorder } from '../../hooks/useTaskReorder'
@@ -19,6 +19,8 @@ interface BoardProjectProps {
   onToggleTask: (id: string, completed: boolean) => Promise<void>
   onUpdateTask: (id: string, options: UpdateTaskOptions | string, description?: string) => Promise<void>
   onDeleteTask: (id: string) => Promise<void>
+  focusedTaskId: string | null
+  onFocusedTaskHandled: () => void
 }
 
 export function BoardProject({
@@ -27,15 +29,46 @@ export function BoardProject({
   onToggleTask,
   onUpdateTask,
   onDeleteTask,
+  focusedTaskId,
+  onFocusedTaskHandled,
 }: BoardProjectProps) {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
   const [editTaskTitle, setEditTaskTitle] = useState('')
   const [editTaskDescription, setEditTaskDescription] = useState('')
+  const [activeFocusedTaskId, setActiveFocusedTaskId] = useState<string | null>(null)
+  const focusTimeoutRef = useRef<number | null>(null)
 
   const { filteredTasks: searchedTasks, query, setSearchQuery, clearSearch, isSearching } = useTaskSearch(tasks)
   const { filteredTasks, filters, setFilter, clearFilters, hasActiveFilters } = useTaskFilters(searchedTasks)
   const { sortedTasks, sortConfig, setSortConfig, clearSort } = useTaskSort(filteredTasks)
   const renderedTasks = useMemo(() => groupByPinned(sortedTasks), [sortedTasks])
+  const requestedFocusedTask = useMemo(
+    () => focusedTaskId ? tasks.find(task => task.id === focusedTaskId) ?? null : null,
+    [focusedTaskId, tasks],
+  )
+  const activeFocusedTask = useMemo(
+    () => activeFocusedTaskId ? tasks.find(task => task.id === activeFocusedTaskId) ?? null : null,
+    [activeFocusedTaskId, tasks],
+  )
+  const visibleTasks = useMemo(() => {
+    if (!activeFocusedTask || renderedTasks.some(task => task.id === activeFocusedTask.id)) return renderedTasks
+    return [activeFocusedTask, ...renderedTasks]
+  }, [activeFocusedTask, renderedTasks])
+
+  useEffect(() => {
+    if (!requestedFocusedTask) return
+    setActiveFocusedTaskId(requestedFocusedTask.id)
+    if (focusTimeoutRef.current !== null) window.clearTimeout(focusTimeoutRef.current)
+    focusTimeoutRef.current = window.setTimeout(() => {
+      setActiveFocusedTaskId(null)
+      focusTimeoutRef.current = null
+    }, 3000)
+    onFocusedTaskHandled()
+  }, [onFocusedTaskHandled, requestedFocusedTask])
+
+  useEffect(() => () => {
+    if (focusTimeoutRef.current !== null) window.clearTimeout(focusTimeoutRef.current)
+  }, [])
 
   const saveTaskEdit = async (id: string) => {
     if (!editTaskTitle.trim()) return
@@ -101,11 +134,12 @@ export function BoardProject({
           <TaskSortBar sortConfig={sortConfig} onSetSortConfig={setSortConfig} onReset={clearSort} />
         </div>
 
-        <DraggableTaskList tasks={renderedTasks} onDragEnd={handleDragEnd} dragEnabled={dragEnabled}>
+        <DraggableTaskList tasks={visibleTasks} onDragEnd={handleDragEnd} dragEnabled={dragEnabled}>
           {task => (
             <TaskCard
               key={task.id}
               task={task}
+              isFocused={task.id === activeFocusedTaskId}
               isEditing={editingTaskId === task.id}
               editTitle={editTaskTitle}
               editDescription={editTaskDescription}

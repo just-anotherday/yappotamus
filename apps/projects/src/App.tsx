@@ -10,6 +10,7 @@ import { useAuth } from './hooks/useAuth'
 import { useBoardPreference } from './hooks/useBoardPreference'
 import { useTheme } from './hooks/useTheme'
 import type { BoardType } from './types/boards'
+import { TaskNavigationContext, type TaskNavigationTarget } from './context/TaskNavigationContext'
 
 type DirectorySelections = Record<BoardType, string | null>
 
@@ -46,6 +47,7 @@ function AuthenticatedOrganizer({
   const { resolvedTheme, toggleTheme } = useTheme()
   const { boardType, setBoardType } = useBoardPreference(user.id)
   const [selections, setSelections] = useState<DirectorySelections>(emptySelections)
+  const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(null)
 
   const selectRecord = useCallback((type: BoardType, recordId: string | null) => {
     setSelections(previous => (
@@ -53,22 +55,32 @@ function AuthenticatedOrganizer({
     ))
   }, [])
 
+  const navigateToTask = useCallback((target: TaskNavigationTarget) => {
+    setBoardType('projects')
+    selectRecord('projects', target.projectId)
+    setTaskNavigationTarget(target)
+  }, [selectRecord, setBoardType])
+
   return (
-    <OrganizerShell
-      boardType={boardType}
-      userEmail={user.email}
-      theme={resolvedTheme}
-      onBoardTypeChange={setBoardType}
-      onToggleTheme={toggleTheme}
-      onSignOut={onSignOut}
-    >
-      <ActiveBoard
+    <TaskNavigationContext.Provider value={{ navigateToTask }}>
+      <OrganizerShell
         boardType={boardType}
-        userId={user.id}
-        selectedRecordId={selections[boardType]}
-        onSelectedRecordChange={recordId => selectRecord(boardType, recordId)}
-      />
-    </OrganizerShell>
+        userEmail={user.email}
+        theme={resolvedTheme}
+        onBoardTypeChange={setBoardType}
+        onToggleTheme={toggleTheme}
+        onSignOut={onSignOut}
+      >
+        <ActiveBoard
+          boardType={boardType}
+          userId={user.id}
+          selectedRecordId={selections[boardType]}
+          taskNavigationTarget={taskNavigationTarget}
+          onSelectedRecordChange={recordId => selectRecord(boardType, recordId)}
+          onTaskNavigationHandled={() => setTaskNavigationTarget(null)}
+        />
+      </OrganizerShell>
+    </TaskNavigationContext.Provider>
   )
 }
 
@@ -76,12 +88,16 @@ function ActiveBoard({
   boardType,
   userId,
   selectedRecordId,
+  taskNavigationTarget,
   onSelectedRecordChange,
+  onTaskNavigationHandled,
 }: {
   boardType: BoardType
   userId: string
   selectedRecordId: string | null
+  taskNavigationTarget: TaskNavigationTarget | null
   onSelectedRecordChange: (recordId: string | null) => void
+  onTaskNavigationHandled: () => void
 }) {
   if (boardType === 'shopping') {
     return (
@@ -106,6 +122,8 @@ function ActiveBoard({
     <ProjectsView
       selectedRecordId={selectedRecordId}
       onSelectedRecordChange={onSelectedRecordChange}
+      focusedTaskId={taskNavigationTarget?.taskId ?? null}
+      onFocusedTaskHandled={onTaskNavigationHandled}
     />
   )
 }

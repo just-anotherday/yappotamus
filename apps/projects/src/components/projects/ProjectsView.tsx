@@ -4,9 +4,11 @@ import { BoardProject } from './BoardProject'
 interface ProjectsViewProps {
   selectedRecordId: string | null
   onSelectedRecordChange: (recordId: string | null) => void
+  focusedTaskId: string | null
+  onFocusedTaskHandled: () => void
 }
 
-export function ProjectsView({ selectedRecordId, onSelectedRecordChange }: ProjectsViewProps) {
+export function ProjectsView({ selectedRecordId, onSelectedRecordChange, focusedTaskId, onFocusedTaskHandled }: ProjectsViewProps) {
   return (
     <DirectoryWorkspace
       boardType="projects"
@@ -15,6 +17,8 @@ export function ProjectsView({ selectedRecordId, onSelectedRecordChange }: Proje
       renderContent={props => (
         <BoardProject
           tasks={props.tasks}
+          focusedTaskId={focusedTaskId}
+          onFocusedTaskHandled={onFocusedTaskHandled}
           onAddTask={props.onAddTask}
           onToggleTask={props.onToggleTask}
           onUpdateTask={props.onUpdateTask}

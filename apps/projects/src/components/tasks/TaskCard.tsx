@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import type { Task, TaskStatus, TaskPriority } from '../../lib/types/database.types'
 import TaskStatusBadge from './TaskStatusBadge'
 import TaskPriorityBadge from './TaskPriorityBadge'
@@ -6,6 +7,7 @@ import { ReminderControl } from '../reminders/ReminderControl'
 
 interface TaskCardProps {
   task: Task
+  isFocused?: boolean
   isEditing: boolean
   editTitle: string
   editDescription: string
@@ -25,6 +27,7 @@ interface TaskCardProps {
 
 export default function TaskCard({
   task,
+  isFocused = false,
   isEditing,
   editTitle,
   editDescription,
@@ -41,9 +44,26 @@ export default function TaskCard({
   onChangeEditTitle,
   onChangeEditDescription,
 }: TaskCardProps) {
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [focusActive, setFocusActive] = useState(false)
+
+  useEffect(() => {
+    if (!isFocused) {
+      setFocusActive(false)
+      return
+    }
+    setFocusActive(true)
+    cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    cardRef.current?.focus({ preventScroll: true })
+    const timeout = window.setTimeout(() => setFocusActive(false), 3000)
+    return () => window.clearTimeout(timeout)
+  }, [isFocused])
+
   return (
     <div
-      className={`flex items-start gap-3 p-3 rounded-md border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition ${task.completed ? 'opacity-60' : ''} ${task.is_pinned ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700' : ''}`}
+      ref={cardRef}
+      tabIndex={focusActive ? -1 : undefined}
+      className={`flex items-start gap-3 p-3 rounded-md border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition ${task.completed ? 'opacity-60' : ''} ${task.is_pinned ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700' : ''} ${focusActive ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-gray-900' : ''}`}
     >
       <input
         type="checkbox"
