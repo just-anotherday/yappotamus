@@ -10,6 +10,7 @@ import { boardTypeToProjectKind, type BoardType } from '../../types/boards'
 import { ProjectDialog } from '../projects/ProjectDialog'
 import { ProjectDirectoryHeader } from '../projects/ProjectDirectoryHeader'
 import { LoadingState, RecoverableError } from '../shared/AsyncState'
+import { ReminderControl } from '../reminders/ReminderControl'
 
 export interface DirectoryContentProps {
   tasks: Task[]
@@ -148,6 +149,7 @@ export function DirectoryWorkspace({
       {selectedRecord ? (
         <section className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-900/80 sm:p-7">
           <DirectoryRecordHeading project={selectedRecord} count={tasks.length} badge={copy.badge} accent={copy.accent} />
+          {boardType === 'shopping' && <ReminderControl target={{ kind: 'shopping_project', id: selectedRecord.id, label: selectedRecord.name }} />}
           {tasksLoading ? <LoadingState label={`Loading ${copy.childPlural}…`} /> : renderContent({
             tasks,
             onAddTask: addTask,

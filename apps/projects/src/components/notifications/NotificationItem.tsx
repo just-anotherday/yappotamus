@@ -6,6 +6,7 @@ const TYPE_LABELS: Record<NotificationRow['type'], string> = {
   task_due_soon: 'Due soon',
   task_overdue: 'Overdue',
   shopping_date_upcoming: 'Shopping reminder',
+  custom_reminder: 'Reminder',
 }
 
 function formatCreatedAt(isoString: string): string {

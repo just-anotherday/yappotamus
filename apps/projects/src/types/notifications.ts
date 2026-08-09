@@ -2,7 +2,8 @@ export type NotificationType =
   | 'system_message'
   | 'task_due_soon'
   | 'task_overdue'
-  | 'shopping_date_upcoming';
+  | 'shopping_date_upcoming'
+  | 'custom_reminder';
 
 export type NotificationWorkspace =
   | 'projects'
@@ -61,7 +62,8 @@ export function isNotificationType(
     value === 'system_message' ||
     value === 'task_due_soon' ||
     value === 'task_overdue' ||
-    value === 'shopping_date_upcoming'
+    value === 'shopping_date_upcoming' ||
+    value === 'custom_reminder'
   );
 }
 

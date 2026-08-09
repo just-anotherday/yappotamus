@@ -17,6 +17,7 @@ import {
   RecipeDialog,
   StepDialog,
 } from './RecipeDialogs'
+import { ReminderControl } from '../reminders/ReminderControl'
 
 interface RecipeBooksViewProps {
   userId: string
@@ -364,6 +365,7 @@ function RecipeDetail({
           <p className="mt-2 text-sm text-stone-500">{[recipe.category, recipe.cuisine, recipe.difficulty?.toLowerCase()].filter(Boolean).join(' · ')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ReminderControl target={{ kind: 'recipe', id: recipe.id, label: recipe.name }} />
           <button type="button" disabled={recipesPending} onClick={onFavorite} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">{recipe.is_favorite ? 'Unfavorite' : 'Favorite'}</button>
           <button type="button" disabled={recipesPending} onClick={onEdit} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">Edit</button>
           <button type="button" disabled={recipesPending} onClick={onArchive} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">{recipe.is_archived ? 'Unarchive' : 'Archive'}</button>

@@ -2,6 +2,7 @@ import type { Task, TaskStatus, TaskPriority } from '../../lib/types/database.ty
 import TaskStatusBadge from './TaskStatusBadge'
 import TaskPriorityBadge from './TaskPriorityBadge'
 import { formatCalendarDate } from '../../utils/calendarDate'
+import { ReminderControl } from '../reminders/ReminderControl'
 
 interface TaskCardProps {
   task: Task
@@ -106,6 +107,7 @@ export default function TaskCard({
 
         {/* Action row: status select, priority select, due date, edit, delete */}
         <div className="flex flex-wrap items-center gap-2 mt-2">
+          <ReminderControl target={{ kind: 'task', id: task.id, label: task.title }} />
           {/* Status selector */}
           {isEditing !== true && (
             <select
