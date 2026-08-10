@@ -75,7 +75,11 @@ function taskNotificationTarget(notification: NotificationRow): { projectId?: st
 }
 
 function dueOnLabel(notification: NotificationRow): string | null {
-  if ((notification.type !== 'task_due_soon' && notification.type !== 'task_overdue') || typeof notification.metadata.due_on !== 'string') return null
+  const isTaskDueNotification =
+    notification.type === 'task_due_soon' ||
+    notification.type === 'task_overdue' ||
+    (notification.type === 'custom_reminder' && notification.workspace === 'projects' && notification.entity_type === 'task')
+  if (!isTaskDueNotification || typeof notification.metadata.due_on !== 'string') return null
   return isCalendarDate(notification.metadata.due_on) ? formatCalendarDate(notification.metadata.due_on) : null
 }
 
