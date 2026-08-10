@@ -43,10 +43,20 @@ export interface Task {
   is_archived: boolean
   updated_at: string
   metadata: TaskMetadata
+  shopping_store_id: string | null
   
   order: number
   user_id: string
   created_at: string
+}
+
+export interface ShoppingStore {
+  id: string
+  user_id: string
+  name: string
+  sort_order: number
+  created_at: string
+  updated_at: string
 }
 
 export interface UserSettings {
@@ -77,6 +87,11 @@ export interface Database {
         Row: Task
         Insert: Omit<Task, 'id' | 'created_at' | 'updated_at' | 'status' | 'priority' | 'is_pinned' | 'is_archived'>
         Update: Partial<Task>
+      }
+      shopping_stores: {
+        Row: ShoppingStore
+        Insert: Omit<ShoppingStore, 'id' | 'created_at' | 'updated_at'>
+        Update: Partial<ShoppingStore>
       }
       user_settings: {
         Row: UserSettings

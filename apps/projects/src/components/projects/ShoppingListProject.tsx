@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { AddTaskOptions, UpdateTaskOptions } from '../../hooks/useTasks'
-import type { Task, TaskMetadata } from '../../lib/types/database.types'
+import type { ShoppingStore, Task, TaskMetadata } from '../../lib/types/database.types'
+import { ShoppingStoreManager } from '../shopping/ShoppingStoreManager'
 
 const categories = ['Produce', 'Dairy', 'Pantry', 'Meat & Seafood', 'Frozen', 'Household', 'Other']
 const units = ['', 'pcs', 'lb', 'oz', 'kg', 'g', 'bag', 'box', 'can', 'bottle']
@@ -12,6 +13,12 @@ interface ShoppingListProjectProps {
   onUpdateTask: (id: string, options: UpdateTaskOptions | string, description?: string) => Promise<void>
   onDeleteTask: (id: string) => Promise<void>
   onDeleteTasks: (ids: string[]) => Promise<void>
+  stores: ShoppingStore[]
+  storesError: string | null
+  onCreateStore: (name: string) => Promise<boolean>
+  onRenameStore: (id: string, name: string) => Promise<boolean>
+  onDeleteStore: (id: string) => Promise<boolean>
+  onMoveStore: (id: string, direction: 'up' | 'down') => Promise<boolean>
 }
 
 interface ShoppingDraft {
@@ -19,6 +26,7 @@ interface ShoppingDraft {
   quantity: string
   unit: string
   category: string
+  shopping_store_id: string | null
 }
 
 const emptyDraft: ShoppingDraft = {
@@ -26,6 +34,7 @@ const emptyDraft: ShoppingDraft = {
   quantity: '',
   unit: '',
   category: 'Produce',
+  shopping_store_id: null,
 }
 
 function shoppingMetadata(draft: ShoppingDraft): TaskMetadata {
@@ -44,6 +53,12 @@ export function ShoppingListProject({
   onUpdateTask,
   onDeleteTask,
   onDeleteTasks,
+  stores,
+  storesError,
+  onCreateStore,
+  onRenameStore,
+  onDeleteStore,
+  onMoveStore,
 }: ShoppingListProjectProps) {
   const [draft, setDraft] = useState<ShoppingDraft>(emptyDraft)
   const [query, setQuery] = useState('')
@@ -51,6 +66,7 @@ export function ShoppingListProject({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<ShoppingDraft>(emptyDraft)
   const [confirmClear, setConfirmClear] = useState(false)
+  const [storeManagerOpen, setStoreManagerOpen] = useState(false)
 
   const visibleTasks = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -64,14 +80,18 @@ export function ShoppingListProject({
 
   const groupedTasks = useMemo(() => {
     const groups = new Map<string, Task[]>()
-    for (const category of categories) groups.set(category, [])
+    for (const store of stores) groups.set(store.id, [])
+    const unassigned: Task[] = []
     for (const task of visibleTasks) {
-      const category = task.metadata.category || 'Other'
-      const group = groups.get(category) ?? groups.get('Other')
-      group?.push(task)
+      const group = task.shopping_store_id ? groups.get(task.shopping_store_id) : undefined
+      if (group) group.push(task)
+      else unassigned.push(task)
     }
-    return [...groups.entries()].filter(([, items]) => items.length > 0)
-  }, [visibleTasks])
+    return [
+      ...stores.map(store => ({ id: store.id, name: store.name, items: groups.get(store.id) ?? [] })).filter(group => group.items.length > 0),
+      ...(unassigned.length > 0 ? [{ id: 'unassigned', name: 'Unassigned', items: unassigned }] : []),
+    ]
+  }, [stores, visibleTasks])
 
   const checkedIds = tasks.filter(task => task.completed).map(task => task.id)
 
@@ -82,6 +102,7 @@ export function ShoppingListProject({
       status: 'TODO',
       priority: 'MEDIUM',
       metadata: shoppingMetadata(draft),
+      shopping_store_id: draft.shopping_store_id,
     })
     setDraft(previous => ({ ...emptyDraft, category: previous.category }))
   }
@@ -93,6 +114,7 @@ export function ShoppingListProject({
       quantity: task.metadata.quantity ?? '',
       unit: task.metadata.unit ?? '',
       category: task.metadata.category ?? 'Other',
+      shopping_store_id: task.shopping_store_id,
     })
   }
 
@@ -101,6 +123,7 @@ export function ShoppingListProject({
     await onUpdateTask(editingId, {
       title: editDraft.title.trim(),
       metadata: shoppingMetadata(editDraft),
+      shopping_store_id: editDraft.shopping_store_id,
     })
     setEditingId(null)
   }
@@ -151,6 +174,15 @@ export function ShoppingListProject({
           >
             {categories.map(category => <option key={category}>{category}</option>)}
           </select>
+          <select
+            value={draft.shopping_store_id ?? ''}
+            onChange={event => setDraft({ ...draft, shopping_store_id: event.target.value || null })}
+            className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
+          >
+            <option value="">Unassigned</option>
+            {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+          </select>
+          <button type="button" onClick={() => setStoreManagerOpen(true)} className="w-full text-sm font-semibold text-amber-800 hover:text-amber-950 dark:text-amber-300">Manage stores</button>
           <button
             type="button"
             onClick={addItem}
@@ -203,16 +235,16 @@ export function ShoppingListProject({
         </div>
 
         <div className="space-y-6">
-          {groupedTasks.map(([category, items]) => (
-            <div key={category}>
+          {groupedTasks.map(group => (
+            <div key={group.id}>
               <div className="mb-2 flex items-center gap-3">
-                <h3 className="text-sm font-bold uppercase tracking-[0.13em] text-stone-500 dark:text-stone-400">{category}</h3>
+                <h3 className="text-sm font-bold uppercase tracking-[0.13em] text-stone-500 dark:text-stone-400">{group.name}</h3>
                 <div className="h-px flex-1 bg-stone-200 dark:bg-stone-800" />
-                <span className="text-xs text-stone-400">{items.length}</span>
+                <span className="text-xs text-stone-400">{group.items.length}</span>
               </div>
 
               <div className="overflow-hidden rounded-xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">
-                {items.map((task, index) => (
+                {group.items.map((task, index) => (
                   <div
                     key={task.id}
                     className={`flex items-center gap-3 px-4 py-3 ${index > 0 ? 'border-t border-stone-100 dark:border-stone-800' : ''}`}
@@ -226,7 +258,7 @@ export function ShoppingListProject({
                     />
 
                     {editingId === task.id ? (
-                      <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[minmax(8rem,1fr)_6rem_6rem_9rem_auto]">
+                      <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[minmax(8rem,1fr)_6rem_6rem_9rem_9rem_auto]">
                         <input
                           value={editDraft.title}
                           onChange={event => setEditDraft({ ...editDraft, title: event.target.value })}
@@ -251,6 +283,14 @@ export function ShoppingListProject({
                           className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
                         >
                           {categories.map(item => <option key={item}>{item}</option>)}
+                        </select>
+                        <select
+                          value={editDraft.shopping_store_id ?? ''}
+                          onChange={event => setEditDraft({ ...editDraft, shopping_store_id: event.target.value || null })}
+                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                        >
+                          <option value="">Unassigned</option>
+                          {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
                         </select>
                         <div className="flex gap-1">
                           <button type="button" onClick={saveEdit} className="rounded bg-emerald-700 px-2 text-xs font-semibold text-white">Save</button>
@@ -285,10 +325,19 @@ export function ShoppingListProject({
             <p className="font-semibold text-stone-800 dark:text-stone-100">
               {tasks.length === 0 ? 'Your shopping list is empty.' : 'Nothing matches this view.'}
             </p>
-            <p className="mt-1 text-sm text-stone-500">Add an item and it will be grouped by category.</p>
+            <p className="mt-1 text-sm text-stone-500">Add an item and assign a store whenever you are ready.</p>
           </div>
         )}
       </section>
+      {storeManagerOpen && <ShoppingStoreManager
+        stores={stores}
+        error={storesError}
+        onCreateStore={onCreateStore}
+        onRenameStore={onRenameStore}
+        onDeleteStore={onDeleteStore}
+        onMoveStore={onMoveStore}
+        onClose={() => setStoreManagerOpen(false)}
+      />}
     </div>
   )
 }

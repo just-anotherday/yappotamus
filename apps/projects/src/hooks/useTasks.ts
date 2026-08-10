@@ -18,6 +18,7 @@ export interface AddTaskOptions {
   is_pinned?: boolean
   is_archived?: boolean
   metadata?: TaskMetadata
+  shopping_store_id?: string | null
 }
 
 export interface UpdateTaskOptions {
@@ -32,10 +33,11 @@ export interface UpdateTaskOptions {
   is_archived?: boolean
   order?: number
   metadata?: TaskMetadata
+  shopping_store_id?: string | null
 }
 
-function normalizeTask(task: Omit<Task, 'metadata'> & { metadata?: TaskMetadata }): Task {
-  return { ...task, metadata: task.metadata ?? {} }
+function normalizeTask(task: Omit<Task, 'metadata' | 'shopping_store_id'> & { metadata?: TaskMetadata; shopping_store_id?: string | null }): Task {
+  return { ...task, metadata: task.metadata ?? {}, shopping_store_id: task.shopping_store_id ?? null }
 }
 
 export function useTasks(projectId: string | null) {
@@ -118,6 +120,7 @@ export function useTasks(projectId: string | null) {
     if (normalizedOptions.is_pinned !== undefined) insertData.is_pinned = normalizedOptions.is_pinned
     if (normalizedOptions.is_archived !== undefined) insertData.is_archived = normalizedOptions.is_archived
     if (normalizedOptions.metadata !== undefined) insertData.metadata = normalizedOptions.metadata
+    if (normalizedOptions.shopping_store_id !== undefined) insertData.shopping_store_id = normalizedOptions.shopping_store_id
 
     const { error: insertError } = await supabase.from('tasks').insert(insertData)
     if (insertError) setError(insertError.message)
