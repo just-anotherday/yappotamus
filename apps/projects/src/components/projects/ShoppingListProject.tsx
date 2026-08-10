@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { AddTaskOptions, UpdateTaskOptions } from '../../hooks/useTasks'
 import type { ShoppingStore, Task, TaskMetadata } from '../../lib/types/database.types'
 import { ShoppingStoreManager } from '../shopping/ShoppingStoreManager'
@@ -7,6 +7,8 @@ const categories = ['Produce', 'Dairy', 'Pantry', 'Meat & Seafood', 'Frozen', 'H
 const units = ['', 'pcs', 'lb', 'oz', 'kg', 'g', 'bag', 'box', 'can', 'bottle']
 
 interface ShoppingListProjectProps {
+  projectId: string
+  projectName: string
   tasks: Task[]
   onAddTask: (options: AddTaskOptions | string, description?: string) => Promise<void>
   onToggleTask: (id: string, completed: boolean) => Promise<void>
@@ -19,6 +21,10 @@ interface ShoppingListProjectProps {
   onRenameStore: (id: string, name: string) => Promise<boolean>
   onDeleteStore: (id: string) => Promise<boolean>
   onMoveStore: (id: string, direction: 'up' | 'down') => Promise<boolean>
+  onFinishTrip: (projectId: string, storeId: string) => Promise<number | null>
+  tripPending: boolean
+  tripError: string | null
+  onClearTripError: () => void
 }
 
 interface ShoppingDraft {
@@ -47,6 +53,8 @@ function shoppingMetadata(draft: ShoppingDraft): TaskMetadata {
 }
 
 export function ShoppingListProject({
+  projectId,
+  projectName,
   tasks,
   onAddTask,
   onToggleTask,
@@ -59,6 +67,10 @@ export function ShoppingListProject({
   onRenameStore,
   onDeleteStore,
   onMoveStore,
+  onFinishTrip,
+  tripPending,
+  tripError,
+  onClearTripError,
 }: ShoppingListProjectProps) {
   const [draft, setDraft] = useState<ShoppingDraft>(emptyDraft)
   const [query, setQuery] = useState('')
@@ -67,6 +79,35 @@ export function ShoppingListProject({
   const [editDraft, setEditDraft] = useState<ShoppingDraft>(emptyDraft)
   const [confirmClear, setConfirmClear] = useState(false)
   const [storeManagerOpen, setStoreManagerOpen] = useState(false)
+  const [tripStoreId, setTripStoreId] = useState<string | null>(null)
+  const [confirmFinish, setConfirmFinish] = useState(false)
+  const [tripNotice, setTripNotice] = useState<string | null>(null)
+
+  const tripStore = useMemo(
+    () => tripStoreId ? stores.find(store => store.id === tripStoreId) ?? null : null,
+    [stores, tripStoreId],
+  )
+  const tripTasks = useMemo(
+    () => tripStoreId ? tasks.filter(task => task.shopping_store_id === tripStoreId) : [],
+    [tasks, tripStoreId],
+  )
+  const tripCheckedCount = tripTasks.filter(task => task.completed).length
+  const tripRemainingCount = tripTasks.length - tripCheckedCount
+
+  useEffect(() => {
+    setTripStoreId(null)
+    setConfirmFinish(false)
+    setTripNotice(null)
+    onClearTripError()
+  }, [onClearTripError, projectId])
+
+  useEffect(() => {
+    if (!tripStoreId || tripStore) return
+    setTripStoreId(null)
+    setConfirmFinish(false)
+    setTripNotice('Store is no longer available. Its items are now Unassigned.')
+    onClearTripError()
+  }, [onClearTripError, tripStore, tripStoreId])
 
   const visibleTasks = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -138,6 +179,70 @@ export function ShoppingListProject({
     setConfirmClear(false)
   }
 
+  const startTrip = (storeId: string) => {
+    onClearTripError()
+    setTripNotice(null)
+    setConfirmFinish(false)
+    setTripStoreId(storeId)
+  }
+
+  const exitTrip = () => {
+    setTripStoreId(null)
+    setConfirmFinish(false)
+    onClearTripError()
+  }
+
+  const finishTrip = async () => {
+    if (!tripStoreId || !tripStore || tripCheckedCount === 0 || tripPending) return
+    const deletedCount = await onFinishTrip(projectId, tripStoreId)
+    if (deletedCount === null) return
+    setConfirmFinish(false)
+    setTripStoreId(null)
+  }
+
+  if (tripStoreId && tripStore) {
+    return (
+      <section className="mx-auto max-w-3xl">
+        <button type="button" onClick={exitTrip} disabled={tripPending} className="text-sm font-semibold text-amber-800 hover:text-amber-950 disabled:cursor-not-allowed disabled:opacity-50 dark:text-amber-300">
+          ← Back to {projectName}
+        </button>
+        <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50/70 p-5 dark:border-amber-900/60 dark:bg-amber-950/20">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800 dark:text-amber-300">Shopping trip</p>
+          <h3 className="mt-1 text-2xl font-semibold text-stone-950 dark:text-white">{tripStore.name}</h3>
+          <p className="mt-2 text-sm text-stone-600 dark:text-stone-300">{tripRemainingCount} remaining · {tripCheckedCount} checked</p>
+        </div>
+
+        {tripError && <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200">{tripError}</p>}
+
+        <div className="mt-5 overflow-hidden rounded-xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">
+          {tripTasks.map((task, index) => (
+            <div key={task.id} className={`flex items-center gap-3 px-4 py-3 ${index > 0 ? 'border-t border-stone-100 dark:border-stone-800' : ''}`}>
+              <input type="checkbox" checked={task.completed} onChange={() => onToggleTask(task.id, !task.completed)} className="size-5 accent-amber-700" aria-label={`Mark ${task.title} ${task.completed ? 'needed' : 'complete'}`} />
+              <div className="min-w-0 flex-1"><p className={`font-medium ${task.completed ? 'text-stone-400 line-through' : 'text-stone-900 dark:text-stone-100'}`}>{task.title}</p></div>
+              {(task.metadata.quantity || task.metadata.unit) && <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-600 dark:bg-stone-800 dark:text-stone-300">{[task.metadata.quantity, task.metadata.unit].filter(Boolean).join(' ')}</span>}
+            </div>
+          ))}
+          {tripTasks.length === 0 && <p className="px-4 py-10 text-center text-sm text-stone-500">No items are currently assigned to this store.</p>}
+        </div>
+
+        <button type="button" onClick={() => setConfirmFinish(true)} disabled={tripCheckedCount === 0 || tripPending} className="mt-5 w-full rounded-lg bg-amber-700 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-45">
+          {tripPending ? 'Finishing trip…' : `Finish ${tripStore.name} Trip`}
+        </button>
+
+        {confirmFinish && <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="finish-trip-title">
+          <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+            <h3 id="finish-trip-title" className="text-xl font-semibold text-stone-950 dark:text-white">Finish {tripStore.name} trip?</h3>
+            <p className="mt-2 text-sm text-stone-600 dark:text-stone-300">{tripCheckedCount} checked {tripCheckedCount === 1 ? 'item' : 'items'} will be removed from this shopping list. {tripRemainingCount} unchecked {tripRemainingCount === 1 ? 'item' : 'items'} will remain for next time.</p>
+            <div className="mt-5 flex justify-end gap-3">
+              <button type="button" onClick={() => setConfirmFinish(false)} disabled={tripPending} className="text-sm font-semibold text-stone-600 disabled:opacity-50 dark:text-stone-300">Cancel</button>
+              <button type="button" onClick={() => void finishTrip()} disabled={tripPending} className="rounded-lg bg-amber-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{tripPending ? 'Finishing…' : 'Finish Trip'}</button>
+            </div>
+          </div>
+        </div>}
+      </section>
+    )
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-[21rem_minmax(0,1fr)]">
       <aside className="h-fit rounded-2xl border border-amber-200 bg-amber-50/70 p-5 dark:border-amber-900/60 dark:bg-amber-950/20">
@@ -206,6 +311,7 @@ export function ShoppingListProject({
       </aside>
 
       <section className="min-w-0">
+        {tripNotice && <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/20 dark:text-amber-100">{tripNotice}</p>}
         <div className="mb-4 flex flex-col gap-3 sm:flex-row">
           <input
             value={query}
@@ -241,6 +347,7 @@ export function ShoppingListProject({
                 <h3 className="text-sm font-bold uppercase tracking-[0.13em] text-stone-500 dark:text-stone-400">{group.name}</h3>
                 <div className="h-px flex-1 bg-stone-200 dark:bg-stone-800" />
                 <span className="text-xs text-stone-400">{group.items.length}</span>
+                {group.id !== 'unassigned' && <button type="button" onClick={() => startTrip(group.id)} className="text-xs font-semibold text-amber-800 hover:text-amber-950 dark:text-amber-300">Start Trip</button>}
               </div>
 
               <div className="overflow-hidden rounded-xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">

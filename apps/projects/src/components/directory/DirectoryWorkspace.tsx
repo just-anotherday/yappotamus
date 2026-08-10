@@ -13,6 +13,7 @@ import { LoadingState, RecoverableError } from '../shared/AsyncState'
 import { ReminderControl } from '../reminders/ReminderControl'
 
 export interface DirectoryContentProps {
+  project: Project
   tasks: Task[]
   onAddTask: (options: AddTaskOptions | string, description?: string) => Promise<void>
   onToggleTask: (id: string, completed: boolean) => Promise<void>
@@ -151,6 +152,7 @@ export function DirectoryWorkspace({
           <DirectoryRecordHeading project={selectedRecord} count={tasks.length} badge={copy.badge} accent={copy.accent} />
           {boardType === 'shopping' && <ReminderControl target={{ kind: 'shopping_project', id: selectedRecord.id, label: selectedRecord.name }} />}
           {tasksLoading ? <LoadingState label={`Loading ${copy.childPlural}…`} /> : renderContent({
+            project: selectedRecord,
             tasks,
             onAddTask: addTask,
             onToggleTask: toggleTask,

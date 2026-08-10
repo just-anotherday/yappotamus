@@ -99,5 +99,14 @@ export interface Database {
         Update: Partial<UserSettings>
       }
     }
+    Functions: {
+      finish_shopping_trip: {
+        Args: {
+          p_project_id: string
+          p_store_id: string
+        }
+        Returns: number
+      }
+    }
   }
 }
