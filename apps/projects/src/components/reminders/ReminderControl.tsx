@@ -3,6 +3,7 @@ import { Temporal } from '@js-temporal/polyfill'
 import { useUserSettings } from '../../hooks/useUserSettings'
 import { useEntityReminder } from '../../hooks/useEntityReminder'
 import type { ReminderTarget } from '../../types/reminders'
+import { Button } from '../shared/Button'
 
 export function ReminderControl({ target }: { target: ReminderTarget }) {
   const { settings } = useUserSettings()
@@ -49,9 +50,27 @@ export function ReminderControl({ target }: { target: ReminderTarget }) {
   }
 
   const methods = [current?.in_app_enabled ? 'In app' : null, current?.email_enabled ? 'Email' : null].filter(Boolean).join(' + ')
+  const isShoppingReminder = target.kind === 'shopping_project'
+  const reminderStatus = current
+    ? `Scheduled ${Temporal.Instant.from(current.remind_at).toZonedDateTimeISO(current.timezone).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })} · ${methods}`
+    : 'No reminder set'
 
-  return <div className="mt-2 text-xs">
-    {current ? <>
+  return <div className={isShoppingReminder ? 'mb-5 flex flex-col gap-3 rounded-xl border border-stone-200 bg-stone-50/80 px-4 py-3 dark:border-stone-800 dark:bg-stone-900/60 sm:flex-row sm:items-center sm:justify-between' : 'mt-2 text-xs'}>
+    {isShoppingReminder ? <>
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span aria-hidden="true" className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-amber-100 text-sm text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">🔔</span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-stone-800 dark:text-stone-100">Reminder</p>
+          <p className="mt-0.5 text-xs leading-5 text-stone-500 dark:text-stone-400">{reminderStatus}</p>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+        {current ? <>
+          <Button aria-label={`Edit reminder for ${target.label}`} onClick={() => setOpen(true)} tone="amber" variant="secondary">Edit reminder</Button>
+          <Button aria-label={`Remove reminder for ${target.label}`} disabled={state.pending} onClick={() => void state.cancel()} variant="destructive">Remove</Button>
+        </> : <Button aria-label={`Set reminder for ${target.label}`} onClick={() => setOpen(true)} tone="amber" variant="secondary">Set Reminder</Button>}
+      </div>
+    </> : current ? <>
       <p className="text-stone-500">Reminder {Temporal.Instant.from(current.remind_at).toZonedDateTimeISO(current.timezone).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })} · {methods}</p>
       <button type="button" onClick={() => setOpen(true)} className="mr-2 text-emerald-700">Edit Reminder</button>
       <button type="button" disabled={state.pending} onClick={() => void state.cancel()} className="text-red-700">Remove Reminder</button>

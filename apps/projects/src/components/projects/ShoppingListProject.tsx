@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AddTaskOptions, UpdateTaskOptions } from '../../hooks/useTasks'
 import type { ShoppingStore, Task, TaskMetadata } from '../../lib/types/database.types'
+import { Button } from '../shared/Button'
+import { DialogFrame } from '../shared/DialogFrame'
 import { ShoppingStoreManager } from '../shopping/ShoppingStoreManager'
 
 const categories = ['Produce', 'Dairy', 'Pantry', 'Meat & Seafood', 'Frozen', 'Household', 'Other']
@@ -82,6 +84,7 @@ export function ShoppingListProject({
   const [tripStoreId, setTripStoreId] = useState<string | null>(null)
   const [confirmFinish, setConfirmFinish] = useState(false)
   const [tripNotice, setTripNotice] = useState<string | null>(null)
+  const finishCancelRef = useRef<HTMLButtonElement>(null)
 
   const tripStore = useMemo(
     () => tripStoreId ? stores.find(store => store.id === tripStoreId) ?? null : null,
@@ -203,9 +206,9 @@ export function ShoppingListProject({
   if (tripStoreId && tripStore) {
     return (
       <section className="mx-auto max-w-3xl">
-        <button type="button" onClick={exitTrip} disabled={tripPending} className="text-sm font-semibold text-amber-800 hover:text-amber-950 disabled:cursor-not-allowed disabled:opacity-50 dark:text-amber-300">
+        <Button onClick={exitTrip} disabled={tripPending} tone="amber" variant="tertiary" className="px-3">
           ← Back to {projectName}
-        </button>
+        </Button>
         <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50/70 p-5 dark:border-amber-900/60 dark:bg-amber-950/20">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800 dark:text-amber-300">Shopping trip</p>
           <h3 className="mt-1 text-2xl font-semibold text-stone-950 dark:text-white">{tripStore.name}</h3>
@@ -225,20 +228,18 @@ export function ShoppingListProject({
           {tripTasks.length === 0 && <p className="px-4 py-10 text-center text-sm text-stone-500">No items are currently assigned to this store.</p>}
         </div>
 
-        <button type="button" onClick={() => setConfirmFinish(true)} disabled={tripCheckedCount === 0 || tripPending} className="mt-5 w-full rounded-lg bg-amber-700 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-45">
+        <Button onClick={() => setConfirmFinish(true)} disabled={tripCheckedCount === 0 || tripPending} tone="amber" variant="primary" className="mt-5 w-full py-3">
           {tripPending ? 'Finishing trip…' : `Finish ${tripStore.name} Trip`}
-        </button>
+        </Button>
 
-        {confirmFinish && <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="finish-trip-title">
-          <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+        {confirmFinish && <DialogFrame labelledBy="finish-trip-title" pending={tripPending} onClose={() => setConfirmFinish(false)} initialFocusRef={finishCancelRef} className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
             <h3 id="finish-trip-title" className="text-xl font-semibold text-stone-950 dark:text-white">Finish {tripStore.name} trip?</h3>
             <p className="mt-2 text-sm text-stone-600 dark:text-stone-300">{tripCheckedCount} checked {tripCheckedCount === 1 ? 'item' : 'items'} will be removed from this shopping list. {tripRemainingCount} unchecked {tripRemainingCount === 1 ? 'item' : 'items'} will remain for next time.</p>
             <div className="mt-5 flex justify-end gap-3">
-              <button type="button" onClick={() => setConfirmFinish(false)} disabled={tripPending} className="text-sm font-semibold text-stone-600 disabled:opacity-50 dark:text-stone-300">Cancel</button>
-              <button type="button" onClick={() => void finishTrip()} disabled={tripPending} className="rounded-lg bg-amber-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{tripPending ? 'Finishing…' : 'Finish Trip'}</button>
+              <Button ref={finishCancelRef} onClick={() => setConfirmFinish(false)} disabled={tripPending} variant="secondary">Cancel</Button>
+              <Button onClick={() => void finishTrip()} disabled={tripPending} tone="amber" variant="primary">{tripPending ? 'Finishing…' : 'Finish Trip'}</Button>
             </div>
-          </div>
-        </div>}
+        </DialogFrame>}
       </section>
     )
   }
@@ -251,6 +252,7 @@ export function ShoppingListProject({
 
         <div className="mt-4 space-y-3">
           <input
+            aria-label="Shopping item"
             value={draft.title}
             onChange={event => setDraft({ ...draft, title: event.target.value })}
             onKeyDown={event => event.key === 'Enter' && addItem()}
@@ -259,12 +261,14 @@ export function ShoppingListProject({
           />
           <div className="grid grid-cols-2 gap-2">
             <input
+              aria-label="Quantity"
               value={draft.quantity}
               onChange={event => setDraft({ ...draft, quantity: event.target.value })}
               placeholder="Quantity"
               className="min-w-0 rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
             />
             <select
+              aria-label="Unit"
               value={draft.unit}
               onChange={event => setDraft({ ...draft, unit: event.target.value })}
               className="min-w-0 rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
@@ -273,6 +277,7 @@ export function ShoppingListProject({
             </select>
           </div>
           <select
+            aria-label="Category"
             value={draft.category}
             onChange={event => setDraft({ ...draft, category: event.target.value })}
             className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
@@ -280,6 +285,7 @@ export function ShoppingListProject({
             {categories.map(category => <option key={category}>{category}</option>)}
           </select>
           <select
+            aria-label="Store"
             value={draft.shopping_store_id ?? ''}
             onChange={event => setDraft({ ...draft, shopping_store_id: event.target.value || null })}
             className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 outline-none focus:border-amber-600 dark:border-amber-900 dark:bg-stone-950 dark:text-white"
@@ -287,15 +293,16 @@ export function ShoppingListProject({
             <option value="">Unassigned</option>
             {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
           </select>
-          <button type="button" onClick={() => setStoreManagerOpen(true)} className="w-full text-sm font-semibold text-amber-800 hover:text-amber-950 dark:text-amber-300">Manage stores</button>
-          <button
-            type="button"
+          <Button onClick={() => setStoreManagerOpen(true)} tone="amber" variant="tertiary" className="w-full">Manage stores</Button>
+          <Button
             onClick={addItem}
             disabled={!draft.title.trim()}
-            className="w-full rounded-lg bg-amber-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-45"
+            tone="amber"
+            variant="primary"
+            className="w-full py-2.5"
           >
             Add to list
-          </button>
+          </Button>
         </div>
 
         <div className="mt-5 border-t border-amber-200 pt-4 text-sm text-stone-700 dark:border-amber-900 dark:text-stone-300">
@@ -347,7 +354,7 @@ export function ShoppingListProject({
                 <h3 className="text-sm font-bold uppercase tracking-[0.13em] text-stone-500 dark:text-stone-400">{group.name}</h3>
                 <div className="h-px flex-1 bg-stone-200 dark:bg-stone-800" />
                 <span className="text-xs text-stone-400">{group.items.length}</span>
-                {group.id !== 'unassigned' && <button type="button" onClick={() => startTrip(group.id)} className="text-xs font-semibold text-amber-800 hover:text-amber-950 dark:text-amber-300">Start Trip</button>}
+                {group.id !== 'unassigned' && <Button onClick={() => startTrip(group.id)} tone="amber" variant="tertiary" className="min-h-9 px-2 py-1 text-xs">Start Trip</Button>}
               </div>
 
               <div className="overflow-hidden rounded-xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">

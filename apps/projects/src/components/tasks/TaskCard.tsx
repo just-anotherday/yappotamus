@@ -4,6 +4,7 @@ import TaskStatusBadge from './TaskStatusBadge'
 import TaskPriorityBadge from './TaskPriorityBadge'
 import { formatCalendarDate } from '../../utils/calendarDate'
 import { ReminderControl } from '../reminders/ReminderControl'
+import { IconButton } from '../shared/IconButton'
 
 interface TaskCardProps {
   task: Task
@@ -92,8 +93,8 @@ export default function TaskCard({
               placeholder="Description..."
             />
             <div className="flex gap-1">
-              <button onClick={onSaveEdit} className="text-green-500 hover:text-green-700 text-sm px-1 cursor-pointer">✓</button>
-              <button onClick={onCancelEdit} className="text-gray-400 hover:text-gray-600 text-sm px-1 cursor-pointer">✕</button>
+              <IconButton ariaLabel={`Save changes to ${task.title}`} onClick={onSaveEdit} tone="emerald" className="size-9 min-h-9 text-base">✓</IconButton>
+              <IconButton ariaLabel={`Cancel editing ${task.title}`} onClick={onCancelEdit} className="size-9 min-h-9 text-base">✕</IconButton>
             </div>
           </div>
         ) : (
@@ -174,43 +175,46 @@ export default function TaskCard({
 
           {/* Pin button */}
           {isEditing !== true && (
-            <button
+            <IconButton
               onClick={onTogglePin}
-              className={`text-xs px-1 cursor-pointer transition ${task.is_pinned ? 'text-yellow-500 hover:text-yellow-700' : 'text-gray-400 hover:text-yellow-500'}`}
-              title={task.is_pinned ? 'Unpin task' : 'Pin task'}
+              ariaLabel={task.is_pinned ? `Unpin ${task.title}` : `Pin ${task.title}`}
+              className={`size-9 min-h-9 text-base ${task.is_pinned ? 'text-yellow-600 hover:text-yellow-800 dark:text-yellow-400' : 'text-stone-500 hover:text-yellow-700 dark:text-stone-300'}`}
             >
               {task.is_pinned ? '📌' : '📍'}
-            </button>
+            </IconButton>
           )}
 
           {/* Edit button */}
           {isEditing !== true && (
-            <button
+            <IconButton
               onClick={onStartEdit}
-              className="text-gray-400 hover:text-blue-500 text-xs px-1 cursor-pointer"
-            >✏️</button>
+              ariaLabel={`Edit ${task.title}`}
+              className="size-9 min-h-9 text-base text-stone-500 hover:text-blue-700 dark:text-stone-300"
+            >✏️</IconButton>
           )}
 
           {/* Archive/Restore button */}
           {isEditing !== true && (
-            <button
+            <IconButton
               onClick={onToggleArchive}
-              className={`text-xs px-1 cursor-pointer transition ${
+              ariaLabel={task.is_archived ? `Restore ${task.title} from archive` : `Archive ${task.title}`}
+              className={`size-9 min-h-9 text-base ${
                 task.is_archived
-                  ? 'text-purple-500 hover:text-purple-700'
-                  : 'text-gray-400 hover:text-purple-500'
+                  ? 'text-purple-600 hover:text-purple-800 dark:text-purple-400'
+                  : 'text-stone-500 hover:text-purple-700 dark:text-stone-300'
               }`}
-              title={task.is_archived ? 'Restore from archive' : 'Archive task'}
             >
               {task.is_archived ? '📤' : '📥'}
-            </button>
+            </IconButton>
           )}
 
           {/* Delete button */}
-          <button
+          <IconButton
             onClick={onDelete}
-            className="text-gray-400 hover:text-red-500 text-xs px-1 cursor-pointer"
-          >🗑️</button>
+            ariaLabel={`Delete ${task.title}`}
+            variant="destructive"
+            className="size-9 min-h-9 text-base"
+          >🗑️</IconButton>
         </div>
       </div>
     </div>

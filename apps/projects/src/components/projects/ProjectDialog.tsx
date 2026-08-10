@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Project, ProjectKind } from '../../lib/types/database.types'
+import { Button } from '../shared/Button'
+import { DialogFrame } from '../shared/DialogFrame'
 
 interface ProjectDialogProps {
   open: boolean
@@ -30,6 +32,7 @@ export function ProjectDialog({
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -68,16 +71,7 @@ export function ProjectDialog({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-stone-950/45 p-4 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="project-dialog-title"
-      onMouseDown={event => {
-        if (!saving && event.target === event.currentTarget) onClose()
-      }}
-    >
-      <div className="w-full max-w-xl rounded-2xl border border-stone-200 bg-white p-6 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+    <DialogFrame labelledBy="project-dialog-title" pending={saving} onClose={onClose} initialFocusRef={nameInputRef} className="my-6 w-full max-w-xl rounded-2xl border border-stone-200 bg-white p-6 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-400">
@@ -87,20 +81,21 @@ export function ProjectDialog({
               {mode === 'create' ? `Create ${entityLabel}` : `Edit ${entityLabel}`}
             </h2>
           </div>
-          <button
-            type="button"
+          <Button
             onClick={onClose}
             disabled={saving}
-            className="text-sm text-stone-500 hover:text-stone-950 disabled:opacity-50 dark:hover:text-white"
+            variant="tertiary"
+            className="px-3"
           >
             Close
-          </button>
+          </Button>
         </div>
 
         <div className="space-y-4">
           <label className="block">
             <span className="mb-1.5 block text-sm font-semibold text-stone-700 dark:text-stone-200">Name</span>
             <input
+              ref={nameInputRef}
               value={name}
               onChange={event => setName(event.target.value)}
               onKeyDown={event => event.key === 'Enter' && submit()}
@@ -139,37 +134,33 @@ export function ProjectDialog({
                     This permanently deletes this {entityLabel} and all of its {childLabelPlural}. This cannot be undone.
                   </p>
                 )}
-                <button
-                  type="button"
+                <Button
                   onClick={remove}
                   disabled={saving}
-                  className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                  variant="destructive"
                 >
                   {confirmDelete ? `Confirm delete ${entityLabel}` : `Delete ${entityLabel}`}
-                </button>
+                </Button>
               </>
             )}
           </div>
           <div className="flex gap-2">
-            <button
-              type="button"
+            <Button
               onClick={onClose}
               disabled={saving}
-              className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-100 disabled:opacity-50 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800"
+              variant="secondary"
             >
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               onClick={submit}
               disabled={saving || !name.trim()}
-              className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+              variant="primary"
             >
               {saving ? 'Saving…' : mode === 'create' ? `Create ${entityLabel}` : 'Save changes'}
-            </button>
+            </Button>
           </div>
         </div>
-      </div>
-    </div>
+    </DialogFrame>
   )
 }
