@@ -24,10 +24,10 @@ const directoryCopy: Record<BoardType, {
   },
   recipes: {
     eyebrow: 'Cooking collections',
-    title: 'Recipe Books',
-    selectorLabel: 'Current Recipe Book',
-    emptyOption: 'Select a Recipe Book…',
-    createLabel: 'New Recipe Book',
+    title: 'Recipe Collections',
+    selectorLabel: 'Current Recipe Collection',
+    emptyOption: 'Select a Recipe Collection…',
+    createLabel: 'New Recipe Collection',
   },
 }
 

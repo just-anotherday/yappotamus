@@ -146,12 +146,12 @@ export function RecipeBookDialog({
 
   return (
     <DialogFrame
-      title={book ? 'Edit Recipe Book' : 'Create Recipe Book'}
-      eyebrow="Recipe Book settings"
+      title={book ? 'Edit Recipe Collection' : 'Create Recipe Collection'}
+      eyebrow="Recipe Collection settings"
       pending={pending}
       error={error}
       onClose={onClose}
-      footer={<Footer pending={pending} valid={Boolean(name.trim())} saveLabel={book ? 'Save changes' : 'Create Recipe Book'} onClose={onClose} onSave={() => void save()} />}
+      footer={<Footer pending={pending} valid={Boolean(name.trim())} saveLabel={book ? 'Save changes' : 'Create Recipe Collection'} onClose={onClose} onSave={() => void save()} />}
     >
       <div className="grid gap-4">
         <label><span className="mb-1 block text-sm font-semibold">Name</span><input autoFocus maxLength={200} disabled={pending} value={name} onChange={event => setName(event.target.value)} className={inputClass} /></label>

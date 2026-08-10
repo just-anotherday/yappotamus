@@ -131,7 +131,7 @@ export function RecipeBooksView({
   }
 
   if (booksState.loading && !booksState.books.length) {
-    return <div className="grid min-h-96 place-items-center text-sm text-stone-500" role="status">Loading Recipe Books…</div>
+    return <div className="grid min-h-96 place-items-center text-sm text-stone-500" role="status">Loading Recipe Collections…</div>
   }
 
   return (
@@ -141,17 +141,17 @@ export function RecipeBooksView({
         <header className="flex flex-col gap-4 border-b border-stone-200 pb-5 dark:border-stone-800 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-700 dark:text-orange-300">Cooking collections</p>
-            <h2 className="mt-1 text-3xl font-semibold tracking-tight text-stone-950 dark:text-white">Recipe Books</h2>
+            <h2 className="mt-1 text-3xl font-semibold tracking-tight text-stone-950 dark:text-white">Recipe Collections</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <label className="min-w-56 flex-1">
-              <span className="sr-only">Selected Recipe Book</span>
+              <span className="sr-only">Selected Recipe Collection</span>
               <select value={selectedRecordId ?? ''} onChange={event => onSelectedRecordChange(event.target.value || null)} className="h-10 w-full rounded-lg border border-stone-300 bg-white px-3 text-sm dark:border-stone-700 dark:bg-stone-950 dark:text-white">
-                <option value="">Select a Recipe Book…</option>
+                <option value="">Select a Recipe Collection…</option>
                 {booksState.books.map(book => <option key={book.id} value={book.id}>{book.is_archived ? 'Archived — ' : ''}{book.name}</option>)}
               </select>
             </label>
-            <button type="button" onClick={() => setBookEditor('create')} className="h-10 rounded-lg bg-orange-700 px-4 text-sm font-semibold text-white hover:bg-orange-800">New Recipe Book</button>
+            <button type="button" onClick={() => setBookEditor('create')} className="h-10 rounded-lg bg-orange-700 px-4 text-sm font-semibold text-white hover:bg-orange-800">New Recipe Collection</button>
             <label className="flex h-10 items-center gap-2 rounded-lg border border-stone-300 px-3 text-sm dark:border-stone-700">
               <input type="checkbox" checked={showArchivedBooks} onChange={event => setShowArchivedBooks(event.target.checked)} /> Archived books
             </label>
@@ -211,7 +211,7 @@ export function RecipeBooksView({
 }
 
 function EmptyWorkspace({ onCreate }: { onCreate: () => void }) {
-  return <div className="grid min-h-[28rem] place-items-center text-center"><div><p className="text-xl font-semibold">Create your first Recipe Book.</p><p className="mt-2 text-sm text-stone-500">Organize recipes, ingredients, and cooking steps in one place.</p><button type="button" onClick={onCreate} className="mt-5 rounded-lg bg-orange-700 px-4 py-2.5 text-sm font-semibold text-white">Create Recipe Book</button></div></div>
+  return <div className="grid min-h-[28rem] place-items-center text-center"><div><p className="text-xl font-semibold">Create your first Recipe Collection.</p><p className="mt-2 text-sm text-stone-500">Organize recipes, ingredients, and cooking steps in one place.</p><button type="button" onClick={onCreate} className="mt-5 rounded-lg bg-orange-700 px-4 py-2.5 text-sm font-semibold text-white">Create Recipe Collection</button></div></div>
 }
 
 function BookHeader({

@@ -3,7 +3,7 @@ import type { RecipeBook, RecipeBookInsert, RecipeBookUpdate } from '../types/re
 
 function requireData<T>(data: T | null, error: { message: string } | null): T {
   if (error) throw new Error(error.message)
-  if (data === null) throw new Error('Supabase returned no Recipe Book data.')
+  if (data === null) throw new Error('Supabase returned no Recipe Collection data.')
   return data
 }
 

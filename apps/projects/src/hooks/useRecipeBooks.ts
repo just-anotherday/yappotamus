@@ -3,7 +3,7 @@ import * as recipeBookService from '../services/recipeBooks'
 import type { RecipeBook, RecipeBookUpdate } from '../types/recipeBooks'
 
 function message(error: unknown) {
-  return error instanceof Error ? error.message : 'An unexpected Recipe Book error occurred.'
+  return error instanceof Error ? error.message : 'An unexpected Recipe Collection error occurred.'
 }
 
 export function useRecipeBooks(userId: string, includeArchived: boolean) {

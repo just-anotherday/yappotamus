@@ -59,13 +59,13 @@ const boardCopy: Record<BoardType, {
     badge: 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300',
   },
   recipes: {
-    singular: 'Recipe Book',
-    plural: 'Recipe Books',
+    singular: 'Recipe Collection',
+    plural: 'Recipe Collections',
     childPlural: 'recipes',
-    emptyTitle: 'No Recipe Books yet.',
+    emptyTitle: 'No Recipe Collections yet.',
     emptyDescription: 'Create a collection for your favorite recipes.',
-    loadingLabel: 'Loading Recipe Books…',
-    accent: 'Recipe Book',
+    loadingLabel: 'Loading Recipe Collections…',
+    accent: 'Recipe Collection',
     badge: 'bg-orange-100 text-orange-800 dark:bg-orange-950/50 dark:text-orange-300',
   },
 }

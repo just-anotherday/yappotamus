@@ -8,7 +8,7 @@ export const boardTypeOptions: Array<{
 }> = [
   { value: 'projects', label: 'Task Boards' },
   { value: 'shopping', label: 'Shopping Lists' },
-  { value: 'recipes', label: 'Recipe Books' },
+  { value: 'recipes', label: 'Recipe Collections' },
 ]
 
 export const boardTypeToProjectKind: Record<BoardType, ProjectKind> = {
