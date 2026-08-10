@@ -17,9 +17,9 @@ export function useEntityReminder(target: ReminderTarget) {
   }, [id, kind])
   useEffect(() => { void refresh() }, [refresh])
 
-  const save = useCallback(async (date: string, time: string, timezone: string, instant: string) => {
+  const save = useCallback(async (date: string, time: string, timezone: string, instant: string, inAppEnabled: boolean, emailEnabled: boolean) => {
     setPending(true)
-    try { await saveReminder({ id, kind, label: '' }, date, time, timezone, instant); await refresh(); return true }
+    try { await saveReminder({ id, kind, label: '' }, date, time, timezone, instant, inAppEnabled, emailEnabled); await refresh(); return true }
     catch { setError('Unable to save reminder.'); return false }
     finally { setPending(false) }
   }, [id, kind, refresh])
