@@ -6,7 +6,7 @@ export interface TaskNavigationTarget {
 }
 
 export interface TaskNavigationContextValue {
-  navigateToTask: (target: TaskNavigationTarget) => Promise<void>
+  navigateToTask: (target: TaskNavigationTarget) => Promise<boolean>
 }
 
 export const TaskNavigationContext = createContext<TaskNavigationContextValue | null>(null)

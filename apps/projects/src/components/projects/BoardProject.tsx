@@ -56,7 +56,11 @@ export function BoardProject({
   }, [activeFocusedTask, renderedTasks])
 
   useEffect(() => {
-    if (!requestedFocusedTask) return
+    if (!focusedTaskId) return
+    if (!requestedFocusedTask) {
+      onFocusedTaskHandled()
+      return
+    }
     setActiveFocusedTaskId(requestedFocusedTask.id)
     if (focusTimeoutRef.current !== null) window.clearTimeout(focusTimeoutRef.current)
     focusTimeoutRef.current = window.setTimeout(() => {
@@ -64,7 +68,7 @@ export function BoardProject({
       focusTimeoutRef.current = null
     }, 3000)
     onFocusedTaskHandled()
-  }, [onFocusedTaskHandled, requestedFocusedTask])
+  }, [focusedTaskId, onFocusedTaskHandled, requestedFocusedTask])
 
   useEffect(() => () => {
     if (focusTimeoutRef.current !== null) window.clearTimeout(focusTimeoutRef.current)

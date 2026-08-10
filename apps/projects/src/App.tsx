@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import Footer from './components/Footer'
 import Login from './components/Login'
@@ -12,6 +12,7 @@ import { useTheme } from './hooks/useTheme'
 import type { BoardType } from './types/boards'
 import { TaskNavigationContext, type TaskNavigationTarget } from './context/TaskNavigationContext'
 import { supabase } from './lib/supabase'
+import { readTaskDeepLink } from './utils/taskDeepLink'
 
 type DirectorySelections = Record<BoardType, string | null>
 
@@ -50,6 +51,22 @@ function AuthenticatedOrganizer({
   const [selections, setSelections] = useState<DirectorySelections>(emptySelections)
   const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(null)
   const taskNavigationRequestRef = useRef(0)
+  const [deepLinkRequest, setDeepLinkRequest] = useState(() => ({
+    target: readTaskDeepLink(window.location.search),
+    sequence: 0,
+  }))
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setDeepLinkRequest(previous => ({
+        target: readTaskDeepLink(window.location.search),
+        sequence: previous.sequence + 1,
+      }))
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
 
   const selectRecord = useCallback((type: BoardType, recordId: string | null) => {
     setSelections(previous => (
@@ -59,22 +76,40 @@ function AuthenticatedOrganizer({
 
   const navigateToTask = useCallback(async (target: TaskNavigationTarget) => {
     const requestId = ++taskNavigationRequestRef.current
+
+    // The URL project is a hint. Resolve the task's current board through the
+    // authenticated client so moved tasks still open without trusting the URL.
+    const { data: task } = await supabase
+      .from('tasks')
+      .select('project_id')
+      .eq('id', target.taskId)
+      .maybeSingle()
+    const projectId = task?.project_id
+
+    if (requestId !== taskNavigationRequestRef.current || !projectId) return false
+
+    const { data: project } = await supabase
+      .from('projects')
+      .select('id')
+      .eq('id', projectId)
+      .eq('kind', 'board')
+      .maybeSingle()
+
+    if (requestId !== taskNavigationRequestRef.current || !project) return false
     setBoardType('projects')
-    let projectId = target.projectId
-
-    if (!projectId) {
-      const { data } = await supabase
-        .from('tasks')
-        .select('project_id')
-        .eq('id', target.taskId)
-        .maybeSingle()
-      projectId = data?.project_id
-    }
-
-    if (requestId !== taskNavigationRequestRef.current || !projectId) return
     selectRecord('projects', projectId)
     setTaskNavigationTarget({ taskId: target.taskId, projectId })
+    return true
   }, [selectRecord, setBoardType])
+
+  useEffect(() => {
+    if (!deepLinkRequest.target) {
+      taskNavigationRequestRef.current += 1
+      setTaskNavigationTarget(null)
+      return
+    }
+    void navigateToTask(deepLinkRequest.target)
+  }, [deepLinkRequest, navigateToTask])
 
   return (
     <TaskNavigationContext.Provider value={{ navigateToTask }}>
