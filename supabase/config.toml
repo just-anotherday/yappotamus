@@ -1,0 +1,6 @@
+# This worker is called only by trusted internal services using a Supabase secret
+# key named `reminder_worker` in the `apikey` header. Authentication is enforced
+# in the handler by `withSupabase({ auth: "secret:reminder_worker" })`, rather
+# than the user-JWT gateway check.
+[functions.reminder-email-worker]
+verify_jwt = false
