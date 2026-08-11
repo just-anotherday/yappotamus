@@ -1,5 +1,7 @@
 import { useEffect, useRef, useCallback, useState, type KeyboardEvent } from 'react'
 import { useNotifications } from '../../hooks/useNotifications'
+import { Button } from '../shared/Button'
+import { IconButton } from '../shared/IconButton'
 import { NotificationItem } from './NotificationItem'
 
 interface NotificationPanelProps {
@@ -81,11 +83,11 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
         onKeyDown={handleKeyDown}
       >
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-stone-200 px-5 py-4 dark:border-stone-800">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-stone-200 px-5 py-4 dark:border-stone-800">
           <div className="flex items-center gap-3">
             <div className="flex rounded-lg bg-stone-100 p-0.5 dark:bg-stone-800">
-              <button type="button" onClick={() => setView('active')} className={`rounded-md px-2 py-1 text-[11px] font-bold uppercase tracking-wide ${!isArchived ? 'bg-white text-stone-700 shadow-sm dark:bg-stone-700 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'}`}>Notifications</button>
-              <button type="button" onClick={() => setView('archived')} className={`rounded-md px-2 py-1 text-[11px] font-bold uppercase tracking-wide ${isArchived ? 'bg-white text-stone-700 shadow-sm dark:bg-stone-700 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'}`}>Archived</button>
+              <button type="button" onClick={() => setView('active')} className={`rounded-md px-2 py-1 text-[11px] font-bold uppercase tracking-wide outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:focus-visible:ring-emerald-400 ${!isArchived ? 'bg-white text-stone-700 shadow-sm dark:bg-stone-700 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'}`}>Notifications</button>
+              <button type="button" onClick={() => setView('archived')} className={`rounded-md px-2 py-1 text-[11px] font-bold uppercase tracking-wide outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:focus-visible:ring-emerald-400 ${isArchived ? 'bg-white text-stone-700 shadow-sm dark:bg-stone-700 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'}`}>Archived</button>
             </div>
             {unreadCount > 0 && (
               <span className="inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-emerald-600 px-1.5 py-0.5 text-[11px] font-bold text-white">
@@ -94,28 +96,26 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
             )}
           </div>
 
-          {!isArchived && (
-            <button
-              type="button"
+          <div className="ml-auto flex flex-wrap items-center gap-1">
+            {!isArchived && (
+            <Button
               onClick={() => void clearActive()}
               disabled={unreadCount === 0 || clearing}
               aria-label="Mark all active notifications as read"
-              className="rounded px-2 py-1 text-[11px] font-semibold text-stone-500 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-stone-400 dark:hover:bg-stone-800"
+              tone="emerald"
+              variant="tertiary"
+              className="px-3 text-xs"
             >
               {clearing ? 'Clearing…' : 'Clear'}
-            </button>
-          )}
+            </Button>
+            )}
 
-          <button
-            type="button"
+          <IconButton
             onClick={handleRefresh}
             disabled={refreshing}
-            className={[
-              'inline-flex size-8 items-center justify-center rounded-lg transition-colors',
-              'text-stone-400 hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300',
-              refreshing && 'cursor-wait opacity-50',
-            ].join(' ')}
-            aria-label="Refresh notifications"
+            ariaLabel="Refresh notifications"
+            tone="emerald"
+            className={refreshing ? 'cursor-wait opacity-50' : ''}
           >
             {refreshing ? (
               <span className="inline-block h-4 w-4 animate-spin rounded-full border-[2px] border-current border-t-transparent" />
@@ -135,13 +135,12 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
                 <path d="M2.5 12.5a8 8 0 0 0 15 3.9L2.5 15" />
               </svg>
             )}
-          </button>
+          </IconButton>
 
-          <button
-            type="button"
+          <IconButton
             onClick={onClose}
-            className="inline-flex size-8 items-center justify-center rounded-lg text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
-            aria-label="Close notifications"
+            ariaLabel="Close notifications"
+            tone="emerald"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -155,7 +154,8 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
             >
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
-          </button>
+          </IconButton>
+          </div>
         </div>
 
         {/* Error */}

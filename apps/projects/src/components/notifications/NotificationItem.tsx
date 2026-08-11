@@ -1,7 +1,10 @@
+import { useRef, useState } from 'react'
 import type { NotificationRow } from '../../types/notifications'
 import { useNotifications } from '../../hooks/useNotifications'
 import { useTaskNavigation } from '../../context/TaskNavigationContext'
 import { formatCalendarDate, isCalendarDate } from '../../utils/calendarDate'
+import { Button } from '../shared/Button'
+import { DialogFrame } from '../shared/DialogFrame'
 
 const TYPE_LABELS: Record<NotificationRow['type'], string> = {
   system_message: 'System',
@@ -86,6 +89,8 @@ function dueOnLabel(notification: NotificationRow): string | null {
 export function NotificationItem({ notification, archived = false, onNavigate }: NotificationItemProps) {
   const { markRead, markUnread, archive, restore, deleteArchived, isUpdating } = useNotifications()
   const { navigateToTask } = useTaskNavigation()
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const cancelDeleteRef = useRef<HTMLButtonElement>(null)
   const updating = isUpdating(notification.id)
   const target = taskNotificationTarget(notification)
   const dueOn = dueOnLabel(notification)
@@ -99,9 +104,7 @@ export function NotificationItem({ notification, archived = false, onNavigate }:
   }
 
   const handleDelete = () => {
-    if (window.confirm('Delete this archived notification permanently?')) {
-      void deleteArchived(notification.id)
-    }
+    setConfirmDelete(true)
   }
 
   const handleViewTask = () => {
@@ -111,7 +114,8 @@ export function NotificationItem({ notification, archived = false, onNavigate }:
   }
 
   return (
-    <div
+    <>
+      <div
       className={[
         'group flex gap-3 border-b border-stone-200 p-4 transition-colors last:border-b-0 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900/50',
         notification.is_read ? '' : 'bg-emerald-50/60 dark:bg-emerald-950/20',
@@ -148,61 +152,70 @@ export function NotificationItem({ notification, archived = false, onNavigate }:
         <div className="mt-2 flex flex-wrap gap-1.5">
           {archived ? (
             <>
-              <button
-                type="button"
+              <Button
                 onClick={() => void restore(notification.id)}
                 disabled={updating}
-                className="rounded px-2 py-0.5 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-wait disabled:opacity-60 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+                tone="emerald"
+                variant="tertiary"
+                className={updating ? 'cursor-wait opacity-60' : ''}
               >
                 Restore
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
                 onClick={handleDelete}
                 disabled={updating}
-                className="rounded px-2 py-0.5 text-[11px] font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-wait disabled:opacity-60 dark:text-red-400 dark:hover:bg-red-950/30"
+                variant="destructive"
+                className={updating ? 'cursor-wait opacity-60' : ''}
               >
                 Delete
-              </button>
+              </Button>
             </>
           ) : (
             <>
               {target && (
-                <button
-                  type="button"
+                <Button
                   onClick={handleViewTask}
-                  className="rounded px-2 py-0.5 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+                  tone="emerald"
+                  variant="tertiary"
                 >
                   View task
-                </button>
+                </Button>
               )}
-              <button
-                type="button"
+              <Button
                 onClick={handleToggleRead}
                 disabled={updating}
-                className={[
-                  'inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-semibold transition',
-                  notification.is_read
-                    ? 'text-stone-500 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-800'
-                    : 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/30',
-                  updating ? 'cursor-wait opacity-60' : '',
-                ].join(' ')}
+                tone="emerald"
+                variant="tertiary"
+                className={updating ? 'cursor-wait opacity-60' : ''}
                 aria-label={notification.is_read ? 'Mark as unread' : 'Mark as read'}
               >
                 {updating ? <span className="inline-block h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" /> : notification.is_read ? 'Mark as unread' : 'Mark as read'}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
                 onClick={() => void archive(notification.id)}
                 disabled={updating}
-                className="rounded px-2 py-0.5 text-[11px] font-semibold text-stone-500 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60 dark:text-stone-400 dark:hover:bg-stone-800"
+                tone="emerald"
+                variant="tertiary"
+                className={updating ? 'cursor-wait opacity-60' : ''}
               >
                 Archive
-              </button>
+              </Button>
             </>
           )}
         </div>
       </div>
-    </div>
+      </div>
+      {confirmDelete && (
+        <DialogFrame labelledBy={`notification-delete-${notification.id}`} pending={updating} onClose={() => setConfirmDelete(false)} initialFocusRef={cancelDeleteRef} className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-red-700 dark:text-red-300">Permanent action</p>
+          <h2 id={`notification-delete-${notification.id}`} className="mt-1 text-xl font-semibold text-stone-950 dark:text-white">Delete notification permanently?</h2>
+          <p className="mt-3 text-sm text-stone-700 dark:text-stone-300"><strong>{notification.title || 'This notification'}</strong> will be permanently deleted. This cannot be undone.</p>
+          <div className="mt-6 flex flex-wrap justify-end gap-2">
+            <Button ref={cancelDeleteRef} onClick={() => setConfirmDelete(false)} disabled={updating} tone="emerald" variant="secondary">Cancel</Button>
+            <Button onClick={() => void deleteArchived(notification.id)} disabled={updating} variant="destructive">{updating ? 'Deleting…' : 'Delete permanently'}</Button>
+          </div>
+        </DialogFrame>
+      )}
+    </>
   )
 }

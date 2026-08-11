@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback } from 'react'
 import { useNotifications } from '../../hooks/useNotifications'
+import { IconButton } from '../shared/IconButton'
 import { NotificationPanel } from './NotificationPanel'
 
 function formatBadgeCount(count: number): string {
@@ -27,18 +28,16 @@ export function NotificationBell() {
 
   return (
     <>
-      <button
+      <IconButton
         ref={triggerRef}
         id="notification-bell-trigger"
         type="button"
         onClick={togglePanel}
         aria-expanded={isOpen}
-        aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
-        className={[
-          'relative flex size-10 items-center justify-center rounded-lg',
-          'border border-stone-300 text-stone-700 transition-colors',
-          'hover:bg-stone-100 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800',
-        ].join(' ')}
+        ariaLabel={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+        tone="emerald"
+        variant="secondary"
+        className={`relative ${isOpen ? 'border-emerald-500 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200' : ''}`}
       >
         {/* Bell SVG icon */}
         <svg
@@ -69,7 +68,7 @@ export function NotificationBell() {
             {badgeCount}
           </span>
         )}
-      </button>
+      </IconButton>
 
       <NotificationPanel isOpen={isOpen} onClose={handlePanelClose} />
     </>

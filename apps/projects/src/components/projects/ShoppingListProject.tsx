@@ -319,32 +319,21 @@ export function ShoppingListProject({
 
       <section className="min-w-0">
         {tripNotice && <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/20 dark:text-amber-100">{tripNotice}</p>}
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row">
+        <div className="mb-4 flex flex-col gap-3">
           <input
             value={query}
             onChange={event => setQuery(event.target.value)}
             placeholder="Search this list…"
             className="h-10 min-w-0 flex-1 rounded-lg border border-stone-300 bg-white px-3 text-sm outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-600/15 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
           />
-          <button
-            type="button"
-            onClick={() => setHideChecked(value => !value)}
-            className={`h-10 rounded-lg border px-3 text-sm font-semibold ${
-              hideChecked
-                ? 'border-amber-700 bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200'
-                : 'border-stone-300 text-stone-600 dark:border-stone-700 dark:text-stone-300'
-            }`}
-          >
-            {hideChecked ? 'Show checked' : 'Hide checked'}
-          </button>
-          <button
-            type="button"
-            onClick={clearChecked}
-            disabled={checkedIds.length === 0}
-            className="h-10 rounded-lg border border-stone-300 px-3 text-sm font-semibold text-stone-600 hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40 dark:border-stone-700 dark:text-stone-300"
-          >
-            {confirmClear ? 'Confirm clear' : `Clear checked (${checkedIds.length})`}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setHideChecked(value => !value)} tone="amber" variant="secondary" className={`flex-1 sm:flex-none ${hideChecked ? 'border-amber-700 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200' : ''}`}>
+              {hideChecked ? 'Show checked' : 'Hide checked'}
+            </Button>
+            <Button onClick={clearChecked} disabled={checkedIds.length === 0} variant="destructive" className="flex-1 sm:flex-none">
+              {confirmClear ? 'Confirm clear' : `Clear checked (${checkedIds.length})`}
+            </Button>
+          </div>
         </div>
 
         <div className="space-y-6">
@@ -372,43 +361,43 @@ export function ShoppingListProject({
                     />
 
                     {editingId === task.id ? (
-                      <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[minmax(8rem,1fr)_6rem_6rem_9rem_9rem_auto]">
+                      <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(8rem,1fr)_6rem_6rem_9rem_9rem_auto]">
                         <input
                           value={editDraft.title}
                           onChange={event => setEditDraft({ ...editDraft, title: event.target.value })}
-                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                          className="min-w-0 rounded border border-stone-300 px-2 py-2 dark:border-stone-700 dark:bg-stone-950 dark:text-white sm:col-span-2 lg:col-span-1"
                         />
                         <input
                           value={editDraft.quantity}
                           onChange={event => setEditDraft({ ...editDraft, quantity: event.target.value })}
                           placeholder="Qty"
-                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                          className="min-w-0 rounded border border-stone-300 px-2 py-2 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
                         />
                         <select
                           value={editDraft.unit}
                           onChange={event => setEditDraft({ ...editDraft, unit: event.target.value })}
-                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                          className="min-w-0 rounded border border-stone-300 px-2 py-2 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
                         >
                           {units.map(unit => <option key={unit || 'none'} value={unit}>{unit || '—'}</option>)}
                         </select>
                         <select
                           value={editDraft.category}
                           onChange={event => setEditDraft({ ...editDraft, category: event.target.value })}
-                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                          className="min-w-0 rounded border border-stone-300 px-2 py-2 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
                         >
                           {categories.map(item => <option key={item}>{item}</option>)}
                         </select>
                         <select
                           value={editDraft.shopping_store_id ?? ''}
                           onChange={event => setEditDraft({ ...editDraft, shopping_store_id: event.target.value || null })}
-                          className="min-w-0 rounded border border-stone-300 px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
+                          className="min-w-0 rounded border border-stone-300 px-2 py-2 dark:border-stone-700 dark:bg-stone-950 dark:text-white"
                         >
                           <option value="">Unassigned</option>
                           {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
                         </select>
-                        <div className="flex gap-1">
-                          <button type="button" onClick={saveEdit} className="rounded bg-emerald-700 px-2 text-xs font-semibold text-white">Save</button>
-                          <button type="button" onClick={() => setEditingId(null)} className="px-2 text-xs text-stone-500">Cancel</button>
+                        <div className="flex flex-wrap gap-2 sm:col-span-2 lg:col-span-1">
+                          <Button onClick={saveEdit} tone="amber" variant="primary">Save</Button>
+                          <Button onClick={() => setEditingId(null)} tone="amber" variant="secondary">Cancel</Button>
                         </div>
                       </div>
                     ) : (
@@ -423,8 +412,8 @@ export function ShoppingListProject({
                             {[task.metadata.quantity, task.metadata.unit].filter(Boolean).join(' ')}
                           </span>
                         )}
-                        <button type="button" onClick={() => startEditing(task)} className="text-xs font-semibold text-stone-500 hover:text-amber-700">Edit</button>
-                        <button type="button" onClick={() => onDeleteTask(task.id)} className="text-xs font-semibold text-stone-400 hover:text-red-700">Remove</button>
+                        <Button onClick={() => startEditing(task)} tone="amber" variant="tertiary" className="px-3">Edit</Button>
+                        <Button onClick={() => onDeleteTask(task.id)} variant="destructive" className="px-3">Remove</Button>
                       </>
                     )}
                   </div>
