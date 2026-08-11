@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { TaskPriority } from '../../lib/types/database.types'
+import { Button } from '../shared/Button'
 
 interface TaskFormProps {
   onSubmit: (title: string, description: string, priority: TaskPriority, dueDate: string | null) => void
@@ -20,14 +21,14 @@ export default function TaskForm({ onSubmit }: TaskFormProps) {
   }
 
   return (
-    <div className="space-y-2 mb-4">
+    <div className="mb-4 space-y-3">
       <input
         type="text"
         placeholder="New task title..."
         value={title}
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-        className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"
+        className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
       />
       <input
         type="text"
@@ -35,34 +36,28 @@ export default function TaskForm({ onSubmit }: TaskFormProps) {
         value={description}
         onChange={e => setDescription(e.target.value)}
         onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-        className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"
+        className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
       />
 
-      {/* Priority selector */}
-      <select
-        value={priority}
-        onChange={e => setPriority(e.target.value as TaskPriority)}
-        className="px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600 cursor-pointer"
-      >
-        <option value="LOW">Priority: Low</option>
-        <option value="MEDIUM">Priority: Medium</option>
-        <option value="HIGH">Priority: High</option>
-      </select>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <select
+          value={priority}
+          onChange={e => setPriority(e.target.value as TaskPriority)}
+          className="min-h-10 rounded-lg border border-stone-300 bg-white px-3 text-sm text-stone-900 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+        >
+          <option value="LOW">Priority: Low</option>
+          <option value="MEDIUM">Priority: Medium</option>
+          <option value="HIGH">Priority: High</option>
+        </select>
+        <input
+          type="date"
+          value={dueDate}
+          onChange={e => setDueDate(e.target.value)}
+          className="min-h-10 rounded-lg border border-stone-300 bg-white px-3 text-sm text-stone-900 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+        />
+      </div>
 
-      {/* Due date picker */}
-      <input
-        type="date"
-        value={dueDate}
-        onChange={e => setDueDate(e.target.value)}
-        className="px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"
-      />
-
-      <button
-        onClick={handleSubmit}
-        className="w-full px-4 py-2 bg-green-500 text-white rounded-md text-sm hover:bg-green-600 transition"
-      >
-        + Add Task
-      </button>
+      <Button onClick={handleSubmit} tone="emerald" variant="primary" className="w-full">Add task</Button>
     </div>
   )
 }

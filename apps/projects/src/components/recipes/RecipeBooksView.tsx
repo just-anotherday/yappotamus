@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useRecipeBooks } from '../../hooks/useRecipeBooks'
 import { useRecipeIngredients } from '../../hooks/useRecipeIngredients'
 import { useRecipes } from '../../hooks/useRecipes'
@@ -18,6 +18,9 @@ import {
   StepDialog,
 } from './RecipeDialogs'
 import { ReminderControl } from '../reminders/ReminderControl'
+import { Button } from '../shared/Button'
+import { DialogFrame } from '../shared/DialogFrame'
+import { IconButton } from '../shared/IconButton'
 
 interface RecipeBooksViewProps {
   userId: string
@@ -31,6 +34,40 @@ function ErrorBanner({ children }: { children: string }) {
   return <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">{children}</p>
 }
 
+function DeleteConfirmation({
+  kind,
+  name,
+  pending,
+  cancelRef,
+  onClose,
+  onConfirm,
+}: {
+  kind: 'collection' | 'recipe'
+  name: string
+  pending: boolean
+  cancelRef: RefObject<HTMLButtonElement | null>
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const isCollection = kind === 'collection'
+  const label = isCollection ? 'Recipe Collection' : 'Recipe'
+  const detail = isCollection
+    ? 'This permanently deletes the collection and all of its recipes, ingredients, and steps.'
+    : 'This permanently deletes the recipe and all of its ingredients and steps.'
+
+  return (
+    <DialogFrame labelledBy="recipe-delete-confirmation-title" pending={pending} onClose={onClose} initialFocusRef={cancelRef} className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-red-700 dark:text-red-300">Permanent action</p>
+      <h2 id="recipe-delete-confirmation-title" className="mt-1 text-xl font-semibold text-stone-950 dark:text-white">Delete {label}?</h2>
+      <p className="mt-3 text-sm text-stone-700 dark:text-stone-300"><strong>{name}</strong> will be deleted. {detail} This cannot be undone.</p>
+      <div className="mt-6 flex flex-wrap justify-end gap-2">
+        <Button ref={cancelRef} onClick={onClose} disabled={pending} tone="orange" variant="secondary">Cancel</Button>
+        <Button onClick={onConfirm} disabled={pending} variant="destructive">{pending ? 'Deleting…' : `Delete ${label}`}</Button>
+      </div>
+    </DialogFrame>
+  )
+}
+
 export function RecipeBooksView({
   userId,
   selectedRecordId,
@@ -40,8 +77,10 @@ export function RecipeBooksView({
   const [showArchivedRecipes, setShowArchivedRecipes] = useState(false)
   const [bookEditor, setBookEditor] = useState<'create' | 'edit' | null>(null)
   const [recipeEditor, setRecipeEditor] = useState<'create' | 'edit' | null>(null)
+  const [deleteConfirmation, setDeleteConfirmation] = useState<'collection' | 'recipe' | null>(null)
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const deleteCancelRef = useRef<HTMLButtonElement>(null)
   const selectionKey = `organizer:${userId}:recipe-book-selection`
   const booksState = useRecipeBooks(userId, showArchivedBooks)
   const selectedBook = booksState.books.find(book => book.id === selectedRecordId) ?? null
@@ -115,19 +154,23 @@ export function RecipeBooksView({
   }
 
   const deleteBook = async () => {
-    if (!selectedBook || !window.confirm(`Delete “${selectedBook.name}” and all of its recipes, ingredients, and steps? This cannot be undone.`)) return
+    if (!selectedBook) return
     const removed = await booksState.remove(selectedBook.id)
     if (removed) {
       onSelectedRecordChange(null)
       setSelectedRecipeId(null)
       localStorage.removeItem(selectionKey)
+      setDeleteConfirmation(null)
     }
   }
 
   const deleteRecipe = async () => {
-    if (!selectedRecipe || !window.confirm(`Delete “${selectedRecipe.name}” and all of its ingredients and steps? This cannot be undone.`)) return
+    if (!selectedRecipe) return
     const removed = await recipesState.remove(selectedRecipe.id)
-    if (removed) setSelectedRecipeId(null)
+    if (removed) {
+      setSelectedRecipeId(null)
+      setDeleteConfirmation(null)
+    }
   }
 
   if (booksState.loading && !booksState.books.length) {
@@ -146,14 +189,14 @@ export function RecipeBooksView({
           <div className="flex flex-wrap items-center gap-2">
             <label className="min-w-56 flex-1">
               <span className="sr-only">Selected Recipe Collection</span>
-              <select value={selectedRecordId ?? ''} onChange={event => onSelectedRecordChange(event.target.value || null)} className="h-10 w-full rounded-lg border border-stone-300 bg-white px-3 text-sm dark:border-stone-700 dark:bg-stone-950 dark:text-white">
+              <select value={selectedRecordId ?? ''} onChange={event => onSelectedRecordChange(event.target.value || null)} className="h-10 w-full rounded-lg border border-stone-300 bg-white px-3 text-sm text-stone-900 outline-none transition focus:border-orange-600 focus:ring-2 focus:ring-orange-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-white">
                 <option value="">Select a Recipe Collection…</option>
                 {booksState.books.map(book => <option key={book.id} value={book.id}>{book.is_archived ? 'Archived — ' : ''}{book.name}</option>)}
               </select>
             </label>
-            <button type="button" onClick={() => setBookEditor('create')} className="h-10 rounded-lg bg-orange-700 px-4 text-sm font-semibold text-white hover:bg-orange-800">New Recipe Collection</button>
-            <label className="flex h-10 items-center gap-2 rounded-lg border border-stone-300 px-3 text-sm dark:border-stone-700">
-              <input type="checkbox" checked={showArchivedBooks} onChange={event => setShowArchivedBooks(event.target.checked)} /> Archived books
+            <Button type="button" onClick={() => setBookEditor('create')} tone="orange" variant="primary">New Recipe Collection</Button>
+            <label className="flex h-10 items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 text-sm text-stone-700 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-200">
+              <input type="checkbox" checked={showArchivedBooks} onChange={event => setShowArchivedBooks(event.target.checked)} className="rounded border-stone-300 text-orange-700 focus:ring-orange-600/30 dark:border-stone-700" /> Archived books
             </label>
           </div>
         </header>
@@ -167,7 +210,7 @@ export function RecipeBooksView({
               pending={booksState.pending}
               onEdit={() => setBookEditor('edit')}
               onArchive={() => void booksState.setArchived(selectedBook.id, !selectedBook.is_archived)}
-              onDelete={() => void deleteBook()}
+              onDelete={() => setDeleteConfirmation('collection')}
             />
             <div className="grid min-h-[32rem] gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
               <RecipeSidebar
@@ -193,7 +236,7 @@ export function RecipeBooksView({
                     ingredientsState={ingredientsState}
                     stepsState={stepsState}
                     onEdit={() => setRecipeEditor('edit')}
-                    onDelete={() => void deleteRecipe()}
+                    onDelete={() => setDeleteConfirmation('recipe')}
                     onFavorite={() => void recipesState.setFavorite(selectedRecipe.id, !selectedRecipe.is_favorite)}
                     onArchive={() => void recipesState.setArchived(selectedRecipe.id, !selectedRecipe.is_archived)}
                   />
@@ -206,12 +249,22 @@ export function RecipeBooksView({
 
       {bookEditor && <RecipeBookDialog book={bookEditor === 'edit' ? selectedBook : null} pending={booksState.pending} error={booksState.error} onClose={() => setBookEditor(null)} onSave={saveBook} />}
       {recipeEditor && selectedBook && <RecipeDialog recipe={recipeEditor === 'edit' ? selectedRecipe : null} pending={recipesState.pending} error={recipesState.error} onClose={() => setRecipeEditor(null)} onSave={saveRecipe} />}
+      {deleteConfirmation && (
+        <DeleteConfirmation
+          kind={deleteConfirmation}
+          name={deleteConfirmation === 'collection' ? selectedBook?.name ?? '' : selectedRecipe?.name ?? ''}
+          pending={deleteConfirmation === 'collection' ? booksState.pending : recipesState.pending}
+          cancelRef={deleteCancelRef}
+          onClose={() => setDeleteConfirmation(null)}
+          onConfirm={() => void (deleteConfirmation === 'collection' ? deleteBook() : deleteRecipe())}
+        />
+      )}
     </>
   )
 }
 
 function EmptyWorkspace({ onCreate }: { onCreate: () => void }) {
-  return <div className="grid min-h-[28rem] place-items-center text-center"><div><p className="text-xl font-semibold">Create your first Recipe Collection.</p><p className="mt-2 text-sm text-stone-500">Organize recipes, ingredients, and cooking steps in one place.</p><button type="button" onClick={onCreate} className="mt-5 rounded-lg bg-orange-700 px-4 py-2.5 text-sm font-semibold text-white">Create Recipe Collection</button></div></div>
+  return <div className="grid min-h-[28rem] place-items-center text-center"><div><p className="text-xl font-semibold">Create your first Recipe Collection.</p><p className="mt-2 text-sm text-stone-500">Organize recipes, ingredients, and cooking steps in one place.</p><Button type="button" onClick={onCreate} tone="orange" variant="primary" className="mt-5">Create Recipe Collection</Button></div></div>
 }
 
 function BookHeader({
@@ -238,9 +291,9 @@ function BookHeader({
         {book.description && <p className="mt-1 max-w-2xl text-sm text-stone-500">{book.description}</p>}
       </div>
       <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={pending} onClick={onEdit} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">Edit Book</button>
-        <button type="button" disabled={pending} onClick={onArchive} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">{book.is_archived ? 'Unarchive Book' : 'Archive Book'}</button>
-        <button type="button" disabled={pending} onClick={onDelete} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 dark:text-red-300">Delete Book</button>
+        <Button type="button" disabled={pending} onClick={onEdit} tone="orange" variant="secondary">Edit Book</Button>
+        <Button type="button" disabled={pending} onClick={onArchive} tone="orange" variant="tertiary">{book.is_archived ? 'Unarchive Book' : 'Archive Book'}</Button>
+        <Button type="button" disabled={pending} onClick={onDelete} variant="destructive">Delete Book</Button>
       </div>
     </div>
   )
@@ -275,14 +328,14 @@ function RecipeSidebar({
     <aside className="rounded-2xl border border-orange-200 bg-orange-50/60 p-4 dark:border-orange-900/60 dark:bg-orange-950/20">
       <div className="flex items-center justify-between gap-2">
         <div><p className="text-sm font-semibold">Recipes</p><p className="text-xs text-stone-500">{total} total</p></div>
-        <button type="button" disabled={pending} onClick={onCreate} className="rounded-lg bg-orange-700 px-3 py-2 text-xs font-semibold text-white">Add Recipe</button>
+        <Button type="button" disabled={pending} onClick={onCreate} tone="orange" variant="primary" className="min-h-9 px-3 py-1 text-xs">Add Recipe</Button>
       </div>
-      <input aria-label="Filter recipes by name, description, category, or cuisine" value={query} onChange={event => onQuery(event.target.value)} placeholder="Name, description, category, or cuisine…" className="mt-4 w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-sm dark:border-orange-900 dark:bg-stone-950 dark:text-white" />
-      <label className="mt-3 flex items-center gap-2 text-xs"><input type="checkbox" checked={showArchived} onChange={event => onShowArchived(event.target.checked)} /> Show archived recipes</label>
+      <input aria-label="Filter recipes by name, description, category, or cuisine" value={query} onChange={event => onQuery(event.target.value)} placeholder="Name, description, category, or cuisine…" className="mt-4 min-h-10 w-full rounded-lg border border-orange-200 bg-white px-3 text-sm text-stone-900 outline-none transition focus:border-orange-600 focus:ring-2 focus:ring-orange-600/15 dark:border-orange-900 dark:bg-stone-950 dark:text-white" />
+      <label className="mt-3 flex min-h-10 items-center gap-2 text-xs"><input type="checkbox" checked={showArchived} onChange={event => onShowArchived(event.target.checked)} className="rounded border-orange-300 text-orange-700 focus:ring-orange-600/30 dark:border-orange-900" /> Show archived recipes</label>
       {loading && !recipes.length ? <p className="mt-6 text-sm text-stone-500" role="status">Loading recipes…</p> : recipes.length ? (
         <nav className="mt-3 space-y-1" aria-label="Recipes">
           {recipes.map(recipe => (
-            <button key={recipe.id} type="button" onClick={() => onSelect(recipe.id)} className={`w-full rounded-lg px-3 py-2.5 text-left ${recipe.id === selectedId ? 'bg-white shadow-sm ring-1 ring-orange-200 dark:bg-stone-900 dark:ring-orange-900' : 'hover:bg-white/70 dark:hover:bg-stone-900/70'}`}>
+            <button key={recipe.id} type="button" onClick={() => onSelect(recipe.id)} className={`w-full rounded-lg px-3 py-2.5 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-orange-600 focus-visible:ring-offset-2 focus-visible:ring-offset-orange-50 dark:focus-visible:ring-orange-400 dark:focus-visible:ring-offset-orange-950 ${recipe.id === selectedId ? 'bg-white shadow-sm ring-1 ring-orange-200 dark:bg-stone-900 dark:ring-orange-900' : 'hover:bg-white/70 dark:hover:bg-stone-900/70'}`}>
               <span className="flex items-center gap-1 truncate text-sm font-semibold">{recipe.is_favorite && <span aria-label="Favorite">★</span>}{recipe.name}</span>
               <span className="mt-0.5 block text-xs text-stone-500">{recipe.is_archived ? 'Archived' : timeSummary(recipe)}</span>
             </button>
@@ -294,7 +347,7 @@ function RecipeSidebar({
 }
 
 function EmptyRecipe({ onCreate }: { onCreate: () => void }) {
-  return <div className="grid min-h-80 place-items-center rounded-2xl border border-dashed border-stone-300 p-8 text-center dark:border-stone-700"><div><p className="text-lg font-semibold">No recipe selected.</p><p className="mt-2 text-sm text-stone-500">Create a recipe to begin adding ingredients and steps.</p><button type="button" onClick={onCreate} className="mt-4 rounded-lg bg-orange-700 px-4 py-2 text-sm font-semibold text-white">Add Recipe</button></div></div>
+  return <div className="grid min-h-80 place-items-center rounded-2xl border border-dashed border-stone-300 p-8 text-center dark:border-stone-700"><div><p className="text-lg font-semibold">No recipe selected.</p><p className="mt-2 text-sm text-stone-500">Create a recipe to begin adding ingredients and steps.</p><Button type="button" onClick={onCreate} tone="orange" variant="primary" className="mt-4">Add Recipe</Button></div></div>
 }
 
 function timeSummary(recipe: Recipe) {
@@ -364,12 +417,12 @@ function RecipeDetail({
           {recipe.description && <p className="mt-2 max-w-2xl leading-7 text-stone-600 dark:text-stone-300">{recipe.description}</p>}
           <p className="mt-2 text-sm text-stone-500">{[recipe.category, recipe.cuisine, recipe.difficulty?.toLowerCase()].filter(Boolean).join(' · ')}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-start gap-2">
           <ReminderControl target={{ kind: 'recipe', id: recipe.id, label: recipe.name }} />
-          <button type="button" disabled={recipesPending} onClick={onFavorite} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">{recipe.is_favorite ? 'Unfavorite' : 'Favorite'}</button>
-          <button type="button" disabled={recipesPending} onClick={onEdit} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">Edit</button>
-          <button type="button" disabled={recipesPending} onClick={onArchive} className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold dark:border-stone-700">{recipe.is_archived ? 'Unarchive' : 'Archive'}</button>
-          <button type="button" disabled={recipesPending} onClick={onDelete} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 dark:text-red-300">Delete</button>
+          <Button type="button" disabled={recipesPending} onClick={onFavorite} tone="orange" variant="tertiary">{recipe.is_favorite ? 'Unfavorite' : 'Favorite'}</Button>
+          <Button type="button" disabled={recipesPending} onClick={onEdit} tone="orange" variant="secondary">Edit</Button>
+          <Button type="button" disabled={recipesPending} onClick={onArchive} tone="orange" variant="tertiary">{recipe.is_archived ? 'Unarchive' : 'Archive'}</Button>
+          <Button type="button" disabled={recipesPending} onClick={onDelete} variant="destructive">Delete</Button>
         </div>
       </header>
 
@@ -431,7 +484,7 @@ function ChildList<T extends { id: string }>({
 
   return (
     <section>
-      <div className="mb-3 flex items-center justify-between"><h4 className="text-xl font-semibold">{title}</h4><button type="button" disabled={state.pending} onClick={onAdd} className="rounded-lg bg-orange-700 px-3 py-2 text-xs font-semibold text-white">Add</button></div>
+      <div className="mb-3 flex items-center justify-between gap-3"><h4 className="text-xl font-semibold">{title}</h4><Button type="button" disabled={state.pending} onClick={onAdd} tone="orange" variant="primary" className="min-h-9 px-3 py-1 text-xs">Add</Button></div>
       {state.loading && !items.length ? <p role="status" className="text-sm text-stone-500">Loading {title.toLowerCase()}…</p> : items.length ? (
         <ol className="space-y-2">
           {items.map((item, index) => (
@@ -439,10 +492,10 @@ function ChildList<T extends { id: string }>({
               {numbered && <span className="grid size-7 shrink-0 place-items-center rounded-full bg-orange-700 text-xs font-bold text-white">{index + 1}</span>}
               <div className="min-w-0 flex-1 text-sm leading-6">{render(item)}</div>
               <div className="flex flex-wrap justify-end gap-1 sm:shrink-0">
-                <button type="button" aria-label={`Move ${label} up`} disabled={state.pending || index === 0} onClick={() => void move(index, -1)} className="rounded px-2 py-1 text-xs disabled:opacity-30">↑</button>
-                <button type="button" aria-label={`Move ${label} down`} disabled={state.pending || index === items.length - 1} onClick={() => void move(index, 1)} className="rounded px-2 py-1 text-xs disabled:opacity-30">↓</button>
-                <button type="button" aria-label={`Edit ${label}`} disabled={state.pending} onClick={() => onEdit(item)} className="rounded px-2 py-1 text-xs font-semibold">Edit</button>
-                <button type="button" aria-label={`Delete ${label}`} disabled={state.pending} onClick={() => void remove(item)} className="rounded px-2 py-1 text-xs font-semibold text-red-700 dark:text-red-300">Delete</button>
+                <IconButton ariaLabel={`Move ${label} up`} disabled={state.pending || index === 0} onClick={() => void move(index, -1)} tone="orange">↑</IconButton>
+                <IconButton ariaLabel={`Move ${label} down`} disabled={state.pending || index === items.length - 1} onClick={() => void move(index, 1)} tone="orange">↓</IconButton>
+                <Button type="button" aria-label={`Edit ${label}`} disabled={state.pending} onClick={() => onEdit(item)} tone="orange" variant="secondary" className="min-h-10 px-3 py-2 text-xs">Edit</Button>
+                <Button type="button" aria-label={`Delete ${label}`} disabled={state.pending} onClick={() => void remove(item)} variant="destructive" className="min-h-10 px-3 py-2 text-xs">Delete</Button>
               </div>
             </li>
           ))}

@@ -1,5 +1,6 @@
 import type { Project } from '../../lib/types/database.types'
 import type { BoardType } from '../../types/boards'
+import { Button } from '../shared/Button'
 
 const directoryCopy: Record<BoardType, {
   eyebrow: string
@@ -70,8 +71,8 @@ export function ProjectDirectoryHeader({
               {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
             </select>
           </label>
-          <button type="button" onClick={onCreate} className="h-10 rounded-lg bg-emerald-700 px-4 text-sm font-semibold text-white transition hover:bg-emerald-800">{copy.createLabel}</button>
-          <button type="button" onClick={onEdit} disabled={!selectedProjectId} className="h-10 rounded-lg border border-stone-300 px-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800">Edit</button>
+          <Button onClick={onCreate} tone="emerald" variant="primary" className="shrink-0">{copy.createLabel}</Button>
+          <Button onClick={onEdit} disabled={!selectedProjectId} tone="emerald" variant="secondary">Edit</Button>
         </div>
       </div>
     </section>

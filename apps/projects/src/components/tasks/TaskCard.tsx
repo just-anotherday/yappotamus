@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Task, TaskStatus, TaskPriority } from '../../lib/types/database.types'
-import TaskStatusBadge from './TaskStatusBadge'
-import TaskPriorityBadge from './TaskPriorityBadge'
+import type { Task, TaskPriority, TaskStatus } from '../../lib/types/database.types'
 import { formatCalendarDate } from '../../utils/calendarDate'
 import { ReminderControl } from '../reminders/ReminderControl'
 import { IconButton } from '../shared/IconButton'
+import TaskPriorityBadge from './TaskPriorityBadge'
+import TaskStatusBadge from './TaskStatusBadge'
 
 interface TaskCardProps {
   task: Task
@@ -25,6 +25,8 @@ interface TaskCardProps {
   onChangeEditTitle: (title: string) => void
   onChangeEditDescription: (desc: string) => void
 }
+
+const fieldClass = 'min-h-10 rounded-lg border border-stone-300 bg-white px-3 text-sm text-stone-900 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100'
 
 export default function TaskCard({
   task,
@@ -64,158 +66,54 @@ export default function TaskCard({
     <div
       ref={cardRef}
       tabIndex={focusActive ? -1 : undefined}
-      className={`flex items-start gap-3 p-3 rounded-md border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition ${task.completed ? 'opacity-60' : ''} ${task.is_pinned ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700' : ''} ${focusActive ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-gray-900' : ''}`}
+      className={`flex items-start gap-3 rounded-xl border border-stone-200 bg-white p-4 transition-colors hover:border-emerald-200 hover:bg-emerald-50/30 dark:border-stone-800 dark:bg-stone-900/70 dark:hover:border-emerald-900 dark:hover:bg-emerald-950/20 ${task.completed ? 'opacity-60' : ''} ${task.is_pinned ? 'border-amber-300 bg-amber-50/60 dark:border-amber-900/70 dark:bg-amber-950/20' : ''} ${focusActive ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-stone-950' : ''}`}
     >
-      <input
-        type="checkbox"
-        checked={task.completed}
-        onChange={onToggleComplete}
-        className="w-4 h-4 mt-1 cursor-pointer"
-      />
+      <input type="checkbox" checked={task.completed} onChange={onToggleComplete} className="mt-1 size-5 shrink-0 accent-emerald-700" aria-label={`Mark ${task.title} ${task.completed ? 'incomplete' : 'complete'}`} />
 
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0 flex-1">
         {isEditing ? (
-          <div className="flex flex-col gap-1">
-            <input
-              type="text"
-              value={editTitle}
-              onChange={e => onChangeEditTitle(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && onSaveEdit()}
-              className="w-full px-2 py-1 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"
-              autoFocus
-            />
-            <input
-              type="text"
-              value={editDescription}
-              onChange={e => onChangeEditDescription(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && onSaveEdit()}
-              className="w-full px-2 py-1 border rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"
-              placeholder="Description..."
-            />
-            <div className="flex gap-1">
-              <IconButton ariaLabel={`Save changes to ${task.title}`} onClick={onSaveEdit} tone="emerald" className="size-9 min-h-9 text-base">✓</IconButton>
-              <IconButton ariaLabel={`Cancel editing ${task.title}`} onClick={onCancelEdit} className="size-9 min-h-9 text-base">✕</IconButton>
+          <div className="grid gap-2">
+            <input type="text" value={editTitle} onChange={e => onChangeEditTitle(e.target.value)} onKeyDown={e => e.key === 'Enter' && onSaveEdit()} className={fieldClass} autoFocus />
+            <input type="text" value={editDescription} onChange={e => onChangeEditDescription(e.target.value)} onKeyDown={e => e.key === 'Enter' && onSaveEdit()} className={fieldClass} placeholder="Description..." />
+            <div className="flex flex-wrap gap-2">
+              <IconButton ariaLabel={`Save changes to ${task.title}`} onClick={onSaveEdit} tone="emerald">✓</IconButton>
+              <IconButton ariaLabel={`Cancel editing ${task.title}`} onClick={onCancelEdit}>×</IconButton>
             </div>
           </div>
         ) : (
-          <div
-            className="cursor-pointer group"
-            onDoubleClick={onStartEdit}
-          >
-            {/* Task title + badges row */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className={`text-sm ${task.completed ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-200'}`}>
-                {task.title}
-              </span>
-
+          <div className="group cursor-pointer" onDoubleClick={onStartEdit}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`text-sm font-medium ${task.completed ? 'text-stone-400 line-through dark:text-stone-500' : 'text-stone-800 dark:text-stone-100'}`}>{task.title}</span>
               <TaskStatusBadge status={task.status} />
               <TaskPriorityBadge priority={task.priority} />
             </div>
-
-            {/* Description on hover */}
-            {task.description && (
-              <span className="invisible group-hover:visible block text-xs text-gray-400 dark:text-gray-500 mt-0.5 transition-opacity">{task.description}</span>
-            )}
-
-            {/* Due date row */}
-            {task.due_on && (
-              <div className="mt-1 flex items-center gap-1">
-                <span className="text-xs text-gray-400 dark:text-gray-500">📅 {formatCalendarDate(task.due_on)}</span>
-              </div>
-            )}
+            {task.description && <span className="mt-1 block text-xs text-stone-500 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 dark:text-stone-400">{task.description}</span>}
+            {task.due_on && <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">Due {formatCalendarDate(task.due_on)}</div>}
           </div>
         )}
 
-        {/* Action row: status select, priority select, due date, edit, delete */}
-        <div className="flex flex-wrap items-center gap-2 mt-2">
-          <ReminderControl target={{ kind: 'task', id: task.id, label: task.title }} />
-          {/* Status selector */}
-          {isEditing !== true && (
-            <select
-              value={task.status}
-              onChange={e => onUpdateStatus(e.target.value as TaskStatus)}
-              className={`text-xs px-2 py-1 border rounded cursor-pointer focus:outline-none ${
-                task.status === 'TODO' ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200' :
-                task.status === 'IN_PROGRESS' ? 'bg-yellow-200 text-yellow-800 dark:bg-yellow-700 dark:text-yellow-100' :
-                'bg-green-200 text-green-800 dark:bg-green-700 dark:text-green-100'
-              }`}
-            >
+        {!isEditing && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <ReminderControl target={{ kind: 'task', id: task.id, label: task.title }} />
+            <select value={task.status} onChange={e => onUpdateStatus(e.target.value as TaskStatus)} className={`${fieldClass} min-h-9 px-2 py-1 text-xs ${task.status === 'TODO' ? 'bg-stone-100 dark:bg-stone-800' : task.status === 'IN_PROGRESS' ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100' : 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100'}`}>
               <option value="TODO">To Do</option>
               <option value="IN_PROGRESS">In Progress</option>
               <option value="COMPLETED">Done</option>
             </select>
-          )}
-
-          {/* Priority selector */}
-          {isEditing !== true && (
-            <select
-              value={task.priority}
-              onChange={e => onUpdatePriority(e.target.value as TaskPriority)}
-              className={`text-xs px-2 py-1 border rounded cursor-pointer focus:outline-none dark:bg-gray-700 dark:text-gray-200 ${
-                task.priority === 'LOW' ? 'text-blue-500' :
-                task.priority === 'MEDIUM' ? 'text-yellow-600' :
-                'text-red-500'
-              }`}
-            >
+            <select value={task.priority} onChange={e => onUpdatePriority(e.target.value as TaskPriority)} className={`${fieldClass} min-h-9 px-2 py-1 text-xs ${task.priority === 'LOW' ? 'text-blue-700 dark:text-blue-300' : task.priority === 'MEDIUM' ? 'text-amber-800 dark:text-amber-300' : 'text-red-700 dark:text-red-300'}`}>
               <option value="LOW">Low</option>
               <option value="MEDIUM">Medium</option>
               <option value="HIGH">High</option>
             </select>
-          )}
-
-          {/* Due date input */}
-          {isEditing !== true && (
-            <input
-              type="date"
-              value={task.due_on ?? ''}
-              onChange={e => onUpdateDueDate(e.target.value || null)}
-              className="text-xs px-2 py-1 border rounded focus:outline-none dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600"
-            />
-          )}
-
-          {/* Pin button */}
-          {isEditing !== true && (
-            <IconButton
-              onClick={onTogglePin}
-              ariaLabel={task.is_pinned ? `Unpin ${task.title}` : `Pin ${task.title}`}
-              className={`size-9 min-h-9 text-base ${task.is_pinned ? 'text-yellow-600 hover:text-yellow-800 dark:text-yellow-400' : 'text-stone-500 hover:text-yellow-700 dark:text-stone-300'}`}
-            >
-              {task.is_pinned ? '📌' : '📍'}
-            </IconButton>
-          )}
-
-          {/* Edit button */}
-          {isEditing !== true && (
-            <IconButton
-              onClick={onStartEdit}
-              ariaLabel={`Edit ${task.title}`}
-              className="size-9 min-h-9 text-base text-stone-500 hover:text-blue-700 dark:text-stone-300"
-            >✏️</IconButton>
-          )}
-
-          {/* Archive/Restore button */}
-          {isEditing !== true && (
-            <IconButton
-              onClick={onToggleArchive}
-              ariaLabel={task.is_archived ? `Restore ${task.title} from archive` : `Archive ${task.title}`}
-              className={`size-9 min-h-9 text-base ${
-                task.is_archived
-                  ? 'text-purple-600 hover:text-purple-800 dark:text-purple-400'
-                  : 'text-stone-500 hover:text-purple-700 dark:text-stone-300'
-              }`}
-            >
-              {task.is_archived ? '📤' : '📥'}
-            </IconButton>
-          )}
-
-          {/* Delete button */}
-          <IconButton
-            onClick={onDelete}
-            ariaLabel={`Delete ${task.title}`}
-            variant="destructive"
-            className="size-9 min-h-9 text-base"
-          >🗑️</IconButton>
-        </div>
+            <input type="date" value={task.due_on ?? ''} onChange={e => onUpdateDueDate(e.target.value || null)} className={`${fieldClass} min-h-9 px-2 py-1 text-xs`} />
+            <div className="flex flex-wrap gap-1">
+              <IconButton onClick={onTogglePin} ariaLabel={task.is_pinned ? `Unpin ${task.title}` : `Pin ${task.title}`} tone="emerald" className={task.is_pinned ? 'text-amber-700 dark:text-amber-300' : ''}>{task.is_pinned ? '📌' : '📍'}</IconButton>
+              <IconButton onClick={onStartEdit} ariaLabel={`Edit ${task.title}`} tone="emerald">✏️</IconButton>
+              <IconButton onClick={onToggleArchive} ariaLabel={task.is_archived ? `Restore ${task.title} from archive` : `Archive ${task.title}`} tone="emerald">{task.is_archived ? '📤' : '📥'}</IconButton>
+              <IconButton onClick={onDelete} ariaLabel={`Delete ${task.title}`} variant="destructive">🗑️</IconButton>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

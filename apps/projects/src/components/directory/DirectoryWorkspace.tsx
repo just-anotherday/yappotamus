@@ -11,6 +11,7 @@ import { ProjectDialog } from '../projects/ProjectDialog'
 import { ProjectDirectoryHeader } from '../projects/ProjectDirectoryHeader'
 import { LoadingState, RecoverableError } from '../shared/AsyncState'
 import { ReminderControl } from '../reminders/ReminderControl'
+import { Button } from '../shared/Button'
 
 export interface DirectoryContentProps {
   project: Project
@@ -223,7 +224,7 @@ function EmptyDirectory({
     <section className="rounded-3xl border border-stone-200 bg-white p-7 text-center shadow-sm dark:border-stone-800 dark:bg-stone-900 sm:p-10">
       <h2 className="text-3xl font-semibold tracking-tight text-stone-950 dark:text-white">{title}</h2>
       <p className="mx-auto mt-3 max-w-xl text-stone-600 dark:text-stone-300">{description}</p>
-      <button type="button" onClick={onCreate} className="mt-6 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-800">{createLabel}</button>
+      <Button onClick={onCreate} tone="emerald" variant="primary" className="mt-6">{createLabel}</Button>
     </section>
   )
 }
