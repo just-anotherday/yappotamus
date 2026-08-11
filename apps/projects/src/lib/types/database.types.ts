@@ -59,6 +59,19 @@ export interface ShoppingStore {
   updated_at: string
 }
 
+export interface GeneralShoppingItem {
+  id: string
+  user_id: string
+  title: string
+  quantity: string
+  unit: string
+  category: string
+  completed: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
 export interface UserSettings {
   user_id: string
   timezone: string | null
@@ -92,6 +105,18 @@ export interface Database {
         Row: ShoppingStore
         Insert: Omit<ShoppingStore, 'id' | 'created_at' | 'updated_at'>
         Update: Partial<ShoppingStore>
+      }
+      general_shopping_items: {
+        Row: GeneralShoppingItem
+        Insert: Omit<GeneralShoppingItem, 'id' | 'created_at' | 'updated_at'>
+        Update: Partial<GeneralShoppingItem>
+        Relationships: [{
+          foreignKeyName: 'general_shopping_items_user_id_fkey'
+          columns: ['user_id']
+          isOneToOne: false
+          referencedRelation: 'users'
+          referencedColumns: ['id']
+        }]
       }
       user_settings: {
         Row: UserSettings

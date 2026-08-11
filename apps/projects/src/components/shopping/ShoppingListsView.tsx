@@ -3,6 +3,7 @@ import { DirectoryWorkspace } from '../directory/DirectoryWorkspace'
 import { ShoppingListProject } from '../projects/ShoppingListProject'
 import { useShoppingStores } from '../../hooks/useShoppingStores'
 import { useShoppingTrip } from '../../hooks/useShoppingTrip'
+import { useGeneralShoppingItems } from '../../hooks/useGeneralShoppingItems'
 import { useUserSettings } from '../../hooks/useUserSettings'
 import { LoadingState } from '../shared/AsyncState'
 
@@ -19,6 +20,7 @@ export function ShoppingListsView({
   const [initialSelectionResolved, setInitialSelectionResolved] = useState(false)
   const stores = useShoppingStores()
   const trip = useShoppingTrip()
+  const generalItems = useGeneralShoppingItems()
 
   useEffect(() => {
     if (settingsLoading || initialSelectionResolved) return
@@ -51,6 +53,14 @@ export function ShoppingListsView({
           onUpdateTask={props.onUpdateTask}
           onDeleteTask={props.onDeleteTask}
           onDeleteTasks={props.onDeleteTasks}
+          generalItems={generalItems.items}
+          generalLoading={generalItems.loading}
+          generalError={generalItems.error}
+          onAddGeneralItem={generalItems.addItem}
+          onUpdateGeneralItem={generalItems.updateItem}
+          onToggleGeneralItem={generalItems.toggleItem}
+          onDeleteGeneralItem={generalItems.deleteItem}
+          onClearCheckedGeneral={generalItems.clearChecked}
           stores={stores.stores}
           storesError={stores.error}
           onCreateStore={stores.createStore}
