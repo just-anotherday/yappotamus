@@ -36,6 +36,8 @@ interface ShoppingListProjectProps {
   tripPending: boolean
   tripError: string | null
   onClearTripError: () => void
+  hiddenShoppingCategories: string[] | null
+  onHiddenShoppingCategoriesChange: (categories: string[]) => void
 }
 
 interface ShoppingDraft {
@@ -97,6 +99,8 @@ export function ShoppingListProject({
   tripPending,
   tripError,
   onClearTripError,
+  hiddenShoppingCategories,
+  onHiddenShoppingCategoriesChange,
 }: ShoppingListProjectProps) {
   const [draft, setDraft] = useState<ShoppingDraft>(emptyDraft)
   const [query, setQuery] = useState('')
@@ -124,6 +128,17 @@ export function ShoppingListProject({
   const tripCheckedCount = tripTasks.filter(task => task.completed).length
   const tripRemainingCount = tripTasks.length - tripCheckedCount
   const generalCheckedCount = generalItems.filter(item => item.completed).length
+  const hiddenCategorySet = useMemo(
+    () => new Set(hiddenShoppingCategories ?? []),
+    [hiddenShoppingCategories],
+  )
+
+  const setCategoryVisible = (category: string, visible: boolean) => {
+    const nextHiddenCategories = new Set(hiddenShoppingCategories ?? [])
+    if (visible) nextHiddenCategories.delete(category)
+    else nextHiddenCategories.add(category)
+    onHiddenShoppingCategoriesChange([...nextHiddenCategories])
+  }
 
   useEffect(() => {
     setTripStoreId(null)
@@ -143,21 +158,23 @@ export function ShoppingListProject({
   const visibleTasks = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
     return tasks.filter(task => {
+      if (hiddenCategorySet.has(task.metadata.category ?? '')) return false
       if (hideChecked && task.completed) return false
       if (!normalizedQuery) return true
       const category = task.metadata.category ?? ''
       return `${task.title} ${category}`.toLowerCase().includes(normalizedQuery)
     })
-  }, [hideChecked, query, tasks])
+  }, [hiddenCategorySet, hideChecked, query, tasks])
 
   const visibleGeneralItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
     return generalItems.filter(item => {
+      if (hiddenCategorySet.has(item.category)) return false
       if (hideChecked && item.completed) return false
       if (!normalizedQuery) return true
       return `${item.title} ${item.category}`.toLowerCase().includes(normalizedQuery)
     })
-  }, [generalItems, hideChecked, query])
+  }, [generalItems, hiddenCategorySet, hideChecked, query])
 
   const groupedTasks = useMemo(() => {
     const groups = new Map<string, Task[]>()
@@ -422,6 +439,33 @@ export function ShoppingListProject({
               {confirmClear ? 'Confirm clear' : `Clear checked (${checkedIds.length})`}
             </Button>
           </div>
+          <fieldset className="rounded-xl border border-stone-200 bg-stone-50/70 p-3 dark:border-stone-800 dark:bg-stone-900/60">
+            <div className="flex items-center justify-between gap-3">
+              <legend className="text-sm font-semibold text-stone-800 dark:text-stone-100">Categories</legend>
+              <Button
+                onClick={() => onHiddenShoppingCategoriesChange([])}
+                disabled={hiddenCategorySet.size === 0}
+                tone="amber"
+                variant="tertiary"
+                className="min-h-8 px-2 py-1 text-xs"
+              >
+                Select All
+              </Button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+              {categories.map(category => (
+                <label key={category} className="flex cursor-pointer items-center gap-2 text-sm text-stone-700 dark:text-stone-300">
+                  <input
+                    type="checkbox"
+                    checked={!hiddenCategorySet.has(category)}
+                    onChange={event => setCategoryVisible(category, event.target.checked)}
+                    className="size-4 accent-amber-700"
+                  />
+                  {category}
+                </label>
+              ))}
+            </div>
+          </fieldset>
         </div>
 
         <div className="space-y-6">

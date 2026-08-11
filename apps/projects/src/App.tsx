@@ -80,6 +80,11 @@ function AuthenticatedOrganizer({
     const initialBoardType = settings?.default_workspace === 'last'
       ? settings.last_workspace
       : settings?.default_workspace ?? 'projects'
+    setSelections({
+      projects: settings?.selected_task_board_id ?? null,
+      shopping: settings?.selected_shopping_list_id ?? null,
+      recipes: settings?.selected_recipe_book_id ?? null,
+    })
     setBoardType(initialBoardType)
     setWorkspaceInitialized(true)
   }, [settings, settingsLoading, workspaceInitialized])

@@ -81,6 +81,7 @@ export interface UserSettings {
   selected_task_board_id: string | null
   selected_shopping_list_id: string | null
   selected_recipe_book_id: string | null
+  hidden_shopping_categories: string[] | null
   task_sort_field: string
   task_sort_direction: 'asc' | 'desc'
   hide_purchased_items: boolean

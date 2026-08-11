@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback } from 'react'
 import { DirectoryWorkspace } from '../directory/DirectoryWorkspace'
 import { ShoppingListProject } from '../projects/ShoppingListProject'
 import { useShoppingStores } from '../../hooks/useShoppingStores'
 import { useShoppingTrip } from '../../hooks/useShoppingTrip'
 import { useGeneralShoppingItems } from '../../hooks/useGeneralShoppingItems'
 import { useUserSettings } from '../../hooks/useUserSettings'
-import { LoadingState } from '../shared/AsyncState'
 
 interface ShoppingListsViewProps {
   selectedRecordId: string | null
@@ -16,18 +15,10 @@ export function ShoppingListsView({
   selectedRecordId,
   onSelectedRecordChange,
 }: ShoppingListsViewProps) {
-  const { settings, loading: settingsLoading, updateSelectedId } = useUserSettings()
-  const [initialSelectionResolved, setInitialSelectionResolved] = useState(false)
+  const { settings, patchSettings, updateSelectedId } = useUserSettings()
   const stores = useShoppingStores()
   const trip = useShoppingTrip()
   const generalItems = useGeneralShoppingItems()
-
-  useEffect(() => {
-    if (settingsLoading || initialSelectionResolved) return
-
-    onSelectedRecordChange(settings?.selected_shopping_list_id ?? null)
-    setInitialSelectionResolved(true)
-  }, [initialSelectionResolved, onSelectedRecordChange, settings?.selected_shopping_list_id, settingsLoading])
 
   const handleSelectedRecordChange = useCallback((recordId: string | null) => {
     onSelectedRecordChange(recordId)
@@ -35,8 +26,6 @@ export function ShoppingListsView({
       void updateSelectedId('shopping', recordId)
     }
   }, [onSelectedRecordChange, settings?.selected_shopping_list_id, updateSelectedId])
-
-  if (!initialSelectionResolved) return <LoadingState label="Loading Shopping Listsâ€¦" />
 
   return (
     <DirectoryWorkspace
@@ -71,6 +60,8 @@ export function ShoppingListsView({
           tripPending={trip.pending}
           tripError={trip.error}
           onClearTripError={trip.clearError}
+          hiddenShoppingCategories={settings?.hidden_shopping_categories ?? null}
+          onHiddenShoppingCategoriesChange={hidden_shopping_categories => void patchSettings({ hidden_shopping_categories })}
         />
       )}
     />

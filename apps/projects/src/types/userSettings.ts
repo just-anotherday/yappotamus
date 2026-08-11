@@ -18,6 +18,7 @@ export interface UserSettingsRow {
   selected_task_board_id: string | null
   selected_shopping_list_id: string | null
   selected_recipe_book_id: string | null
+  hidden_shopping_categories: string[] | null
   task_sort_field: TaskSortField
   task_sort_direction: TaskSortDirection
   hide_purchased_items: boolean
@@ -34,6 +35,7 @@ export type UserSettingsWritableFields = Pick<
   | 'selected_task_board_id'
   | 'selected_shopping_list_id'
   | 'selected_recipe_book_id'
+  | 'hidden_shopping_categories'
   | 'task_sort_field'
   | 'task_sort_direction'
   | 'hide_purchased_items'
@@ -53,6 +55,7 @@ export const DEFAULT_USER_SETTINGS: Readonly<UserSettingsWritableFields> = {
   selected_task_board_id: null,
   selected_shopping_list_id: null,
   selected_recipe_book_id: null,
+  hidden_shopping_categories: null,
   task_sort_field: 'manual',
   task_sort_direction: 'asc',
   hide_purchased_items: false,
@@ -113,6 +116,12 @@ export function isTimezoneOrNull(value: unknown): value is string | null {
   return value === null || (typeof value === 'string' && value.trim().length > 0)
 }
 
+export function isStringArrayOrNull(value: unknown): value is string[] | null {
+  return value === null || (
+    Array.isArray(value) && value.every(item => typeof item === 'string')
+  )
+}
+
 export function validateUserSettingsRow(value: unknown): UserSettingsRow {
   if (!isRecord(value)) {
     throw new Error('The settings response was not a valid record.')
@@ -126,6 +135,10 @@ export function validateUserSettingsRow(value: unknown): UserSettingsRow {
     || !isUuidOrNull(value.selected_task_board_id)
     || !isUuidOrNull(value.selected_shopping_list_id)
     || !isUuidOrNull(value.selected_recipe_book_id)
+    || (
+      value.hidden_shopping_categories !== undefined
+      && !isStringArrayOrNull(value.hidden_shopping_categories)
+    )
     || !isTaskSortField(value.task_sort_field)
     || !isTaskSortDirection(value.task_sort_direction)
     || typeof value.hide_purchased_items !== 'boolean'
@@ -144,6 +157,7 @@ export function validateUserSettingsRow(value: unknown): UserSettingsRow {
     selected_task_board_id: value.selected_task_board_id,
     selected_shopping_list_id: value.selected_shopping_list_id,
     selected_recipe_book_id: value.selected_recipe_book_id,
+    hidden_shopping_categories: value.hidden_shopping_categories ?? null,
     task_sort_field: value.task_sort_field,
     task_sort_direction: value.task_sort_direction,
     hide_purchased_items: value.hide_purchased_items,
@@ -164,6 +178,12 @@ export function validateUserSettingsUpdate(
     && !isDefaultWorkspace(value.default_workspace)
   ) {
     throw new Error('Choose a supported default workspace.')
+  }
+  if (
+    value.hidden_shopping_categories !== undefined
+    && !isStringArrayOrNull(value.hidden_shopping_categories)
+  ) {
+    throw new Error('The shopping category visibility preference is invalid.')
   }
   if (value.last_workspace !== undefined && !isWorkspace(value.last_workspace)) {
     throw new Error('Choose a supported workspace.')

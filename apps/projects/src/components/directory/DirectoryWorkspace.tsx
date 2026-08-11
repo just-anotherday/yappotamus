@@ -95,6 +95,7 @@ export function DirectoryWorkspace({
   )
 
   useEffect(() => {
+    if (projectsLoading) return
     if (!directoryRecords.length) {
       if (selectedRecordId !== null) onSelectedRecordChange(null)
       return
@@ -102,7 +103,7 @@ export function DirectoryWorkspace({
     if (!selectedRecordId || !directoryRecords.some(project => project.id === selectedRecordId)) {
       onSelectedRecordChange(directoryRecords[0].id)
     }
-  }, [directoryRecords, onSelectedRecordChange, selectedRecordId])
+  }, [directoryRecords, onSelectedRecordChange, projectsLoading, selectedRecordId])
 
   const selectedRecord = directoryRecords.find(project => project.id === selectedRecordId)
   const {
