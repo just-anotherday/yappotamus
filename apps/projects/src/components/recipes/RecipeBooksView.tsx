@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useRecipeBooks } from '../../hooks/useRecipeBooks'
 import { useRecipeIngredients } from '../../hooks/useRecipeIngredients'
 import { useRecipes } from '../../hooks/useRecipes'
@@ -21,14 +21,13 @@ import { ReminderControl } from '../reminders/ReminderControl'
 import { Button } from '../shared/Button'
 import { DialogFrame } from '../shared/DialogFrame'
 import { IconButton } from '../shared/IconButton'
+import { useUserSettings } from '../../hooks/useUserSettings'
 
 interface RecipeBooksViewProps {
   userId: string
   selectedRecordId: string | null
   onSelectedRecordChange: (recordId: string | null) => void
 }
-
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function ErrorBanner({ children }: { children: string }) {
   return <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">{children}</p>
@@ -73,6 +72,8 @@ export function RecipeBooksView({
   selectedRecordId,
   onSelectedRecordChange,
 }: RecipeBooksViewProps) {
+  const { settings, loading: settingsLoading, updateSelectedId } = useUserSettings()
+  const [initialSelectionResolved, setInitialSelectionResolved] = useState(false)
   const [showArchivedBooks, setShowArchivedBooks] = useState(false)
   const [showArchivedRecipes, setShowArchivedRecipes] = useState(false)
   const [bookEditor, setBookEditor] = useState<'create' | 'edit' | null>(null)
@@ -81,7 +82,6 @@ export function RecipeBooksView({
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const deleteCancelRef = useRef<HTMLButtonElement>(null)
-  const selectionKey = `organizer:${userId}:recipe-book-selection`
   const booksState = useRecipeBooks(userId, showArchivedBooks)
   const selectedBook = booksState.books.find(book => book.id === selectedRecordId) ?? null
   const recipesState = useRecipes(selectedBook?.id ?? null, showArchivedRecipes)
@@ -90,28 +90,30 @@ export function RecipeBooksView({
   const stepsState = useRecipeSteps(selectedRecipe?.id ?? null)
 
   useEffect(() => {
-    if (selectedRecordId) return
-    const stored = localStorage.getItem(selectionKey)
-    if (stored && uuidPattern.test(stored)) onSelectedRecordChange(stored)
-  }, [onSelectedRecordChange, selectedRecordId, selectionKey])
+    if (settingsLoading || initialSelectionResolved) return
+
+    onSelectedRecordChange(settings?.selected_recipe_book_id ?? null)
+    setInitialSelectionResolved(true)
+  }, [initialSelectionResolved, onSelectedRecordChange, settings?.selected_recipe_book_id, settingsLoading])
+
+  const handleSelectedRecordChange = useCallback((recordId: string | null) => {
+    onSelectedRecordChange(recordId)
+    if (recordId !== settings?.selected_recipe_book_id) {
+      void updateSelectedId('recipes', recordId)
+    }
+  }, [onSelectedRecordChange, settings?.selected_recipe_book_id, updateSelectedId])
 
   useEffect(() => {
-    if (booksState.loading) return
+    if (!initialSelectionResolved || booksState.loading) return
     if (!booksState.books.length) {
-      if (selectedRecordId) onSelectedRecordChange(null)
-      localStorage.removeItem(selectionKey)
+      if (selectedRecordId) handleSelectedRecordChange(null)
       return
     }
     if (!selectedBook) {
       const fallback = booksState.books.find(book => !book.is_archived) ?? booksState.books[0]
-      onSelectedRecordChange(fallback.id)
-      localStorage.setItem(selectionKey, fallback.id)
+      handleSelectedRecordChange(fallback.id)
     }
-  }, [booksState.books, booksState.loading, onSelectedRecordChange, selectedBook, selectedRecordId, selectionKey])
-
-  useEffect(() => {
-    if (selectedRecordId && selectedBook) localStorage.setItem(selectionKey, selectedRecordId)
-  }, [selectedBook, selectedRecordId, selectionKey])
+  }, [booksState.books, booksState.loading, handleSelectedRecordChange, initialSelectionResolved, selectedBook, selectedRecordId])
 
   useEffect(() => {
     setSelectedRecipeId(previous => {
@@ -137,7 +139,7 @@ export function RecipeBooksView({
     const result = bookEditor === 'edit' && selectedBook
       ? await booksState.update(selectedBook.id, input)
       : await booksState.create(input.name, input.description, input.cover_label ?? null)
-    if (result) onSelectedRecordChange(result.id)
+    if (result) handleSelectedRecordChange(result.id)
     return Boolean(result)
   }
 
@@ -157,9 +159,8 @@ export function RecipeBooksView({
     if (!selectedBook) return
     const removed = await booksState.remove(selectedBook.id)
     if (removed) {
-      onSelectedRecordChange(null)
+      handleSelectedRecordChange(null)
       setSelectedRecipeId(null)
-      localStorage.removeItem(selectionKey)
       setDeleteConfirmation(null)
     }
   }
@@ -173,7 +174,7 @@ export function RecipeBooksView({
     }
   }
 
-  if (booksState.loading && !booksState.books.length) {
+  if (!initialSelectionResolved || (booksState.loading && !booksState.books.length)) {
     return <div className="grid min-h-96 place-items-center text-sm text-stone-500" role="status">Loading Recipe Collections…</div>
   }
 
@@ -189,7 +190,7 @@ export function RecipeBooksView({
           <div className="flex flex-wrap items-center gap-2">
             <label className="min-w-56 flex-1">
               <span className="sr-only">Selected Recipe Collection</span>
-              <select value={selectedRecordId ?? ''} onChange={event => onSelectedRecordChange(event.target.value || null)} className="h-10 w-full rounded-lg border border-stone-300 bg-white px-3 text-sm text-stone-900 outline-none transition focus:border-orange-600 focus:ring-2 focus:ring-orange-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-white">
+              <select value={selectedRecordId ?? ''} onChange={event => handleSelectedRecordChange(event.target.value || null)} className="h-10 w-full rounded-lg border border-stone-300 bg-white px-3 text-sm text-stone-900 outline-none transition focus:border-orange-600 focus:ring-2 focus:ring-orange-600/15 dark:border-stone-700 dark:bg-stone-950 dark:text-white">
                 <option value="">Select a Recipe Collection…</option>
                 {booksState.books.map(book => <option key={book.id} value={book.id}>{book.is_archived ? 'Archived — ' : ''}{book.name}</option>)}
               </select>

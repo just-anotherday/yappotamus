@@ -7,8 +7,8 @@ import { ProjectsView } from './components/projects/ProjectsView'
 import { RecipeBooksView } from './components/recipes/RecipeBooksView'
 import { ShoppingListsView } from './components/shopping/ShoppingListsView'
 import { useAuth } from './hooks/useAuth'
-import { useBoardPreference } from './hooks/useBoardPreference'
 import { useTheme } from './hooks/useTheme'
+import { useUserSettings } from './hooks/useUserSettings'
 import type { BoardType } from './types/boards'
 import { TaskNavigationContext, type TaskNavigationTarget } from './context/TaskNavigationContext'
 import { supabase } from './lib/supabase'
@@ -47,7 +47,13 @@ function AuthenticatedOrganizer({
   onSignOut: () => Promise<unknown>
 }) {
   const { resolvedTheme, toggleTheme } = useTheme()
-  const { boardType, setBoardType } = useBoardPreference(user.id)
+  const {
+    settings,
+    loading: settingsLoading,
+    updateWorkspacePreferences,
+  } = useUserSettings()
+  const [boardType, setBoardType] = useState<BoardType>('projects')
+  const [workspaceInitialized, setWorkspaceInitialized] = useState(false)
   const [selections, setSelections] = useState<DirectorySelections>(emptySelections)
   const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(null)
   const taskNavigationRequestRef = useRef(0)
@@ -67,6 +73,23 @@ function AuthenticatedOrganizer({
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
+
+  useEffect(() => {
+    if (settingsLoading || workspaceInitialized) return
+
+    const initialBoardType = settings?.default_workspace === 'last'
+      ? settings.last_workspace
+      : settings?.default_workspace ?? 'projects'
+    setBoardType(initialBoardType)
+    setWorkspaceInitialized(true)
+  }, [settings, settingsLoading, workspaceInitialized])
+
+  const handleBoardTypeChange = useCallback((nextBoardType: BoardType) => {
+    setBoardType(nextBoardType)
+    if (nextBoardType !== settings?.last_workspace) {
+      void updateWorkspacePreferences({ last_workspace: nextBoardType })
+    }
+  }, [settings?.last_workspace, updateWorkspacePreferences])
 
   const selectRecord = useCallback((type: BoardType, recordId: string | null) => {
     setSelections(previous => (
@@ -96,20 +119,25 @@ function AuthenticatedOrganizer({
       .maybeSingle()
 
     if (requestId !== taskNavigationRequestRef.current || !project) return false
-    setBoardType('projects')
+    handleBoardTypeChange('projects')
     selectRecord('projects', projectId)
     setTaskNavigationTarget({ taskId: target.taskId, projectId })
     return true
-  }, [selectRecord, setBoardType])
+  }, [handleBoardTypeChange, selectRecord])
 
   useEffect(() => {
+    if (!workspaceInitialized) return
     if (!deepLinkRequest.target) {
       taskNavigationRequestRef.current += 1
       setTaskNavigationTarget(null)
       return
     }
     void navigateToTask(deepLinkRequest.target)
-  }, [deepLinkRequest, navigateToTask])
+  }, [deepLinkRequest, navigateToTask, workspaceInitialized])
+
+  if (!workspaceInitialized) {
+    return <LoadingScreen label="Restoring your organizerâ€¦" />
+  }
 
   return (
     <TaskNavigationContext.Provider value={{ navigateToTask }}>
@@ -117,7 +145,7 @@ function AuthenticatedOrganizer({
         boardType={boardType}
         userEmail={user.email}
         theme={resolvedTheme}
-        onBoardTypeChange={setBoardType}
+        onBoardTypeChange={handleBoardTypeChange}
         onToggleTheme={toggleTheme}
         onSignOut={onSignOut}
       >
