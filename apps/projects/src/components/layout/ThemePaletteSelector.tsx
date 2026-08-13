@@ -3,9 +3,11 @@ import { themes, type Theme } from '../../lib/themes'
 export function ThemePaletteSelector({
   theme,
   onChange,
+  disabled = false,
 }: {
   theme: Theme
   onChange: (theme: Theme) => void
+  disabled?: boolean
 }) {
   return (
     <div className="theme-palette" role="group" aria-label="Color theme">
@@ -17,6 +19,7 @@ export function ThemePaletteSelector({
             type="button"
             className="theme-palette-option"
             onClick={() => onChange(option.id)}
+            disabled={disabled}
             aria-label={option.id === 'light' ? 'Use light mode' : option.id === 'dark' ? 'Use dark mode' : `Use ${option.label} theme`}
             aria-pressed={selected}
             title={option.label}

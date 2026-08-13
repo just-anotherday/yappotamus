@@ -77,7 +77,7 @@ function AuthenticatedOrganizer({
   user: User
   onSignOut: () => Promise<unknown>
 }) {
-  const { theme, appearance, isCustomized, setTheme, previewColor, previewSectionOverride, beginColorGesture, finishColorGesture, setSectionOverride, resetAppearance, importAppearance, undo, redo, canUndo, canRedo } = useTheme()
+  const { theme, appearance, isCustomized, isAppearanceLocked, lockAppearance, unlockAppearance, setTheme, previewColor, previewSectionOverride, beginColorGesture, finishColorGesture, setSectionOverride, resetAppearance, importAppearance, undo, redo, canUndo, canRedo } = useTheme()
   const {
     settings,
     loading: settingsLoading,
@@ -189,6 +189,9 @@ function AuthenticatedOrganizer({
         onThemeChange={setTheme}
         appearance={appearance}
         appearanceCustomized={isCustomized}
+        appearanceLocked={isAppearanceLocked}
+        onAppearanceLock={lockAppearance}
+        onAppearanceUnlock={unlockAppearance}
         onAppearanceColorPreview={previewColor}
         onSectionOverridePreview={previewSectionOverride}
         onAppearanceColorStart={beginColorGesture}

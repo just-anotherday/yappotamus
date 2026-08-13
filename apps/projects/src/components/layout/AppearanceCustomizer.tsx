@@ -4,8 +4,12 @@ import { createAppearanceSaveFile, parseAppearanceSaveFile, type AppearanceColor
 const colorControls: Array<[keyof AppearanceColors, string]> = [['pageBackground', 'Page background'], ['headerBackground', 'Header'], ['contentBackground', 'Main content'], ['sectionBackground', 'Sections'], ['cardBackground', 'Cards'], ['inputBackground', 'Inputs'], ['primaryAccent', 'Accent'], ['borderColor', 'Borders'], ['primaryText', 'Primary text'], ['mutedText', 'Muted text']]
 const sectionControls: Array<[keyof SectionColorOverrides, string]> = [['projects', 'Projects'], ['shopping', 'Shopping'], ['recipes', 'Recipes']]
 
-function Swatch({ label, value, onPreview, onStart, onEnd, onReset }: { label: string; value: string; onPreview: (value: string) => void; onStart: () => void; onEnd: () => void; onReset?: () => void }) {
-  return <div className="appearance-control"><span>{label}</span><div className="flex items-center gap-2"><input className="appearance-swatch" type="color" value={value} onPointerDown={onStart} onFocus={onStart} onInput={event => onPreview(event.currentTarget.value)} onChange={event => { onPreview(event.target.value); onEnd() }} onBlur={onEnd} aria-label={`Change ${label.toLowerCase()} color`} title={`Change ${label.toLowerCase()} color`} />{onReset && <button type="button" className="appearance-clear" onClick={onReset} aria-label={`Use shared section color for ${label}`}>Reset</button>}</div></div>
+function AppearanceIcon() {
+  return <svg className="appearance-trigger-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 0 17h1.25a1.75 1.75 0 0 0 0-3.5H12a1.75 1.75 0 0 1 0-3.5h1.5A6.5 6.5 0 0 0 12 3.5Z" /><circle cx="7.75" cy="10" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="14.25" cy="7.5" r="1" /><path d="m17.25 15.25 3.25 3.25-3.25 3.25-1.5-1.5 1.75-1.75-1.75-1.75 1.5-1.5Z" /></svg>
+}
+
+function Swatch({ label, value, onPreview, onStart, onEnd, onReset, disabled = false }: { label: string; value: string; onPreview: (value: string) => void; onStart: () => void; onEnd: () => void; onReset?: () => void; disabled?: boolean }) {
+  return <div className="appearance-control"><span>{label}</span><div className="flex items-center gap-2"><input className="appearance-swatch" type="color" value={value} disabled={disabled} onPointerDown={onStart} onFocus={onStart} onInput={event => onPreview(event.currentTarget.value)} onChange={event => { onPreview(event.target.value); onEnd() }} onBlur={onEnd} aria-label={`Change ${label.toLowerCase()} color`} title={`Change ${label.toLowerCase()} color`} />{onReset && <button type="button" className="appearance-clear" disabled={disabled} onClick={onReset} aria-label={`Use shared section color for ${label}`}>Reset</button>}</div></div>
 }
 
 function downloadAppearance(appearance: AppearancePreference) {
@@ -20,19 +24,15 @@ function downloadAppearance(appearance: AppearancePreference) {
   URL.revokeObjectURL(url)
 }
 
-export function AppearanceCustomizer({ theme, customized, appearance, colors, sectionOverrides, onColorPreview, onSectionOverridePreview, onColorStart, onColorEnd, onSectionOverride, onReset, onImport, onUndo, onRedo, canUndo, canRedo }: {
+export function AppearanceCustomizer({ theme, customized, appearance, colors, sectionOverrides, locked, onLock, onUnlock, onColorPreview, onSectionOverridePreview, onColorStart, onColorEnd, onSectionOverride, onReset, onImport, onUndo, onRedo, canUndo, canRedo }: {
   theme: Theme; customized: boolean; appearance: AppearancePreference; colors: AppearanceColors; sectionOverrides: SectionColorOverrides
+  locked: boolean; onLock: () => void; onUnlock: () => void
   onColorPreview: (key: keyof AppearanceColors, color: string) => void
   onSectionOverridePreview: (key: keyof SectionColorOverrides, color: string) => void
-  onColorStart: () => void
-  onColorEnd: () => void
+  onColorStart: () => void; onColorEnd: () => void
   onSectionOverride: (key: keyof SectionColorOverrides, color: string | null) => void
-  onReset: () => void
-  onImport: (appearance: AppearancePreference) => void
-  onUndo: () => void
-  onRedo: () => void
-  canUndo: boolean
-  canRedo: boolean
+  onReset: () => void; onImport: (appearance: AppearancePreference) => void
+  onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
@@ -41,7 +41,7 @@ export function AppearanceCustomizer({ theme, customized, appearance, colors, se
   const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (!file) return
+    if (!file || locked) return
     try {
       onImport(parseAppearanceSaveFile(JSON.parse(await file.text())))
       setStatus('Appearance loaded.')
@@ -50,13 +50,15 @@ export function AppearanceCustomizer({ theme, customized, appearance, colors, se
     }
   }
   return <div className="appearance-customizer">
-    <button type="button" className="appearance-trigger" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls="appearance-panel">Appearance{customized && <span className="appearance-dot" aria-label="Customized" />}</button>
+    <button type="button" className="appearance-trigger" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls="appearance-panel"><AppearanceIcon /><span>Appearance</span>{customized && <span className="appearance-dot" aria-label="Customized" />}</button>
     {open && <section id="appearance-panel" className="appearance-panel" aria-label="Appearance customizer">
-      <div className="appearance-panel-heading"><div><strong>Appearance</strong><p>{label}{customized ? ' · Customized' : ''}</p></div><button type="button" onClick={onReset} className="appearance-reset">Reset to {label}</button></div>
+      <div className="appearance-panel-heading"><div><strong>Appearance</strong><p>{label}{customized ? ' · Customized' : ''}</p></div><button type="button" onClick={onReset} disabled={locked} className="appearance-reset">Reset to {label}</button></div>
+      {locked && <p className="appearance-lock-status" role="status"><span aria-hidden="true">Locked: </span>Template locked. Unlock the template to edit its appearance.</p>}
       <div className="appearance-history"><button type="button" className="appearance-reset" onClick={onUndo} disabled={!canUndo} title="Undo appearance change">Undo</button><button type="button" className="appearance-reset" onClick={onRedo} disabled={!canRedo} title="Redo appearance change">Redo</button></div>
-      <div className="appearance-grid">{colorControls.map(([key, name]) => <Swatch key={key} label={name} value={colors[key]} onPreview={value => onColorPreview(key, value)} onStart={onColorStart} onEnd={onColorEnd} />)}</div>
-      <div className="appearance-overrides"><strong>Section overrides</strong>{sectionControls.map(([key, name]) => <Swatch key={key} label={name} value={sectionOverrides[key] ?? colors.sectionBackground} onPreview={value => onSectionOverridePreview(key, value)} onStart={onColorStart} onEnd={onColorEnd} onReset={sectionOverrides[key] ? () => onSectionOverride(key, null) : undefined} />)}</div>
-      <div className="appearance-file-actions"><button type="button" className="appearance-reset" onClick={() => { downloadAppearance(appearance); setStatus('Appearance saved.') }}>Save appearance</button><button type="button" className="appearance-reset" onClick={() => inputRef.current?.click()}>Load appearance</button><input ref={inputRef} className="sr-only" type="file" accept=".json,application/json" onChange={handleImport} /></div>
+      <button type="button" className="appearance-lock" onClick={locked ? onUnlock : onLock}>{locked ? 'Unlock template' : 'Lock template'}</button>
+      <div className="appearance-grid">{colorControls.map(([key, name]) => <Swatch key={key} label={name} value={colors[key]} disabled={locked} onPreview={value => onColorPreview(key, value)} onStart={onColorStart} onEnd={onColorEnd} />)}</div>
+      <div className="appearance-overrides"><strong>Section overrides</strong>{sectionControls.map(([key, name]) => <Swatch key={key} label={name} value={sectionOverrides[key] ?? colors.sectionBackground} disabled={locked} onPreview={value => onSectionOverridePreview(key, value)} onStart={onColorStart} onEnd={onColorEnd} onReset={sectionOverrides[key] ? () => onSectionOverride(key, null) : undefined} />)}</div>
+      <div className="appearance-file-actions"><button type="button" className="appearance-reset" onClick={() => { downloadAppearance(appearance); setStatus('Appearance saved.') }}>Save appearance</button><button type="button" className="appearance-reset" disabled={locked} onClick={() => inputRef.current?.click()}>Load appearance</button><input ref={inputRef} disabled={locked} className="sr-only" type="file" accept=".json,application/json" onChange={handleImport} /></div>
       {status && <p className="appearance-status" role="status">{status}</p>}
     </section>}
   </div>

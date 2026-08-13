@@ -1,4 +1,4 @@
-import { DEFAULT_THEME, isTheme, normalizeAppearance, type AppearancePreference, type Theme } from '../lib/themes'
+import { DEFAULT_THEME, isTheme, normalizeAppearance, type PersistedAppearancePreference, type Theme } from '../lib/themes'
 
 export type ThemePreference = Theme
 export type DefaultWorkspace = 'last' | Workspace
@@ -15,7 +15,7 @@ export type TaskSortDirection = 'asc' | 'desc'
 export interface UserSettingsRow {
   user_id: string
   theme: ThemePreference
-  appearance: AppearancePreference | null
+  appearance: PersistedAppearancePreference | null
   default_workspace: DefaultWorkspace
   last_workspace: Workspace
   selected_task_board_id: string | null
@@ -157,7 +157,7 @@ export function validateUserSettingsRow(value: unknown): UserSettingsRow {
   return {
     user_id: value.user_id,
     theme: value.theme,
-    appearance: value.appearance ? normalizeAppearance(value.appearance, value.theme) : null,
+    appearance: value.appearance ? { ...normalizeAppearance(value.appearance, value.theme), locked: (value.appearance as Record<string, unknown>).locked === true } : null,
     default_workspace: value.default_workspace,
     last_workspace: value.last_workspace,
     selected_task_board_id: value.selected_task_board_id,

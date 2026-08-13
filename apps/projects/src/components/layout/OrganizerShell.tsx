@@ -16,6 +16,9 @@ interface OrganizerShellProps {
   onThemeChange: (theme: Theme) => void
   appearance: AppearancePreference
   appearanceCustomized: boolean
+  appearanceLocked: boolean
+  onAppearanceLock: () => void
+  onAppearanceUnlock: () => void
   onAppearanceColorPreview: (key: keyof AppearanceColors, color: string) => void
   onSectionOverridePreview: (key: keyof SectionColorOverrides, color: string) => void
   onAppearanceColorStart: () => void
@@ -40,6 +43,9 @@ export function OrganizerShell({
   onThemeChange,
   appearance,
   appearanceCustomized,
+  appearanceLocked,
+  onAppearanceLock,
+  onAppearanceUnlock,
   onAppearanceColorPreview,
   onSectionOverridePreview,
   onAppearanceColorStart,
@@ -73,8 +79,8 @@ export function OrganizerShell({
 
           <div className="flex flex-1 flex-wrap items-center gap-2 lg:max-w-3xl lg:justify-end">
             <BoardTypeSelector value={boardType} onChange={onBoardTypeChange} />
-            <ThemePaletteSelector theme={theme} onChange={onThemeChange} />
-            <AppearanceCustomizer theme={theme} customized={appearanceCustomized} colors={appearance.colors} sectionOverrides={appearance.sectionOverrides} onColorPreview={onAppearanceColorPreview} onSectionOverridePreview={onSectionOverridePreview} onColorStart={onAppearanceColorStart} onColorEnd={onAppearanceColorEnd} onSectionOverride={onSectionOverrideChange} onReset={onAppearanceReset} onImport={onAppearanceImport} appearance={appearance} onUndo={onAppearanceUndo} onRedo={onAppearanceRedo} canUndo={canAppearanceUndo} canRedo={canAppearanceRedo} />
+            <ThemePaletteSelector theme={theme} onChange={onThemeChange} disabled={appearanceLocked} />
+            <AppearanceCustomizer theme={theme} customized={appearanceCustomized} locked={appearanceLocked} onLock={onAppearanceLock} onUnlock={onAppearanceUnlock} colors={appearance.colors} sectionOverrides={appearance.sectionOverrides} onColorPreview={onAppearanceColorPreview} onSectionOverridePreview={onSectionOverridePreview} onColorStart={onAppearanceColorStart} onColorEnd={onAppearanceColorEnd} onSectionOverride={onSectionOverrideChange} onReset={onAppearanceReset} onImport={onAppearanceImport} appearance={appearance} onUndo={onAppearanceUndo} onRedo={onAppearanceRedo} canUndo={canAppearanceUndo} canRedo={canAppearanceRedo} />
             {userEmail && <NotificationBell />}
             <div className="min-w-0 text-right">
               <p className="max-w-44 truncate text-xs text-stone-500 dark:text-stone-400">{userEmail}</p>

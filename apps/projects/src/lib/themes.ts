@@ -1,5 +1,6 @@
 export const THEME_STORAGE_KEY = 'yapvibes:organizer:theme'
 export const APPEARANCE_STORAGE_KEY = 'yapvibes:organizer:appearance'
+export const APPEARANCE_LOCK_STORAGE_KEY = 'yapvibes:organizer:appearance-locked'
 
 export type AppearanceColors = {
   pageBackground: string
@@ -25,6 +26,13 @@ export type AppearancePreference = {
   preset: Theme
   colors: AppearanceColors
   sectionOverrides: SectionColorOverrides
+}
+
+// The lock is an account/device preference rather than a visual token. Keep it
+// out of portable appearance files while allowing the existing JSONB setting to
+// carry it for authenticated users.
+export type PersistedAppearancePreference = AppearancePreference & {
+  locked?: boolean
 }
 
 export type AppearanceSaveFile = AppearancePreference & {

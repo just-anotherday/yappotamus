@@ -26,7 +26,7 @@ import {
   type UserSettingsWritableFields,
   type Workspace,
 } from '../types/userSettings'
-import { APPEARANCE_STORAGE_KEY, THEME_STORAGE_KEY, normalizeAppearance } from '../lib/themes'
+import { APPEARANCE_LOCK_STORAGE_KEY, APPEARANCE_STORAGE_KEY, THEME_STORAGE_KEY, normalizeAppearance } from '../lib/themes'
 
 interface UserSettingsContextValue {
   settings: UserSettingsRow | null
@@ -87,12 +87,13 @@ function readLegacyInitialSettings(userId: string): UserSettingsWritableFields {
   const initial = { ...DEFAULT_USER_SETTINGS }
   const deviceTheme = readStorage(THEME_STORAGE_KEY)
   const appearance = readStorage(APPEARANCE_STORAGE_KEY)
+  const appearanceLocked = readStorage(APPEARANCE_LOCK_STORAGE_KEY) === 'true'
   const workspace = readStorage(boardPreferenceKey(userId))
   const recipeBookId = readStorage(recipeBookSelectionKey(userId))
 
   if (isThemePreference(deviceTheme)) initial.theme = deviceTheme
   if (appearance) {
-    try { initial.appearance = normalizeAppearance(JSON.parse(appearance), initial.theme) } catch { /* invalid local appearance is ignored */ }
+    try { initial.appearance = { ...normalizeAppearance(JSON.parse(appearance), initial.theme), locked: appearanceLocked } } catch { /* invalid local appearance is ignored */ }
   }
   if (isWorkspace(workspace)) initial.last_workspace = workspace
   if (recipeBookId !== null && isUuidOrNull(recipeBookId)) {

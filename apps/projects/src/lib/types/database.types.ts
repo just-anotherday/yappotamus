@@ -76,7 +76,7 @@ export interface UserSettings {
   user_id: string
   timezone: string | null
   theme: 'light' | 'dark' | 'forest' | 'midnight' | 'sunset'
-  appearance: import('../themes').AppearancePreference | null
+  appearance: import('../themes').PersistedAppearancePreference | null
   default_workspace: 'last' | 'projects' | 'shopping' | 'recipes'
   last_workspace: 'projects' | 'shopping' | 'recipes'
   selected_task_board_id: string | null
