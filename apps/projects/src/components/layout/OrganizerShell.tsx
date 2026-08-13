@@ -3,13 +3,30 @@ import Footer from '../Footer'
 import type { BoardType } from '../../types/boards'
 import { BoardTypeSelector } from './BoardTypeSelector'
 import { NotificationBell } from '../notifications/NotificationBell'
+import { ThemePaletteSelector } from './ThemePaletteSelector'
+import type { Theme } from '../../lib/themes'
+import type { AppearanceColors, AppearancePreference, SectionColorOverrides } from '../../lib/themes'
+import { AppearanceCustomizer } from './AppearanceCustomizer'
 
 interface OrganizerShellProps {
   boardType: BoardType
   userEmail?: string
-  theme: 'light' | 'dark'
+  theme: Theme
   onBoardTypeChange: (boardType: BoardType) => void
-  onToggleTheme: () => void
+  onThemeChange: (theme: Theme) => void
+  appearance: AppearancePreference
+  appearanceCustomized: boolean
+  onAppearanceColorPreview: (key: keyof AppearanceColors, color: string) => void
+  onSectionOverridePreview: (key: keyof SectionColorOverrides, color: string) => void
+  onAppearanceColorStart: () => void
+  onAppearanceColorEnd: () => void
+  onSectionOverrideChange: (key: keyof SectionColorOverrides, color: string | null) => void
+  onAppearanceReset: () => void
+  onAppearanceImport: (appearance: AppearancePreference) => void
+  onAppearanceUndo: () => void
+  onAppearanceRedo: () => void
+  canAppearanceUndo: boolean
+  canAppearanceRedo: boolean
   onSignOut: () => void
   children: ReactNode
   fatalError?: string | null
@@ -20,14 +37,27 @@ export function OrganizerShell({
   userEmail,
   theme,
   onBoardTypeChange,
-  onToggleTheme,
+  onThemeChange,
+  appearance,
+  appearanceCustomized,
+  onAppearanceColorPreview,
+  onSectionOverridePreview,
+  onAppearanceColorStart,
+  onAppearanceColorEnd,
+  onSectionOverrideChange,
+  onAppearanceReset,
+  onAppearanceImport,
+  onAppearanceUndo,
+  onAppearanceRedo,
+  canAppearanceUndo,
+  canAppearanceRedo,
   onSignOut,
   children,
   fatalError,
 }: OrganizerShellProps) {
   return (
-    <div className="flex min-h-screen flex-col bg-stone-100 text-stone-950 dark:bg-stone-950 dark:text-stone-50">
-      <header className="border-b border-stone-200/80 bg-white/90 backdrop-blur dark:border-stone-800 dark:bg-stone-950/90">
+    <div className="app-shell flex min-h-screen flex-col">
+      <header className="app-header backdrop-blur">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div className="flex items-center gap-3">
             <div className="grid size-10 place-items-center rounded-xl bg-emerald-700 text-sm font-black tracking-tight text-white shadow-sm">
@@ -43,14 +73,8 @@ export function OrganizerShell({
 
           <div className="flex flex-1 flex-wrap items-center gap-2 lg:max-w-3xl lg:justify-end">
             <BoardTypeSelector value={boardType} onChange={onBoardTypeChange} />
-            <button
-              type="button"
-              onClick={onToggleTheme}
-              className="h-10 rounded-lg border border-stone-300 px-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800"
-              aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
-            >
-              {theme === 'light' ? 'Dark' : 'Light'}
-            </button>
+            <ThemePaletteSelector theme={theme} onChange={onThemeChange} />
+            <AppearanceCustomizer theme={theme} customized={appearanceCustomized} colors={appearance.colors} sectionOverrides={appearance.sectionOverrides} onColorPreview={onAppearanceColorPreview} onSectionOverridePreview={onSectionOverridePreview} onColorStart={onAppearanceColorStart} onColorEnd={onAppearanceColorEnd} onSectionOverride={onSectionOverrideChange} onReset={onAppearanceReset} onImport={onAppearanceImport} appearance={appearance} onUndo={onAppearanceUndo} onRedo={onAppearanceRedo} canUndo={canAppearanceUndo} canRedo={canAppearanceRedo} />
             {userEmail && <NotificationBell />}
             <div className="min-w-0 text-right">
               <p className="max-w-44 truncate text-xs text-stone-500 dark:text-stone-400">{userEmail}</p>

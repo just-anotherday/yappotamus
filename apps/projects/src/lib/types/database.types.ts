@@ -75,7 +75,8 @@ export interface GeneralShoppingItem {
 export interface UserSettings {
   user_id: string
   timezone: string | null
-  theme: 'system' | 'light' | 'dark'
+  theme: 'light' | 'dark' | 'forest' | 'midnight' | 'sunset'
+  appearance: import('../themes').AppearancePreference | null
   default_workspace: 'last' | 'projects' | 'shopping' | 'recipes'
   last_workspace: 'projects' | 'shopping' | 'recipes'
   selected_task_board_id: string | null

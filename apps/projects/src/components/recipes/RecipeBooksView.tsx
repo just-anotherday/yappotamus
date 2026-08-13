@@ -92,9 +92,13 @@ export function RecipeBooksView({
   useEffect(() => {
     if (settingsLoading || initialSelectionResolved) return
 
-    onSelectedRecordChange(settings?.selected_recipe_book_id ?? null)
+    // Preserve the local workspace snapshot restored by App. The remote
+    // setting is a fallback for devices that do not have one yet.
+    if (selectedRecordId === null) {
+      onSelectedRecordChange(settings?.selected_recipe_book_id ?? null)
+    }
     setInitialSelectionResolved(true)
-  }, [initialSelectionResolved, onSelectedRecordChange, settings?.selected_recipe_book_id, settingsLoading])
+  }, [initialSelectionResolved, onSelectedRecordChange, selectedRecordId, settings?.selected_recipe_book_id, settingsLoading])
 
   const handleSelectedRecordChange = useCallback((recordId: string | null) => {
     onSelectedRecordChange(recordId)
@@ -181,7 +185,7 @@ export function RecipeBooksView({
   return (
     <>
       {(booksState.error || recipesState.error) && <ErrorBanner>{booksState.error || recipesState.error || ''}</ErrorBanner>}
-      <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm dark:border-stone-800 dark:bg-stone-900/80 sm:p-6">
+      <section className="organizer-section organizer-section--recipes rounded-3xl border border-stone-200 bg-white p-4 shadow-sm dark:border-stone-800 dark:bg-stone-900/80 sm:p-6">
         <header className="flex flex-col gap-4 border-b border-stone-200 pb-5 dark:border-stone-800 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-700 dark:text-orange-300">Cooking collections</p>

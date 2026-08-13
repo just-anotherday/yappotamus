@@ -7,13 +7,23 @@
     <meta name="description" content="A personal directory for boards, shopping lists, and cooking instructions." />
     <title>Project Directory ? yapvibes</title>
     <script>
-      // Apply theme immediately to prevent flash
+      // Apply the saved theme before React starts to prevent a color flash.
       (function() {
-        var stored = localStorage.getItem('theme');
-        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        if (stored === 'dark' || ((stored === 'system' || !stored) && prefersDark)) {
-          document.documentElement.classList.add('dark');
-        }
+        var stored;
+        try { stored = localStorage.getItem('yapvibes:organizer:theme'); } catch (error) {}
+        var theme = stored === 'light' || stored === 'dark' || stored === 'forest' || stored === 'midnight' || stored === 'sunset'
+          ? stored
+          : 'forest';
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.classList.toggle('dark', theme !== 'light');
+        try {
+          var savedAppearance = JSON.parse(localStorage.getItem('yapvibes:organizer:appearance'));
+          var colors = savedAppearance && savedAppearance.colors;
+          var keys = { pageBackground: '--app-background', headerBackground: '--header-background', contentBackground: '--content-background', sectionBackground: '--section-background', cardBackground: '--card-background', inputBackground: '--input-background', borderColor: '--border-color', primaryAccent: '--primary-accent', primaryText: '--text-primary', mutedText: '--text-muted' };
+          if (colors) Object.keys(keys).forEach(function(key) { if (/^#[0-9a-f]{6}$/i.test(colors[key])) document.documentElement.style.setProperty(keys[key], colors[key]); });
+          var overrides = savedAppearance && savedAppearance.sectionOverrides;
+          if (overrides) ['projects', 'shopping', 'recipes'].forEach(function(key) { if (/^#[0-9a-f]{6}$/i.test(overrides[key])) document.documentElement.style.setProperty('--' + key + '-section-background', overrides[key]); });
+        } catch (error) {}
       })();
     </script>
   </head>

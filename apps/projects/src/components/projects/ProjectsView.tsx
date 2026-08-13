@@ -18,9 +18,14 @@ export function ProjectsView({ selectedRecordId, onSelectedRecordChange, focused
   useEffect(() => {
     if (settingsLoading || initialSelectionResolved) return
 
-    onSelectedRecordChange(settings?.selected_task_board_id ?? null)
+    // App restores the newest user-scoped local selection before this view
+    // mounts. Only fall back to the remote preference when no selection was
+    // restored, otherwise an older remote value would overwrite it on reload.
+    if (selectedRecordId === null) {
+      onSelectedRecordChange(settings?.selected_task_board_id ?? null)
+    }
     setInitialSelectionResolved(true)
-  }, [initialSelectionResolved, onSelectedRecordChange, settings?.selected_task_board_id, settingsLoading])
+  }, [initialSelectionResolved, onSelectedRecordChange, selectedRecordId, settings?.selected_task_board_id, settingsLoading])
 
   const handleSelectedRecordChange = useCallback((recordId: string | null) => {
     onSelectedRecordChange(recordId)

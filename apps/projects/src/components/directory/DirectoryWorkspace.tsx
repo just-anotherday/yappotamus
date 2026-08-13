@@ -150,7 +150,7 @@ export function DirectoryWorkspace({
       />
       {(projectsError || tasksError) && <RecoverableError message={projectsError || tasksError || 'Unknown error'} />}
       {selectedRecord ? (
-        <section className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-900/80 sm:p-7">
+        <section className={`organizer-section organizer-section--${boardType} rounded-3xl border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-900/80 sm:p-7`}>
           <DirectoryRecordHeading project={selectedRecord} count={tasks.length} badge={copy.badge} accent={copy.accent} />
           {boardType === 'shopping' && <ReminderControl target={{ kind: 'shopping_project', id: selectedRecord.id, label: selectedRecord.name }} />}
           {tasksLoading ? <LoadingState label={`Loading ${copy.childPlural}…`} /> : renderContent({
@@ -164,7 +164,7 @@ export function DirectoryWorkspace({
           })}
         </section>
       ) : (
-        <EmptyDirectory
+        <EmptyDirectory boardType={boardType}
           title={copy.emptyTitle}
           description={copy.emptyDescription}
           createLabel={`Create ${copy.singular}`}
@@ -211,18 +211,20 @@ function DirectoryRecordHeading({
 }
 
 function EmptyDirectory({
+  boardType,
   title,
   description,
   createLabel,
   onCreate,
 }: {
+  boardType: BoardType
   title: string
   description: string
   createLabel: string
   onCreate: () => void
 }) {
   return (
-    <section className="rounded-3xl border border-stone-200 bg-white p-7 text-center shadow-sm dark:border-stone-800 dark:bg-stone-900 sm:p-10">
+    <section className={`organizer-section organizer-section--${boardType} rounded-3xl border border-stone-200 bg-white p-7 text-center shadow-sm dark:border-stone-800 dark:bg-stone-900 sm:p-10`}>
       <h2 className="text-3xl font-semibold tracking-tight text-stone-950 dark:text-white">{title}</h2>
       <p className="mx-auto mt-3 max-w-xl text-stone-600 dark:text-stone-300">{description}</p>
       <Button onClick={onCreate} tone="emerald" variant="primary" className="mt-6">{createLabel}</Button>

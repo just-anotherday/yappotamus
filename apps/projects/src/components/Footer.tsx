@@ -1,6 +1,6 @@
 export default function Footer() {
   return (
-    <footer className="mt-auto border-t border-gray-200 bg-white text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
+    <footer className="app-header mt-auto">
       <div className="mx-auto max-w-4xl px-4 py-6 text-center text-sm">
         <p>© 2026 Jason Yap — This website is my personal project.</p>
         <p className="mt-2">

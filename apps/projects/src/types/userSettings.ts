@@ -1,4 +1,6 @@
-export type ThemePreference = 'system' | 'light' | 'dark'
+import { DEFAULT_THEME, isTheme, normalizeAppearance, type AppearancePreference, type Theme } from '../lib/themes'
+
+export type ThemePreference = Theme
 export type DefaultWorkspace = 'last' | Workspace
 export type Workspace = 'projects' | 'shopping' | 'recipes'
 export type TaskSortField =
@@ -13,6 +15,7 @@ export type TaskSortDirection = 'asc' | 'desc'
 export interface UserSettingsRow {
   user_id: string
   theme: ThemePreference
+  appearance: AppearancePreference | null
   default_workspace: DefaultWorkspace
   last_workspace: Workspace
   selected_task_board_id: string | null
@@ -30,6 +33,7 @@ export interface UserSettingsRow {
 export type UserSettingsWritableFields = Pick<
   UserSettingsRow,
   | 'theme'
+  | 'appearance'
   | 'default_workspace'
   | 'last_workspace'
   | 'selected_task_board_id'
@@ -49,7 +53,8 @@ export type UserSettingsInsert = UserSettingsWritableFields & {
 export type UserSettingsUpdate = Partial<UserSettingsWritableFields>
 
 export const DEFAULT_USER_SETTINGS: Readonly<UserSettingsWritableFields> = {
-  theme: 'system',
+  theme: DEFAULT_THEME,
+  appearance: null,
   default_workspace: 'last',
   last_workspace: 'projects',
   selected_task_board_id: null,
@@ -62,7 +67,6 @@ export const DEFAULT_USER_SETTINGS: Readonly<UserSettingsWritableFields> = {
   timezone: null,
 }
 
-const themes: readonly ThemePreference[] = ['system', 'light', 'dark']
 const workspaces: readonly Workspace[] = ['projects', 'shopping', 'recipes']
 const defaultWorkspaces: readonly DefaultWorkspace[] = ['last', ...workspaces]
 const sortFields: readonly TaskSortField[] = [
@@ -89,7 +93,7 @@ function isOneOf<T extends string>(
 }
 
 export function isThemePreference(value: unknown): value is ThemePreference {
-  return isOneOf(value, themes)
+  return isTheme(value)
 }
 
 export function isWorkspace(value: unknown): value is Workspace {
@@ -130,6 +134,7 @@ export function validateUserSettingsRow(value: unknown): UserSettingsRow {
   if (
     typeof value.user_id !== 'string'
     || !isThemePreference(value.theme)
+    || (value.appearance !== null && value.appearance !== undefined && typeof value.appearance !== 'object')
     || !isDefaultWorkspace(value.default_workspace)
     || !isWorkspace(value.last_workspace)
     || !isUuidOrNull(value.selected_task_board_id)
@@ -152,6 +157,7 @@ export function validateUserSettingsRow(value: unknown): UserSettingsRow {
   return {
     user_id: value.user_id,
     theme: value.theme,
+    appearance: value.appearance ? normalizeAppearance(value.appearance, value.theme) : null,
     default_workspace: value.default_workspace,
     last_workspace: value.last_workspace,
     selected_task_board_id: value.selected_task_board_id,
@@ -172,6 +178,10 @@ export function validateUserSettingsUpdate(
 ): UserSettingsUpdate {
   if (value.theme !== undefined && !isThemePreference(value.theme)) {
     throw new Error('Choose a supported theme.')
+  }
+  if (value.appearance !== undefined && value.appearance !== null) {
+    const normalized = normalizeAppearance(value.appearance, value.appearance.preset)
+    if (JSON.stringify(normalized) !== JSON.stringify(value.appearance)) throw new Error('The appearance preference is invalid.')
   }
   if (
     value.default_workspace !== undefined
