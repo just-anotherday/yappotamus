@@ -170,7 +170,7 @@ export function RecipeBooksView({
   }
 
   const deleteRecipe = async () => {
-    if (!selectedRecipe) return
+    if (!selectedRecipe || !selectedRecipe.is_archived) return
     const removed = await recipesState.remove(selectedRecipe.id)
     if (removed) {
       setSelectedRecipeId(null)
@@ -240,8 +240,10 @@ export function RecipeBooksView({
                     recipesError={recipesState.error}
                     ingredientsState={ingredientsState}
                     stepsState={stepsState}
+                    recipeBooks={booksState.books}
+                    onMove={recipeBookId => void recipesState.move(selectedRecipe.id, recipeBookId)}
                     onEdit={() => setRecipeEditor('edit')}
-                    onDelete={() => setDeleteConfirmation('recipe')}
+                    onDelete={selectedRecipe.is_archived ? () => setDeleteConfirmation('recipe') : undefined}
                     onFavorite={() => void recipesState.setFavorite(selectedRecipe.id, !selectedRecipe.is_favorite)}
                     onArchive={() => void recipesState.setArchived(selectedRecipe.id, !selectedRecipe.is_archived)}
                   />
@@ -372,23 +374,27 @@ interface ChildState<T> {
 function RecipeDetail({
   recipe,
   userId,
+  recipeBooks,
   recipesPending,
   recipesError,
   ingredientsState,
   stepsState,
   onEdit,
+  onMove,
   onDelete,
   onFavorite,
   onArchive,
 }: {
   recipe: Recipe
   userId: string
+  recipeBooks: ReturnType<typeof useRecipeBooks>['books']
   recipesPending: boolean
   recipesError: string | null
   ingredientsState: ReturnType<typeof useRecipeIngredients>
   stepsState: ReturnType<typeof useRecipeSteps>
   onEdit: () => void
-  onDelete: () => void
+  onMove: (recipeBookId: string) => void
+  onDelete?: () => void
   onFavorite: () => void
   onArchive: () => void
 }) {
@@ -425,9 +431,13 @@ function RecipeDetail({
         <div className="flex flex-wrap items-start gap-2">
           <ReminderControl target={{ kind: 'recipe', id: recipe.id, label: recipe.name }} />
           <Button type="button" disabled={recipesPending} onClick={onFavorite} tone="orange" variant="tertiary">{recipe.is_favorite ? 'Unfavorite' : 'Favorite'}</Button>
+          <label className="sr-only" htmlFor={`recipe-collection-${recipe.id}`}>Move recipe to collection</label>
+          <select id={`recipe-collection-${recipe.id}`} value={recipe.recipe_book_id} disabled={recipesPending || recipeBooks.length < 2} onChange={event => { if (event.target.value !== recipe.recipe_book_id) onMove(event.target.value) }} className="h-9 max-w-44 rounded-lg border border-stone-300 bg-white px-2 text-xs text-stone-900 outline-none transition focus:border-orange-600 focus:ring-2 focus:ring-orange-600/15 disabled:cursor-not-allowed disabled:opacity-50 dark:border-stone-700 dark:bg-stone-950 dark:text-white" aria-label="Move recipe to collection">
+            {recipeBooks.map(book => <option key={book.id} value={book.id}>{book.id === recipe.recipe_book_id ? `In ${book.name}` : `Move to ${book.name}`}</option>)}
+          </select>
           <Button type="button" disabled={recipesPending} onClick={onEdit} tone="orange" variant="secondary">Edit</Button>
-          <Button type="button" disabled={recipesPending} onClick={onArchive} tone="orange" variant="tertiary">{recipe.is_archived ? 'Unarchive' : 'Archive'}</Button>
-          <Button type="button" disabled={recipesPending} onClick={onDelete} variant="destructive">Delete</Button>
+          <Button type="button" disabled={recipesPending} onClick={onArchive} tone="orange" variant="tertiary">{recipe.is_archived ? 'Restore' : 'Archive'}</Button>
+          {recipe.is_archived && onDelete && <Button type="button" disabled={recipesPending} onClick={onDelete} variant="destructive">Delete permanently</Button>}
         </div>
       </header>
 

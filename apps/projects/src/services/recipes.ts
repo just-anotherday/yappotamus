@@ -44,6 +44,20 @@ export async function updateRecipe(id: string, input: RecipeUpdate): Promise<Rec
   return requireData(data as Recipe | null, error)
 }
 
+export function moveRecipe(id: string, recipeBookId: string): Promise<Recipe> {
+  return updateRecipeCollection(id, recipeBookId)
+}
+
+async function updateRecipeCollection(id: string, recipeBookId: string): Promise<Recipe> {
+  const { data, error } = await supabase
+    .from('recipes')
+    .update({ recipe_book_id: recipeBookId })
+    .eq('id', id)
+    .select()
+    .single()
+  return requireData(data as Recipe | null, error)
+}
+
 export function setRecipeArchived(id: string, isArchived: boolean) {
   return updateRecipe(id, { is_archived: isArchived })
 }

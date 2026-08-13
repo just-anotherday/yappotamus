@@ -66,6 +66,9 @@ export function useRecipes(recipeBookId: string | null, includeArchived: boolean
     update: (id: string, input: RecipeUpdate) => mutate(
       () => recipeService.updateRecipe(id, input),
     ),
+    move: (id: string, recipeBookId: string) => mutate(
+      () => recipeService.moveRecipe(id, recipeBookId),
+    ),
     setArchived: (id: string, value: boolean) => mutate(
       () => recipeService.setRecipeArchived(id, value),
     ),
