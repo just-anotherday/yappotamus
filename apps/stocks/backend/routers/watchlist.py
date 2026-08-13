@@ -18,7 +18,7 @@ from backend.services.hybrid_data_service import (
 from backend.services.market_data_service import MarketDataService, merge_live_quote_payload
 from backend.config.watchlist import DEFAULT_TICKERS, MAX_WATCHLIST_SIZE, CONFIG_VERSION
 from backend.config.settings import settings
-from backend.config.database import get_async_session, async_session_factory
+from backend.config.database import get_async_session, async_session_factory, sanitize_database_error
 from backend.services.news_ingestion_service import fetch_and_ingest_news
 from backend.services.watchlist_service import seed_defaults, get_all_tickers, add_ticker, remove_ticker, update_order
 from backend.services.post_market_service import PostMarketService
@@ -107,8 +107,12 @@ async def get_watchlist(
         return [WatchlistItem(**item) for item in results]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching watchlist: {str(e)}")
+    except Exception as exc:
+        logger.error(
+            "[Watchlist] operation=load failed exception_type=%s message=%s",
+            type(exc).__name__, sanitize_database_error(exc), exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Unable to load watchlist data") from exc
 
 
 @router.post("/add", response_model=WatchlistResponse)

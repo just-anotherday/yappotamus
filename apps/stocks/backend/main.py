@@ -48,6 +48,7 @@ from backend.routers import markets as markets_router
 from backend.routers import auth as auth_router
 from backend.routers import intelligence as intelligence_router
 from backend.routers import maintenance_intelligence as maintenance_intelligence_router
+from backend.routers import internal_jobs as internal_jobs_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -128,16 +129,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         market_data.set_connection_manager(app.state.connection_manager)
         market_data.start([])
 
-    # Start background news ingestion scheduler (every 15 minutes)
-    try:
-        async def fetch_tickers():
-            async with async_session_factory() as session:
-                return await get_all_tickers(session)
+    # Production collection is externally triggered. Keep this only as an
+    # opt-in local-development convenience so web-process sleep cannot stop news.
+    if settings.NEWS_SCHEDULER_ENABLED:
+        try:
+            async def fetch_tickers():
+                async with async_session_factory() as session:
+                    return await get_all_tickers(session)
 
-        start_scheduler(async_session_factory, fetch_tickers, app.state.connection_manager)
-        logger.info("[Startup] News ingestion scheduler started (every 15 min).")
-    except Exception as e:
-        logger.warning("[Startup] Failed to start news scheduler: %s", e)
+            start_scheduler(async_session_factory, fetch_tickers, app.state.connection_manager)
+            logger.info("[Startup] Local news ingestion scheduler started (every 15 min).")
+        except Exception as e:
+            logger.warning("[Startup] Failed to start local news scheduler: %s", e)
+    else:
+        logger.info("[Startup] In-process news scheduler disabled; external trigger is authoritative.")
 
     # Start AI Worker (background job processor)
     try:
@@ -189,11 +194,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("[Shutdown] Failed to stop market data service: %s", e)
 
-    try:
-        stop_scheduler()
-        logger.info("[Shutdown] News ingestion scheduler stopped.")
-    except Exception as e:
-        logger.warning("[Shutdown] Failed to stop news scheduler: %s", e)
+    if settings.NEWS_SCHEDULER_ENABLED:
+        try:
+            stop_scheduler()
+            logger.info("[Shutdown] News ingestion scheduler stopped.")
+        except Exception as e:
+            logger.warning("[Shutdown] Failed to stop news scheduler: %s", e)
 
     # Stop AI Worker
     try:
@@ -423,6 +429,7 @@ def create_app() -> FastAPI:
     app.include_router(markets_router.router, prefix="/api/markets", dependencies=_auth_dep)
     app.include_router(intelligence_router.router, dependencies=_auth_dep)
     app.include_router(maintenance_intelligence_router.router)
+    app.include_router(internal_jobs_router.router)
 
     return app
 

@@ -48,3 +48,15 @@ async def verify_app_access_token(authorization: str | None = Header(None)) -> N
     token = authorization[len("Bearer "):].strip()
     if not is_valid_access_token(token):
         raise HTTPException(status_code=401, detail="Invalid access token")
+
+
+async def verify_internal_job_token(authorization: str | None = Header(None)) -> None:
+    """Require the dedicated machine-to-machine job token, fail closed if absent."""
+    configured = settings.INTERNAL_JOB_TOKEN
+    if not configured:
+        raise HTTPException(status_code=503, detail="Internal job trigger is not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    supplied = authorization[len("Bearer "):].strip()
+    if not secrets.compare_digest(supplied, configured):
+        raise HTTPException(status_code=401, detail="Invalid internal job token")

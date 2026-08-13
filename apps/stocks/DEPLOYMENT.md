@@ -25,6 +25,8 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 | `DATABASE_URL` | **Yes** | Supabase PostgreSQL connection string |
 | `APP_ACCESS_TOKEN` | **Yes** | Private token used by the frontend for authenticated API/WebSocket access |
 | `FINNHUB_API_KEY` | **Yes** | Market data API key |
+| `INTERNAL_JOB_TOKEN` | **Yes** for scheduled ingestion | Dedicated bearer token accepted only by `POST /internal/jobs/news-ingest`. |
+| `NEWS_SCHEDULER_ENABLED` | **Yes** in production | Set `false`; the GitHub workflow is the production scheduler. |
 | `YFINANCE_CACHE_DIR` | No | Writable yfinance SQLite cache path. Defaults to OS temp; it is an optimization and can remain ephemeral on Render. |
 | `OPENAI_API_KEY` | **Yes** (prod) | OpenAI API key for AI analysis |
 | `AI_PROVIDER` | No | Set to `openai` (default: `ollama`) |
@@ -38,7 +40,7 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 
 1. Connect Render to the GitHub repository and set the service root directory to `apps/stocks`
 2. Set environment variables in the Render dashboard
-3. Keep the service at one replica because the news scheduler runs inside FastAPI
+3. Set `NEWS_SCHEDULER_ENABLED=false`; production article collection is initiated externally.
 4. Configure `/health/live` as the health-check path. Run `python -m alembic upgrade head` as an explicit pre-deploy step only after the target database is positively identified.
 
 ### Manual Deployment (Docker Compose)
@@ -95,10 +97,14 @@ as **build variables before building**. They are not secrets.
 4. Keep the DNS record proxied. Cloudflare creates/updates the DNS target when the
    custom domain is attached to the Worker.
 
-### Start and Verify Article Collection
+### Scheduled Article Collection
 
-The collector runs in the FastAPI lifespan and starts its first cycle immediately,
-then repeats every 15 minutes. After the Render deployment:
+The production collector is a one-shot, authenticated internal operation. GitHub
+Actions invokes it on weekdays at 13:17 UTC and can be run manually with
+`workflow_dispatch`; it wakes Render if necessary. Configure these repository
+secrets (names only): `STOCKS_API_URL` and `STOCKS_INTERNAL_JOB_TOKEN`.
+
+After the Render deployment:
 
 ```bash
 # Process and dependency checks
@@ -106,11 +112,12 @@ curl https://YOUR-BACKEND/health/live
 curl https://YOUR-BACKEND/health
 
 # Trigger an immediate authenticated collection cycle (default watchlist)
-curl -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" \
-  https://YOUR-BACKEND/api/news/ingest
+curl --fail-with-body -X POST -H "Authorization: Bearer YOUR_INTERNAL_JOB_TOKEN" \
+  https://YOUR-BACKEND/internal/jobs/news-ingest
 ```
 
-Confirm Render logs contain `NewsScheduler Started` and `Cycle complete`, and
+Confirm Render logs contain `event=started operation=watchlist_once`,
+`event=database_persisted`, and `event=completed`, and
 confirm `news_articles` rows appear in PostgreSQL. The production watchlist must
 contain tickers; startup seeds defaults when its migration tables are available.
 

@@ -42,7 +42,7 @@ export default function HomeClient() {
     loadWatchlist,
   } = useWatchlist();
 
-  const { articles, loading: newsLoading, refetch } = useNews(undefined, NEWS_FETCH_LIMIT);
+  const { articles, loading: newsLoading, error: newsError, refetch } = useNews(undefined, NEWS_FETCH_LIMIT);
 
   const totalPages = computeTotalPages(articles.length, FIRST_PAGE_SIZE, SUBSEQUENT_PAGE_SIZE);
   const startIdx = getOffset(page, FIRST_PAGE_SIZE, SUBSEQUENT_PAGE_SIZE);
@@ -94,6 +94,17 @@ export default function HomeClient() {
           <div className="flex items-center gap-3 text-gray-500 dark:text-slate-400">
             <div className="w-6 h-6 border-2 border-blue-400 dark:border-indigo-400 border-t-blue-600 dark:border-t-indigo-600 rounded-full animate-spin"></div>
             <span className="text-sm">Loading latest news...</span>
+          </div>
+        ) : newsError ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 dark:border-red-900/70 dark:bg-red-950/30 p-5 text-center">
+            <p className="text-sm font-medium text-red-700 dark:text-red-300">Unable to load market news.</p>
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{newsError}</p>
+            <button
+              onClick={refetch}
+              className="mt-3 px-4 py-2 text-sm font-medium rounded-lg border border-red-300 bg-white text-red-700 hover:bg-red-50 dark:border-red-800 dark:bg-slate-800 dark:text-red-300 dark:hover:bg-slate-700 transition-colors"
+            >
+              Try Again
+            </button>
           </div>
         ) : pageArticles.length > 0 ? (
           <>

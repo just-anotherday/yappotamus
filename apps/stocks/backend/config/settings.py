@@ -256,6 +256,21 @@ class Settings:
         return os.getenv("FINNHUB_API_KEY") or None
 
     @property
+    def INTERNAL_JOB_TOKEN(self) -> Optional[str]:
+        """Token accepted only by machine-to-machine operational job routes."""
+        return os.getenv("INTERNAL_JOB_TOKEN") or None
+
+    @property
+    def NEWS_SCHEDULER_ENABLED(self) -> bool:
+        """Keep the in-process collector for local development only by default.
+
+        Production scheduling is intentionally external: a web process can be
+        suspended or restarted independently of a schedule.
+        """
+        default = "false" if self.ENVIRONMENT.lower() == "production" else "true"
+        return os.getenv("NEWS_SCHEDULER_ENABLED", default).strip().lower() in {"1", "true", "yes"}
+
+    @property
     def LIVE_PRICE_POLL_S(self) -> int:
         return self._number("LIVE_PRICE_POLL_S", "15", int, minimum=1)
 

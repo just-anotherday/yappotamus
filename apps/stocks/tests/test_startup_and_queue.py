@@ -10,6 +10,7 @@ def test_application_routes_can_be_enumerated():
     paths = {route.path for route in app.routes}
     assert "/health" in paths
     assert "/news" in paths
+    assert "/internal/jobs/news-ingest" in paths
     assert "/api/analysis/reports/" in paths
 
 

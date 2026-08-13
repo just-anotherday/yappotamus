@@ -33,9 +33,11 @@ from backend.models.news_schemas import NewsArticleIngest
 from backend.services.finnhub_service import get_finnhub_client, _rate_limiter
 from backend.services.ticker_extractor import ticker_extractor
 from backend.services.asset_sync import get_asset_id_by_ticker
+from backend.services.watchlist_service import get_all_tickers
 from backend.services.ai_worker import enqueue_job
 from backend.services.memory_diagnostics import log_memory
 from backend.config.settings import settings
+from backend.config.database import sanitize_database_error
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,61 @@ async def _recover_thumbnails(
         await session.commit()
         logger.info("[ThumbRecovery] Recovered %d/%d thumbnails this cycle.", recovered, len(rows))
     return recovered
+
+
+async def fetch_and_ingest_watchlist_once(
+    session_factory,
+    *,
+    connection_manager=None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Run one complete, idempotent watchlist ingestion cycle and return its summary.
+
+    This operation has no scheduler lifetime dependency and is therefore safe for
+    an external job trigger.  A new session is used each invocation, allowing a
+    later job to recover naturally after a temporary database outage.
+    """
+    started_at = time.monotonic()
+    counters = {"articles_fetched": 0, "articles_changed": 0, "report_candidates": 0,
+        "report_candidates_discovered": 0, "report_candidates_unique": 0,
+        "scheduler_duplicates_skipped": 0, "enqueue_attempts": 0, "jobs_created": 0,
+        "jobs_deduplicated": 0}
+    provider: dict[str, int | bool] = {"provider_requests": 0, "provider_successes": 0,
+        "provider_timeouts": 0, "provider_failures": 0, "consecutive_timeouts": 0,
+        "provider_timeout_breaker_open": False, "tickers_skipped_provider_timeout": 0}
+    logger.info("[NewsIngestion] event=started operation=watchlist_once")
+    try:
+        async with session_factory() as session:
+            tickers = await get_all_tickers(session)
+            if not tickers:
+                summary = {"tickers": 0, "articles_fetched": 0, "articles_changed": 0,
+                    "provider_failures": 0, "duration_seconds": round(time.monotonic() - started_at, 3)}
+                logger.info("[NewsIngestion] event=completed operation=watchlist_once %s", summary)
+                return summary
+            results = await fetch_and_ingest_many(
+                tickers, session, limit=limit, _cycle_counters=counters,
+                _scheduler_attempted_asset_ids=set(), _provider_counters=provider,
+            )
+            if counters["articles_fetched"]:
+                await _recover_thumbnails(session)
+    except Exception as exc:
+        logger.error(
+            "[NewsIngestion] event=failed operation=watchlist_once exception_type=%s message=%s",
+            type(exc).__name__, sanitize_database_error(exc), exc_info=True,
+        )
+        raise
+
+    summary = {
+        "tickers": len(tickers), "tickers_processed": len(results),
+        "articles_fetched": counters["articles_fetched"], "articles_changed": counters["articles_changed"],
+        "provider_failures": provider["provider_failures"], "provider_timeouts": provider["provider_timeouts"],
+        "results": results, "duration_seconds": round(time.monotonic() - started_at, 3),
+    }
+    logger.info("[NewsIngestion] event=database_persisted operation=watchlist_once articles_changed=%s", counters["articles_changed"])
+    logger.info("[NewsIngestion] event=completed operation=watchlist_once %s", summary)
+    if connection_manager is not None:
+        await connection_manager.broadcast({"type": "news_refresh"})
+    return summary
 
 async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager) -> None:
     """Run sequential ticker ingestion and bounded thumbnail recovery every 15 minutes."""
@@ -607,14 +664,15 @@ async def fetch_and_ingest_news(
             _provider_counters["provider_timeouts" if is_timeout else "provider_failures"] += 1
         if _provider_state is not None:
             _provider_state["last_outcome"] = "timeout" if is_timeout else "failure"
-        logger.error("[NewsIngestion] Failed to fetch news ticker=%s exception_type=%s",
-            ticker.upper(), type(exc).__name__)
+        logger.error("[NewsIngestion] event=provider_failed ticker=%s exception_type=%s message=%s",
+            ticker.upper(), type(exc).__name__, sanitize_database_error(exc), exc_info=True)
         return 0
 
     if _provider_counters is not None:
         _provider_counters["provider_successes"] += 1
     if _provider_state is not None:
         _provider_state["last_outcome"] = "success"
+    logger.info("[NewsIngestion] event=provider_succeeded ticker=%s articles_returned=%d", ticker.upper(), len(raw_news or []))
 
     if not raw_news:
         logger.info(f"[NewsIngestion] No news returned for {ticker}")
@@ -660,6 +718,10 @@ async def fetch_and_ingest_news(
     ingested = len(material_article_ids)
     articles_fetched = len(normalized_articles)
     articles_changed = ingested
+    logger.info(
+        "[NewsIngestion] event=database_persisted ticker=%s articles_fetched=%d articles_changed=%d",
+        ticker.upper(), articles_fetched, articles_changed,
+    )
 
     if settings.INTELLIGENCE_ENABLED and material_article_ids:
         from backend.intelligence.article_service import ARTICLE_PROMPT_HASH, article_source_content_hash

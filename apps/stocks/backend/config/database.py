@@ -8,11 +8,24 @@ Environment:
     DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/news
 """
 
+import logging
+import re
+
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
 from backend.config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+def sanitize_database_error(exc: BaseException) -> str:
+    """Keep diagnostic text useful without leaking credentials embedded in a DSN."""
+    message = str(exc)
+    message = re.sub(r"(postgres(?:ql)?(?:\+[\w]+)?://)[^\s@/]+@", r"\1***@", message)
+    return message[:1000]
 
 DATABASE_URL = settings.DATABASE_URL or "postgresql+asyncpg://postgres:postgres@localhost:5432/news"
 
@@ -42,11 +55,36 @@ class Base(DeclarativeBase):
     pass
 
 
+def _is_connection_failure(exc: BaseException) -> bool:
+    """Return whether a failed request may have left stale pooled connections."""
+    return isinstance(exc, (OperationalError, InterfaceError)) or (
+        isinstance(exc, DBAPIError) and exc.connection_invalidated
+    )
+
+
+async def _recover_session_after_failure(session: AsyncSession, exc: BaseException) -> None:
+    """Rollback the request session and discard a pool only after connection loss."""
+    try:
+        await session.rollback()
+    except Exception:
+        logger.warning("[Database] rollback failed after request error", exc_info=True)
+
+    if _is_connection_failure(exc):
+        logger.warning(
+            "[Database] connection failure; disposing pooled connections exception_type=%s message=%s",
+            type(exc).__name__, sanitize_database_error(exc),
+        )
+        await engine.dispose()
+
+
 async def get_async_session():
-    """Dependency that yields an AsyncSession and auto-closes it."""
+    """Yield a request session, rolling it back after errors and recovering stale pools."""
     async with async_session_factory() as session:
         try:
             yield session
+        except Exception as exc:
+            await _recover_session_after_failure(session, exc)
+            raise
         finally:
             await session.close()
 

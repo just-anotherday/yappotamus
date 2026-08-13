@@ -6,8 +6,22 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from backend.services.ai.exceptions import AIConnectionError, AIValidationError
+from backend.config.database import sanitize_database_error
+from backend.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _configured_cors_headers(request: Request) -> dict[str, str]:
+    """Preserve CORS on errors emitted outside Starlette's CORS middleware."""
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ORIGINS:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+    return {}
 
 
 def register_exception_handlers(app):
@@ -65,12 +79,14 @@ def register_exception_handlers(app):
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": exc.detail, "status_code": exc.status_code},
+            headers=_configured_cors_headers(request),
         )
 
     @app.exception_handler(Exception)
     async def generic_exception_handler(request: Request, exc: Exception):
         logger.error(
-            f"[Unhandled] {request.method} {request.url}: {type(exc).__name__}: {exc}",
+            "[Unhandled] method=%s path=%s exception_type=%s message=%s",
+            request.method, request.url.path, type(exc).__name__, sanitize_database_error(exc),
             exc_info=True,
         )
         return JSONResponse(
@@ -79,4 +95,5 @@ def register_exception_handlers(app):
                 "error": "Internal server error",
                 "status_code": 500,
             },
+            headers=_configured_cors_headers(request),
         )
