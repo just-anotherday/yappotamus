@@ -36,6 +36,8 @@ export interface Recipe {
   difficulty: RecipeDifficulty | null
   notes: string
   source: string | null
+  image_url: string | null
+  image_path: string | null
   is_favorite: boolean
   is_archived: boolean
   created_at: string
@@ -55,6 +57,8 @@ export interface RecipeInsert {
   difficulty?: RecipeDifficulty | null
   notes?: string
   source?: string | null
+  image_url?: string | null
+  image_path?: string | null
   is_favorite?: boolean
   is_archived?: boolean
 }

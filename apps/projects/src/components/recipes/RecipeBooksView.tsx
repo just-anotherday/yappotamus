@@ -22,6 +22,7 @@ import { Button } from '../shared/Button'
 import { DialogFrame } from '../shared/DialogFrame'
 import { IconButton } from '../shared/IconButton'
 import { useUserSettings } from '../../hooks/useUserSettings'
+import { removeRecipeImage, uploadRecipeImage } from '../../services/recipeImages'
 
 interface RecipeBooksViewProps {
   userId: string
@@ -147,16 +148,25 @@ export function RecipeBooksView({
     return Boolean(result)
   }
 
-  const saveRecipe = async (input: RecipeUpdate & { name: string }) => {
-    const result = recipeEditor === 'edit' && selectedRecipe
-      ? await recipesState.update(selectedRecipe.id, input)
-      : await recipesState.create({
-        ...input,
+  const saveRecipe = async (input: RecipeUpdate & { name: string; imageMode: 'none' | 'url' | 'upload'; imageFile: File | null }) => {
+    const { imageMode, imageFile, ...recipeInput } = input
+    const oldPath = selectedRecipe?.image_path
+    let upload: { path: string; url: string } | null = null
+    try {
+      if (imageMode === 'upload' && imageFile) upload = await uploadRecipeImage(userId, imageFile)
+      const image = imageMode === 'none' ? { image_url: null, image_path: null } : imageMode === 'url' ? { image_url: recipeInput.image_url ?? null, image_path: null } : upload ? { image_url: upload.url, image_path: upload.path } : { image_url: selectedRecipe?.image_url ?? null, image_path: oldPath ?? null }
+      const result = recipeEditor === 'edit' && selectedRecipe
+        ? await recipesState.update(selectedRecipe.id, { ...recipeInput, ...image })
+        : await recipesState.create({
+        ...recipeInput, ...image,
         recipe_book_id: selectedBook?.id ?? '',
         user_id: userId,
       })
-    if (result) setSelectedRecipeId(result.id)
-    return Boolean(result)
+      if (!result && upload) await removeRecipeImage(upload.path)
+      if (result && oldPath && oldPath !== image.image_path) await removeRecipeImage(oldPath)
+      if (result) setSelectedRecipeId(result.id)
+      return Boolean(result)
+    } catch { return false }
   }
 
   const deleteBook = async () => {
@@ -173,6 +183,7 @@ export function RecipeBooksView({
     if (!selectedRecipe || !selectedRecipe.is_archived) return
     const removed = await recipesState.remove(selectedRecipe.id)
     if (removed) {
+      try { await removeRecipeImage(selectedRecipe.image_path) } catch { /* The archived recipe is already deleted; an orphan can be cleaned up later. */ }
       setSelectedRecipeId(null)
       setDeleteConfirmation(null)
     }
@@ -343,6 +354,7 @@ function RecipeSidebar({
         <nav className="mt-3 space-y-1" aria-label="Recipes">
           {recipes.map(recipe => (
             <button key={recipe.id} type="button" onClick={() => onSelect(recipe.id)} className={`w-full rounded-lg px-3 py-2.5 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-orange-600 focus-visible:ring-offset-2 focus-visible:ring-offset-orange-50 dark:focus-visible:ring-orange-400 dark:focus-visible:ring-offset-orange-950 ${recipe.id === selectedId ? 'bg-white shadow-sm ring-1 ring-orange-200 dark:bg-stone-900 dark:ring-orange-900' : 'hover:bg-white/70 dark:hover:bg-stone-900/70'}`}>
+              {recipe.image_url && <img src={recipe.image_url} alt="" onError={event => { event.currentTarget.hidden = true }} className="mb-2 h-16 w-full rounded-lg border border-orange-200 object-cover dark:border-orange-900" />}
               <span className="flex items-center gap-1 truncate text-sm font-semibold">{recipe.is_favorite && <span aria-label="Favorite">★</span>}{recipe.name}</span>
               <span className="mt-0.5 block text-xs text-stone-500">{recipe.is_archived ? 'Archived' : timeSummary(recipe)}</span>
             </button>
@@ -420,6 +432,7 @@ function RecipeDetail({
       {(recipesError || ingredientsState.error || stepsState.error) && <ErrorBanner>{recipesError || ingredientsState.error || stepsState.error || ''}</ErrorBanner>}
       <header className="flex flex-col gap-4 border-b border-stone-200 pb-5 dark:border-stone-800 sm:flex-row sm:items-start sm:justify-between">
         <div>
+          {recipe.image_url && <img src={recipe.image_url} alt={`${recipe.name} cover`} onError={event => { event.currentTarget.hidden = true }} className="mb-4 h-52 w-full max-w-xl rounded-2xl border border-stone-200 object-cover dark:border-stone-700" />}
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-3xl font-semibold tracking-tight">{recipe.name}</h3>
             {recipe.is_favorite && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-950 dark:text-amber-200">★ Favorite</span>}

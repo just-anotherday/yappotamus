@@ -13,6 +13,7 @@ import type {
 } from '../../types/recipeBooks'
 import { Button } from '../shared/Button'
 import { DialogFrame } from '../shared/DialogFrame'
+import { validateRecipeImage } from '../../services/recipeImages'
 
 interface DialogFrameProps {
   title: string
@@ -135,6 +136,9 @@ interface RecipeDraft {
   source: string
   isFavorite: boolean
   isArchived: boolean
+  imageMode: 'none' | 'url' | 'upload'
+  imageUrl: string
+  imageFile: File | null
 }
 
 function recipeDraft(recipe: Recipe | null): RecipeDraft {
@@ -151,6 +155,9 @@ function recipeDraft(recipe: Recipe | null): RecipeDraft {
     source: recipe?.source ?? '',
     isFavorite: recipe?.is_favorite ?? false,
     isArchived: recipe?.is_archived ?? false,
+    imageMode: recipe?.image_path ? 'upload' : recipe?.image_url ? 'url' : 'none',
+    imageUrl: recipe?.image_url ?? '',
+    imageFile: null,
   }
 }
 
@@ -174,7 +181,7 @@ export function RecipeDialog({
   pending: boolean
   error: string | null
   onClose: () => void
-  onSave: (input: RecipeUpdate & { name: string }) => Promise<boolean>
+  onSave: (input: RecipeUpdate & { name: string; imageMode: RecipeDraft['imageMode']; imageFile: File | null }) => Promise<boolean>
 }) {
   const [draft, setDraft] = useState(() => recipeDraft(recipe))
   const [validation, setValidation] = useState<string | null>(null)
@@ -188,6 +195,9 @@ export function RecipeDialog({
     const cookMinutes = nullableNumber(draft.cookMinutes, true)
     if (servings === 'invalid') return setValidation('Servings must be empty or a nonnegative number.')
     if (prepMinutes === 'invalid' || cookMinutes === 'invalid') return setValidation('Prep and cook minutes must be empty or nonnegative whole numbers.')
+    let imageUrl: string | null = null
+    if (draft.imageMode === 'url') { try { const url = new URL(draft.imageUrl.trim()); if (!['http:', 'https:'].includes(url.protocol)) throw new Error(); imageUrl = url.href } catch { return setValidation('Enter a valid HTTP or HTTPS image URL.') } }
+    if (draft.imageMode === 'upload' && !draft.imageFile && !recipe?.image_path) return setValidation('Choose an image to upload.')
     setValidation(null)
     const saved = await onSave({
       name: draft.name.trim(),
@@ -200,6 +210,10 @@ export function RecipeDialog({
       difficulty: draft.difficulty || null,
       notes: draft.notes.trim(),
       source: draft.source.trim() || null,
+      image_url: imageUrl,
+      image_path: null,
+      imageMode: draft.imageMode,
+      imageFile: draft.imageFile,
       is_favorite: draft.isFavorite,
       is_archived: draft.isArchived,
     })
@@ -230,6 +244,7 @@ export function RecipeDialog({
         </div>
         <label><span className="mb-1 block text-sm font-semibold">Notes</span><textarea maxLength={20000} rows={3} disabled={pending} value={draft.notes} onChange={event => set('notes', event.target.value)} className={inputClass} /></label>
         <label><span className="mb-1 block text-sm font-semibold">Source</span><input maxLength={500} disabled={pending} value={draft.source} onChange={event => set('source', event.target.value)} className={inputClass} placeholder="Optional URL or source name" /></label>
+        <fieldset className="rounded-xl border border-stone-200 p-3 dark:border-stone-700"><legend className="px-1 text-sm font-semibold">Recipe image</legend><div className="flex flex-wrap gap-4 text-sm"><label><input type="radio" checked={draft.imageMode === 'none'} disabled={pending} onChange={() => set('imageMode', 'none')} /> No image</label><label><input type="radio" checked={draft.imageMode === 'url'} disabled={pending} onChange={() => set('imageMode', 'url')} /> Image URL</label><label><input type="radio" checked={draft.imageMode === 'upload'} disabled={pending} onChange={() => set('imageMode', 'upload')} /> Upload image</label></div>{draft.imageMode === 'url' && <label className="mt-3 block"><span className="mb-1 block text-sm">Image URL</span><input type="url" maxLength={2000} disabled={pending} value={draft.imageUrl} onChange={event => set('imageUrl', event.target.value)} className={inputClass} placeholder="https://example.com/recipe.jpg" /></label>}{draft.imageMode === 'upload' && <label className="mt-3 block"><span className="mb-1 block text-sm">JPEG, PNG, or WebP (max 5 MB)</span><input type="file" accept="image/jpeg,image/png,image/webp" disabled={pending} onChange={event => { const file = event.target.files?.[0] ?? null; const message = file && validateRecipeImage(file); if (message) { setValidation(message); event.target.value = '' } else { setValidation(null); set('imageFile', file) } }} /></label>}</fieldset>
         <div className="flex flex-wrap gap-5">
           <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={draft.isFavorite} disabled={pending} onChange={event => set('isFavorite', event.target.checked)} /> Favorite</label>
           {recipe && <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={draft.isArchived} disabled={pending} onChange={event => set('isArchived', event.target.checked)} /> Archived</label>}
