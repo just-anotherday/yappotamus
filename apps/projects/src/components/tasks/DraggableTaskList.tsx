@@ -19,7 +19,19 @@ function SortableTaskWrapper({ id, children, disabled }: SortableTaskWrapperProp
   }
 
   return (
-    <div ref={setNodeRef} style={style} {...(!disabled ? attributes : {})} {...(!disabled ? listeners : {})}>
+    <div ref={setNodeRef} style={style} className="relative">
+      {!disabled && (
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="absolute right-2 top-2 z-10 grid size-11 cursor-grab place-items-center rounded-lg text-stone-400 touch-none hover:bg-stone-100 hover:text-stone-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 active:cursor-grabbing dark:hover:bg-stone-800 dark:hover:text-stone-200"
+          aria-label="Drag to reorder task"
+          title="Drag to reorder"
+        >
+          <span aria-hidden="true" className="text-xl leading-none">⠿</span>
+        </button>
+      )}
       {children}
     </div>
   )
@@ -39,7 +51,7 @@ interface DraggableTaskListProps {
 
 export function DraggableTaskList({ tasks, children, onDragEnd, dragEnabled }: DraggableTaskListProps) {
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor)
   )
 
