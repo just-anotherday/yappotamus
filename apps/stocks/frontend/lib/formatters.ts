@@ -44,40 +44,107 @@ export const recommendationBadgeClass = (key: string) => {
   return 'bg-gray-100 text-gray-800';
 };
 
+export const EASTERN_TIME_ZONE = 'America/New_York';
+const OFFSETLESS_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?$/;
+
+/**
+ * Parse an instant returned by the API.
+ *
+ * Several timestamps are stored as UTC-naive database values, so legacy API
+ * responses omit the trailing `Z`. Browsers otherwise interpret those values
+ * in the viewer's local time zone and can display them hours in the future.
+ */
+export function parseApiTimestamp(dateStr: string | null | undefined): Date | null {
+  if (!dateStr) return null;
+
+  const trimmed = dateStr.trim();
+  if (!trimmed) return null;
+
+  const normalized = OFFSETLESS_ISO_DATETIME.test(trimmed)
+    ? `${trimmed.replace(' ', 'T')}Z`
+    : trimmed;
+  const date = new Date(normalized);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Format an API instant deterministically in the application's Eastern zone. */
+export function formatApiTimestamp(
+  dateStr: string | null | undefined,
+  options: Intl.DateTimeFormatOptions,
+  fallback = '',
+): string {
+  const date = parseApiTimestamp(dateStr);
+  if (!date) return dateStr?.trim() ? dateStr : fallback;
+
+  return new Intl.DateTimeFormat('en-US', {
+    ...options,
+    timeZone: EASTERN_TIME_ZONE,
+  }).format(date);
+}
+
+function easternDateKey(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    timeZone: EASTERN_TIME_ZONE,
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+/** Group an API instant by Eastern calendar day, including DST boundaries. */
+export function easternDayLabel(
+  dateStr: string | null | undefined,
+  nowMs: number = Date.now(),
+): string {
+  const date = parseApiTimestamp(dateStr);
+  if (!date) return 'No Date';
+
+  const articleKey = easternDateKey(date);
+  const todayKey = easternDateKey(new Date(nowMs));
+  if (articleKey === todayKey) return 'Today';
+
+  const [year, month, day] = todayKey.split('-').map(Number);
+  const yesterday = new Date(Date.UTC(year, month - 1, day - 1));
+  const yesterdayKey = yesterday.toISOString().slice(0, 10);
+  if (articleKey === yesterdayKey) return 'Yesterday';
+
+  return formatApiTimestamp(dateStr, { month: 'short', day: 'numeric' }, 'No Date');
+}
+
 // Time-ago formatting
-export function timeAgo(dateStr: string | null | undefined): string {
-  if (!dateStr) return '';
-  try {
-    const now = new Date();
-    const date = new Date(dateStr);
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHrs = Math.floor(diffMins / 60);
-    if (diffHrs < 24) return `${diffHrs}h ago`;
-    const diffDays = Math.floor(diffHrs / 24);
-    return `${diffDays}d ago`;
-  } catch {
-    return '';
-  }
+export function timeAgo(
+  dateStr: string | null | undefined,
+  nowMs: number = Date.now(),
+): string {
+  const date = parseApiTimestamp(dateStr);
+  if (!date) return '';
+
+  // Clock skew or a provider's future timestamp should never render a
+  // negative age. Treat it as newly published instead.
+  const diffMs = Math.max(0, nowMs - date.getTime());
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHrs = Math.floor(diffMins / 60);
+  if (diffHrs < 24) return `${diffHrs}h ago`;
+  const diffDays = Math.floor(diffHrs / 24);
+  return `${diffDays}d ago`;
 }
 
 // Full date formatting for tooltips/display
 export function formatDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return 'Unknown date';
-  try {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return dateStr;
-  }
+  return formatApiTimestamp(dateStr, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+    timeZoneName: 'short',
+  }, 'Unknown date');
 }
 
 // ==============================================================================

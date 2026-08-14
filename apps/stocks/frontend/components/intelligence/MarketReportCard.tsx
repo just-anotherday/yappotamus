@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { fetchMarketReport } from '@/lib/api';
+import { formatApiTimestamp } from '@/lib/formatters';
+import { formatReportDateTime } from '@/lib/reportPresentation';
 import type { CachedMarketReport } from '@/types/stock';
 
 interface MarketReportCardProps {
@@ -78,7 +80,7 @@ export default function MarketReportCard({ onHover }: MarketReportCardProps) {
   const rd = report.report_data || {};
   const summaryText = typeof rd === 'string' ? rd : (rd.summary_text || JSON.stringify(rd).slice(0, 300));
   const generatedAt = report.last_generated
-    ? new Date(report.last_generated).toLocaleString()
+    ? formatReportDateTime(report.last_generated)
     : 'Unknown';
 
   return (
@@ -159,7 +161,7 @@ export default function MarketReportCard({ onHover }: MarketReportCardProps) {
           View full report & history →
         </Link>
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          Report #{report.id} • {report.report_date || 'N/A'}
+          Report #{report.id} • {formatApiTimestamp(report.report_date, { month: 'short', day: 'numeric', year: 'numeric' }, 'N/A')}
         </span>
       </div>
     </div>

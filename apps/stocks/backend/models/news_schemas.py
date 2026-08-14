@@ -7,7 +7,9 @@ All articles are ingested via Finnhub API only (yfinance pipeline removed in Pha
 
 from datetime import datetime
 from typing import Optional, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
+
+from backend.lib.timestamps import utc_isoformat
 
 
 class NewsArticleOut(BaseModel):
@@ -22,6 +24,12 @@ class NewsArticleOut(BaseModel):
     thumbnail_url: Optional[str] = None
     pub_date: Optional[datetime] = None
     imported_at: Optional[datetime] = None
+
+    @field_serializer("pub_date", "imported_at", when_used="json")
+    def serialize_timestamps(self, value: Optional[datetime]) -> Optional[str]:
+        """Make the UTC-naive database convention explicit on the wire."""
+
+        return utc_isoformat(value)
 
     model_config = {"from_attributes": True}
 

@@ -8,7 +8,9 @@ CreateReportResponse — returned after saving a new report
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
+
+from backend.lib.timestamps import utc_isoformat
 
 
 class ReportSummaryOut(BaseModel):
@@ -26,6 +28,10 @@ class ReportSummaryOut(BaseModel):
     prompt_version: str
     prompt_hash: Optional[str] = None
     created_at: datetime
+
+    @field_serializer("created_at", when_used="json")
+    def serialize_created_at(self, value: datetime) -> str:
+        return utc_isoformat(value)
 
 
 class ReportPaginationResponse(BaseModel):
@@ -51,6 +57,10 @@ class AnalysisReportDetail(BaseModel):
     prompt_hash: Optional[str] = None
     current_price_at_analysis: Optional[float] = None
     created_at: datetime
+
+    @field_serializer("created_at", when_used="json")
+    def serialize_created_at(self, value: datetime) -> str:
+        return utc_isoformat(value)
 
 
 class CreateReportResponse(BaseModel):

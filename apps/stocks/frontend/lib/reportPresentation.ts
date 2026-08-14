@@ -1,3 +1,5 @@
+import { formatApiTimestamp } from './formatters.ts';
+
 export const CURRENT_PROMPT_VERSION = '2.0';
 
 // Intentionally empty until a historical prompt version can be proven from
@@ -18,14 +20,13 @@ export function getPromptBadge(
 }
 
 export function formatReportDateTime(isoTimestamp: string): string {
-  const date = new Date(isoTimestamp);
-  if (Number.isNaN(date.getTime())) return isoTimestamp;
-
-  return new Intl.DateTimeFormat(undefined, {
+  return formatApiTimestamp(isoTimestamp, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-  }).format(date);
+    hour12: true,
+    timeZoneName: 'short',
+  }, isoTimestamp);
 }

@@ -9,7 +9,7 @@ import Link from 'next/link';
 import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { formatShares, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
+import { EASTERN_TIME_ZONE, formatShares, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
 import type { WatchlistItem, LiveQuote } from '@/types/stock';
 import TickerTooltip from './TickerTooltip';
 import { useExtendedHours } from '@/hooks/useExtendedHours';
@@ -192,7 +192,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
         </select>
         <span className="text-xs text-gray-500">{orderedWatchlist.length} of {watchlist.length}</span>
         <button type="button" onClick={onRefresh} disabled={loading} className="rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-50">{loading ? 'Refreshing…' : 'Refresh'}</button>
-        <span className="text-xs text-gray-400">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed'}</span>
+        <span className="text-xs text-gray-400">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: EASTERN_TIME_ZONE, timeZoneName: 'short' })}` : 'Not refreshed'}</span>
         {!reorderEnabled && <span className="w-full text-xs text-amber-600">Clear filters and select Custom order to drag.</span>}
       </div>
 

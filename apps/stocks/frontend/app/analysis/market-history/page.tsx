@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { fetchMarketReportHistory, fetchMarketReportById, triggerMarketReportRegeneration } from '@/lib/api';
+import { formatApiTimestamp } from '@/lib/formatters';
 import type { MarketReportHistoryResponse } from '@/lib/api';
 import type { CachedMarketReport } from '@/types/stock';
 
@@ -130,7 +131,7 @@ export default function MarketReportHistoryPage() {
                 Market Report #{selectedReport.id}
               </h2>
               <span style={{ fontSize: 12, color: '#9e9e9e' }}>
-                {selectedReport.report_date ? new Date(selectedReport.report_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : 'Date unknown'}
+                {selectedReport.report_date ? formatApiTimestamp(selectedReport.report_date, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : 'Date unknown'}
                 {' • '}Model: {selectedReport.model_used || 'N/A'}
               </span>
             </div>
@@ -205,7 +206,7 @@ export default function MarketReportHistoryPage() {
                 <tr key={r.id} style={{ borderTop: '1px solid #f0f0f0' }}>
                   <td style={{ padding: '12px 16px', color: '#757575' }}>#{r.id}</td>
                   <td style={{ padding: '12px 16px', color: '#424242' }}>
-                    {r.report_date ? new Date(r.report_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
+                    {r.report_date ? formatApiTimestamp(r.report_date, { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
                   </td>
                   <td style={{ padding: '12px 16px' }}>
                     <span style={{

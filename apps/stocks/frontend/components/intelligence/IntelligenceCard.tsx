@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { formatReportDateTime } from '@/lib/reportPresentation';
 import type { CachedCompanyReport } from '@/types/stock';
 
 interface IntelligenceCardProps {
@@ -30,7 +31,7 @@ export default function IntelligenceCard({ report, onRegenerate, isProcessing, q
   const color = sentimentColor(report.overall_sentiment);
   const confColor = confidenceRing(report.confidence_score);
   const updated = report.last_updated
-    ? new Date(report.last_updated).toLocaleString()
+    ? formatReportDateTime(report.last_updated)
     : 'N/A';
 
   return (
