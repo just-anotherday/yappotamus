@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { API_BASE } from '@/lib/serviceUrls';
 import { apiFetch } from '@/lib/apiFetch';
 import { requireOk } from '@/lib/apiError';
+import { formatApiTimestamp } from '@/lib/formatters';
 import type { ReportDetail, KeyRisk, FinancialAnalysisReport, ArticleReference } from '@/types/stock';
 import { formatReportDateTime, getPromptBadge } from '@/lib/reportPresentation';
 
@@ -294,7 +295,7 @@ export default function ReportDetailPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               {(data.articles_used as ArticleReference[]).map((article, index) => {
                 const dateStr = article.published_at
-                  ? new Date(article.published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                  ? formatApiTimestamp(article.published_at, { month: 'short', day: 'numeric', year: 'numeric' })
                   : '';
                 return (
                   <div key={index} style={{ paddingLeft: '0.5rem' }}>

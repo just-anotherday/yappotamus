@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { fetchUnifiedReports } from '@/lib/api';
+import { formatApiTimestamp } from '@/lib/formatters';
 import type { UnifiedReportListResponse, UnifiedReportEntry } from '@/lib/api';
 import type { UnifiedReportFilters } from '@/types/stock';
 
@@ -365,10 +366,10 @@ export default function UnifiedIntelligenceBrowser() {
               {/* Meta */}
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div style={{ fontSize: 11, color: '#bdbdbd' }}>
-                  {new Date(entry.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  {formatApiTimestamp(entry.created_at, { month: 'short', day: 'numeric' })}
                 </div>
                 <div style={{ fontSize: 10, color: '#e0e0e0', marginTop: 4 }}>
-                  {new Date(entry.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                  {formatApiTimestamp(entry.created_at, { hour: '2-digit', minute: '2-digit', hour12: true, timeZoneName: 'short' })}
                 </div>
               </div>
             </Link>

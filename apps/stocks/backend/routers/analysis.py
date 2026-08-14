@@ -23,6 +23,7 @@ from backend.models.analysis import (
 )
 from backend.models.news import NewsArticle
 from backend.config.database import get_async_session
+from backend.lib.timestamps import utc_isoformat
 from backend.services.report_service import create_report
 from backend.services.ollama_service import (
     CURRENT_PROMPT_VERSION,
@@ -155,8 +156,8 @@ async def analysis_get_available_articles(
                 "provider_name": getattr(a, 'provider_name', None),
                 "article_url": getattr(a, 'article_url', None),
                 "thumbnail_url": getattr(a, 'thumbnail_url', None),
-                "pub_date": getattr(a, 'pub_date', None).isoformat() if hasattr(a, 'pub_date') and a.pub_date else None,
-                "imported_at": getattr(a, 'imported_at', None).isoformat() if hasattr(a, 'imported_at') and a.imported_at else None,
+                "pub_date": utc_isoformat(getattr(a, 'pub_date', None)),
+                "imported_at": utc_isoformat(getattr(a, 'imported_at', None)),
             })
     return {
         "ticker": ticker.upper(),
@@ -261,7 +262,7 @@ async def analysis_analyze_ticker(
         NewsArticleRequest(
             title=a.title or "Untitled",
             summary=a.summary,
-            published_at=a.pub_date.isoformat() if a.pub_date else None,
+            published_at=utc_isoformat(a.pub_date),
             source=a.provider_name,
             url=a.article_url,
         )

@@ -8,6 +8,7 @@ import { requireOk } from '@/lib/apiError';
 import type { ReportSummary, ReportPaginationResponse, OllamaConfigStatus } from '@/types/stock';
 import { useAnalysisStatus } from '@/hooks/useAnalysisStatus';
 import ArticleSelectionMeter from '@/components/ArticleSelectionMeter';
+import { easternDayLabel, formatApiTimestamp } from '@/lib/formatters';
 import { formatReportDateTime, getPromptBadge } from '@/lib/reportPresentation';
 
 export default function ReportsPage() {
@@ -48,6 +49,7 @@ export default function ReportsPage() {
    const [loadingArticles, setLoadingArticles] = useState(false);
    const [articleSearch, setArticleSearch] = useState('');
    const [articleGroupByDate, setArticleGroupByDate] = useState(true);
+   const [articleGroupingNow, setArticleGroupingNow] = useState(0);
 
   // ---- Fetch Ollama config + providers + watchlist tickers on mount ----
   useEffect(() => {
@@ -152,6 +154,7 @@ export default function ReportsPage() {
     if (!selectedTicker) {
       setAvailableArticles([]);
       setSelectedArticleIds([]);
+      setArticleGroupingNow(0);
       return;
     }
     const controller = new AbortController();
@@ -165,6 +168,7 @@ export default function ReportsPage() {
         await requireOk(res, 'Failed to fetch articles');
         const data = await res.json();
         setAvailableArticles(data.articles || []);
+        setArticleGroupingNow(Date.now());
         // Auto-select up to the current max by default
         const ids = (data.articles || []).slice(0, maxArticles).map((a: any) => a.id);
         setSelectedArticleIds(ids);
@@ -511,18 +515,7 @@ export default function ReportsPage() {
                   // Group by date
                   const groups: Record<string, any[]> = {};
                   filtered.forEach((a: any) => {
-                    let dateKey = 'No Date';
-                    if (a.pub_date) {
-                      try {
-                        const d = new Date(a.pub_date);
-                        const now = new Date();
-                        const diffMs = now.getTime() - d.getTime();
-                        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-                        if (diffDays === 0) dateKey = 'Today';
-                        else if (diffDays === 1) dateKey = 'Yesterday';
-                        else dateKey = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-                      } catch { /* keep default */ }
-                    }
+                    const dateKey = easternDayLabel(a.pub_date, articleGroupingNow);
                     if (!groups[dateKey]) groups[dateKey] = [];
                     groups[dateKey].push(a);
                   });
@@ -598,7 +591,7 @@ export default function ReportsPage() {
                                         {article.provider_name}
                                       </span>
                                     )}
-                                    {article.pub_date && <span>{new Date(article.pub_date).toLocaleDateString()}</span>}
+                                    {article.pub_date && <span>{formatApiTimestamp(article.pub_date, { year: 'numeric', month: 'numeric', day: 'numeric' })}</span>}
                                   </div>
                                 </div>
                               </div>

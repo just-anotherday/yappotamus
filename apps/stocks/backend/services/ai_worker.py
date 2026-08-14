@@ -23,6 +23,7 @@ from sqlalchemy import select, update, and_, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config.settings import settings
+from backend.lib.timestamps import utc_isoformat
 from backend.models.analysis import (
     FinancialAnalysisRequest,
     NewsArticleRequest,
@@ -694,7 +695,7 @@ class AIWorker:
                 NewsArticleRequest(
                     title=a.title or "",
                     summary=a.summary,
-                    published_at=a.pub_date.isoformat() if a.pub_date else None,
+                    published_at=utc_isoformat(a.pub_date),
                     source=a.provider_name,
                     url=a.article_url,
                 )
@@ -706,7 +707,7 @@ class AIWorker:
                 company_name=company_name,
                 news_articles=news_reqs,
                 price_data=price_data,
-                analysis_date=datetime.utcnow().isoformat(),
+                analysis_date=utc_isoformat(datetime.utcnow()),
             )
 
             # 5. Resolve the configured provider's model before generation.
@@ -729,7 +730,7 @@ class AIWorker:
                 {
                     "title": a.title or "",
                     "url": a.article_url or "",
-                    "published_at": a.pub_date.isoformat() if a.pub_date else None,
+                    "published_at": utc_isoformat(a.pub_date),
                 }
                 for a in articles
             ]

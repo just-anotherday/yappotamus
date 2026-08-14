@@ -5,6 +5,8 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { CachedCompanyReport, KeyRisk, TechnicalAnalysisData, OutlookData } from '@/types/stock';
 import { fetchCompanyReport, triggerCompanyReportRegeneration } from '@/lib/api';
+import { formatApiTimestamp } from '@/lib/formatters';
+import { formatReportDateTime } from '@/lib/reportPresentation';
 
 function sentimentColor(sentiment: string): string {
   const s = sentiment.toLowerCase();
@@ -116,7 +118,7 @@ export default function IntelligenceDetail() {
 
   const rd = report.report_data;
   const color = sentimentColor(report.overall_sentiment);
-  const updated = report.last_updated ? new Date(report.last_updated).toLocaleString() : 'N/A';
+  const updated = report.last_updated ? formatReportDateTime(report.last_updated) : 'N/A';
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '40px 20px' }}>
@@ -311,7 +313,7 @@ export default function IntelligenceDetail() {
                 <a key={i} href={a.url || '#'} target="_blank" rel="noopener noreferrer"
                   style={{ textDecoration: 'none', fontSize: 13, color: '#2196f3', padding: '4px 0' }}>
                   {a.title}
-                  {a.published_at && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{new Date(a.published_at).toLocaleDateString()}</span>}
+                  {a.published_at && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{formatApiTimestamp(a.published_at, { year: 'numeric', month: 'numeric', day: 'numeric' })}</span>}
                 </a>
               ))}
             </div>

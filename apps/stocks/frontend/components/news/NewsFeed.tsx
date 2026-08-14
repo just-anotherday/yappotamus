@@ -7,23 +7,8 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useNews } from '@/hooks/useNews';
+import { formatDate } from '@/lib/formatters';
 import type { NewsArticle } from '@/types/stock';
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '';
-  try {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return dateStr;
-  }
-}
 
 const FALLBACK_IMAGE = '/news_image.png';
 
@@ -138,7 +123,7 @@ function ArticleCard({ article }: { article: NewsArticle }) {
 
         {/* Meta — date only since provider is now in badge */}
         <div className="flex items-center justify-end text-xs text-gray-500">
-          <span>{formatDate(article.pub_date)}</span>
+          <span>{article.pub_date ? formatDate(article.pub_date) : ''}</span>
         </div>
       </div>
     </div>

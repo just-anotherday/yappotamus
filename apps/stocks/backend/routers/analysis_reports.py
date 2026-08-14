@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config.database import get_async_session
+from backend.lib.timestamps import utc_isoformat
 from backend.models.report_schemas import (
     AnalysisReportDetail,
     CreateReportResponse,
@@ -202,7 +203,7 @@ async def get_cached_company_report(
         "model_used": report.model_used,
         "prompt_version": report.prompt_version,
         "price_snapshot": report.price_snapshot,
-        "last_updated": report.updated_at.isoformat() if report.updated_at else None,
+        "last_updated": utc_isoformat(report.updated_at),
     }
 
 
@@ -229,13 +230,13 @@ async def get_latest_market_report(
 
     return {
         "id": report.id,
-        "report_date": report.report_date.isoformat() if report.report_date else None,
+        "report_date": utc_isoformat(report.report_date),
         "report_data": report.report_data,
         "overall_sentiment": report.overall_sentiment,
         "risk_level": report.risk_level,
         "confidence_score": report.confidence_score,
         "model_used": report.model_used,
-        "last_generated": report.created_at.isoformat() if report.created_at else None,
+        "last_generated": utc_isoformat(report.created_at),
     }
 
 
@@ -267,12 +268,12 @@ async def get_market_report_history(
         "items": [
             {
                 "id": r.id,
-                "report_date": r.report_date.isoformat() if r.report_date else None,
+                "report_date": utc_isoformat(r.report_date),
                 "overall_sentiment": r.overall_sentiment,
                 "risk_level": r.risk_level,
                 "confidence_score": r.confidence_score,
                 "model_used": r.model_used,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": utc_isoformat(r.created_at),
             }
             for r in reports
         ],
@@ -302,13 +303,13 @@ async def get_market_report_by_id(
 
     return {
         "id": report.id,
-        "report_date": report.report_date.isoformat() if report.report_date else None,
+        "report_date": utc_isoformat(report.report_date),
         "report_data": report.report_data,
         "overall_sentiment": report.overall_sentiment,
         "risk_level": report.risk_level,
         "confidence_score": report.confidence_score,
         "model_used": report.model_used,
-        "created_at": report.created_at.isoformat() if report.created_at else None,
+        "created_at": utc_isoformat(report.created_at),
     }
 
 
@@ -378,7 +379,7 @@ async def get_all_sector_reports(
             "confidence_score": r.confidence_score,
             "assets_count": r.assets_count,
             "model_used": r.model_used,
-            "last_updated": r.created_at.isoformat() if r.created_at else None,
+            "last_updated": utc_isoformat(r.created_at),
         }
         for r in reports
     ]
@@ -416,7 +417,7 @@ async def get_sector_report(
         "assets_count": report.assets_count,
         "model_used": report.model_used,
         "prompt_version": report.prompt_version,
-        "last_updated": report.created_at.isoformat() if report.created_at else None,
+        "last_updated": utc_isoformat(report.created_at),
     }
 
 
@@ -511,7 +512,7 @@ async def get_company_report_history(
                 "prompt_version": r.prompt_version,
                 "price_snapshot": r.price_snapshot,
                 "report_data": r.report_data_snapshot,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": utc_isoformat(r.created_at),
             }
             for r in history_rows
         ],
@@ -614,7 +615,7 @@ async def get_pipeline_status(
                     "id": r[0],
                     "title": (r[1] or "Untitled")[:120],
                     "ticker": r[2],
-                    "pub_date": r[3].isoformat() if r[3] else None,
+                    "pub_date": utc_isoformat(r[3]),
                     "article_url": r[4],
                 })
         except Exception:
@@ -763,15 +764,15 @@ async def get_pipeline_status(
                 "job_type": r[2],
                 "target_type": r[3],
                 "target_id": r[4],
-                "created_at": r[5].isoformat() if r[5] else None,
-                "started_at": r[6].isoformat() if r[6] else None,
-                "updated_at": r[7].isoformat() if r[7] else None,
+                "created_at": utc_isoformat(r[5]),
+                "started_at": utc_isoformat(r[6]),
+                "updated_at": utc_isoformat(r[7]),
                 "attempt_count": (r[8] or 0) + 1,
                 "retry_count": r[8] or 0,
                 "max_retries": r[9] or 0,
                 "worker_id": r[10],
-                "heartbeat_at": r[11].isoformat() if r[11] else None,
-                "lease_expires_at": r[12].isoformat() if r[12] else None,
+                "heartbeat_at": utc_isoformat(r[11]),
+                "lease_expires_at": utc_isoformat(r[12]),
                 "recovery_count": r[13] or 0,
                 "last_recovery_reason": r[14],
             })
@@ -879,7 +880,7 @@ async def get_unified_intelligence(
                 "articles_count": r.articles_count,
                 "summary_preview": preview,
                 "price_snapshot": r.price_snapshot,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": utc_isoformat(r.created_at),
                 "model_used": r.model_used,
             })
 
@@ -913,7 +914,7 @@ async def get_unified_intelligence(
                 "articles_count": r.assets_count,
                 "summary_preview": preview,
                 "price_snapshot": None,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": utc_isoformat(r.created_at),
                 "model_used": r.model_used,
             })
 
@@ -945,7 +946,7 @@ async def get_unified_intelligence(
                 "articles_count": None,
                 "summary_preview": preview,
                 "price_snapshot": None,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": utc_isoformat(r.created_at),
                 "model_used": r.model_used,
             })
 

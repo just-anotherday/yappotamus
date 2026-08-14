@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { fetchPipelineStatus } from '@/lib/api';
+import { timeAgo } from '@/lib/formatters';
 import type { PipelineStatus } from '@/types/stock';
 
 export default function PipelineMonitor() {
@@ -30,16 +31,10 @@ export default function PipelineMonitor() {
     return () => clearInterval(interval);
   }, [loadStatus]);
 
-  const formatTime = (d: Date) => d.toLocaleTimeString();
-  const formatRel = (iso: string | null) => {
-    if (!iso) return '';
-    const diff = Date.now() - new Date(iso).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'just now';
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    return `${hrs}h ago`;
-  };
+  const formatTime = (d: Date) => d.toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    timeZoneName: 'short',
+  });
 
   // Shared style tokens
   const cardStyle: React.CSSProperties = {
@@ -150,7 +145,7 @@ export default function PipelineMonitor() {
                         )}
                       </span>
                       <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 12, whiteSpace: 'nowrap' }}>
-                        {formatRel(a.pub_date)}
+                        {timeAgo(a.pub_date)}
                       </span>
                     </div>
                   ))}

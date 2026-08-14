@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { fetchCompanyReportHistory } from '@/lib/api';
+import { formatApiTimestamp } from '@/lib/formatters';
+import { formatReportDateTime } from '@/lib/reportPresentation';
 import type { ReportHistoryEntry, ReportHistoryResponse } from '@/lib/api';
 import type { KeyRisk, TechnicalAnalysisData, OutlookData } from '@/types/stock';
 
@@ -158,7 +160,7 @@ function renderReportData(rd: Record<string, any>) {
                 <a key={i} href={a.url || '#'} target="_blank" rel="noopener noreferrer"
                   style={{ textDecoration: 'none', fontSize: 12, color: '#2196f3', padding: '2px 0' }}>
                   {a.title}
-                  {a.published_at && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{new Date(a.published_at).toLocaleDateString()}</span>}
+                  {a.published_at && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{formatApiTimestamp(a.published_at, { year: 'numeric', month: 'numeric', day: 'numeric' })}</span>}
                 </a>
               ))}
             </div>
@@ -282,7 +284,7 @@ export default function ReportHistoryPage() {
               {history.entries.map((entry: ReportHistoryEntry) => {
                 const color = sentimentColor(entry.overall_sentiment);
                 const dateStr = entry.created_at
-                  ? new Date(entry.created_at).toLocaleString()
+                  ? formatReportDateTime(entry.created_at)
                   : 'Unknown';
                 const isExpanded = expandedId === entry.id;
                 return (
