@@ -25,8 +25,12 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 | `DATABASE_URL` | **Yes** | Supabase PostgreSQL connection string |
 | `APP_ACCESS_TOKEN` | **Yes** | Private token used by the frontend for authenticated API/WebSocket access |
 | `FINNHUB_API_KEY` | **Yes** | Market data API key |
+| `FINNHUB_REQUESTS_PER_MINUTE` | No | Defaults to and is capped at `45`, reserving 25% below Finnhub Free's 60/minute ceiling. |
 | `INTERNAL_JOB_TOKEN` | **Yes** for scheduled ingestion | Dedicated bearer token accepted only by `POST /internal/jobs/news-ingest`. |
 | `NEWS_SCHEDULER_ENABLED` | **Yes** in production | Set `false`; the GitHub workflow is the production scheduler. |
+| `NEWS_OVERLAP_MINUTES` | No | Defaults to `30`; combined with the 15-minute cadence this normally replays 45 minutes. |
+| `NEWS_MAX_BACKFILL_HOURS` | No | Defaults to `72`; bounds recovery after an outage. |
+| `NEWS_ENQUEUE_COMPANY_REPORTS` | No | Defaults to `false` so news collection cannot trigger unrelated quote/profile refreshes. |
 | `YFINANCE_CACHE_DIR` | No | Writable yfinance SQLite cache path. Defaults to OS temp; it is an optimization and can remain ephemeral on Render. |
 | `OPENAI_API_KEY` | **Yes** (prod) | OpenAI API key for AI analysis |
 | `AI_PROVIDER` | No | Set to `openai` (default: `ollama`) |
@@ -41,7 +45,8 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 1. Connect Render to the GitHub repository and set the service root directory to `apps/stocks`
 2. Set environment variables in the Render dashboard
 3. Set `NEWS_SCHEDULER_ENABLED=false`; production article collection is initiated externally.
-4. Configure `/health/live` as the health-check path. Run `python -m alembic upgrade head` as an explicit pre-deploy step only after the target database is positively identified.
+4. Positively identify the target database, then run `python -m alembic upgrade head` as the pre-deploy step; this release requires the durable `news_ingestion_state` table.
+5. Configure `/health/live` as the health-check path.
 
 ### Manual Deployment (Docker Compose)
 
@@ -100,9 +105,17 @@ as **build variables before building**. They are not secrets.
 ### Scheduled Article Collection
 
 The production collector is a one-shot, authenticated internal operation. GitHub
-Actions invokes it on weekdays at 13:17 UTC and can be run manually with
-`workflow_dispatch`; it wakes Render if necessary. Configure these repository
-secrets (names only): `STOCKS_API_URL` and `STOCKS_INTERNAL_JOB_TOKEN`.
+Actions supplies an hourly baseline plus weekday quarter-hour triggers spanning
+both EDT and EST, and can be run manually with `workflow_dispatch`; it wakes
+Render if necessary. The workflow labels baseline versus quarter-hour triggers,
+and the service applies the authoritative runtime schedule guard
+in `America/New_York`: on weekdays from 4:00 AM until 8:00 PM it runs every 15
+minutes, while overnight and on weekends it runs only once per hour.
+Manual `workflow_dispatch` runs append `force=true` to bypass that cadence guard
+and collect immediately.
+Keep the production in-process scheduler disabled with
+`NEWS_SCHEDULER_ENABLED=false`. Configure these repository secrets (names only):
+`STOCKS_API_URL` and `STOCKS_INTERNAL_JOB_TOKEN`.
 
 After the Render deployment:
 
@@ -113,7 +126,7 @@ curl https://YOUR-BACKEND/health
 
 # Trigger an immediate authenticated collection cycle (default watchlist)
 curl --fail-with-body -X POST -H "Authorization: Bearer YOUR_INTERNAL_JOB_TOKEN" \
-  https://YOUR-BACKEND/internal/jobs/news-ingest
+  'https://YOUR-BACKEND/internal/jobs/news-ingest?force=true'
 ```
 
 Confirm Render logs contain `event=started operation=watchlist_once`,

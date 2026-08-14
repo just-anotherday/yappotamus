@@ -2,23 +2,45 @@ name: Stocks news ingestion
 
 on:
   schedule:
-    - cron: "17 13 * * *"
+    # Hourly baseline preserves overnight and weekend coverage.
+    - cron: "0 * * * *"
+    # Extra weekday quarter-hours span both EDT and EST active windows.
+    # Midnight UTC belongs to the following UTC day during EST, so it uses
+    # Tuesday-Saturday while the remaining hours use Monday-Friday.
+    # The application applies the authoritative America/New_York guard.
+    - cron: "15,30,45 8-23 * * 1-5"
+    - cron: "15,30,45 0 * * 2-6"
   workflow_dispatch:
+
+concurrency:
+  group: production-news-ingestion
+  cancel-in-progress: false
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Trigger one-shot ingestion
         env:
           STOCKS_API_URL: ${{ secrets.STOCKS_API_URL }}
           STOCKS_INTERNAL_JOB_TOKEN: ${{ secrets.STOCKS_INTERNAL_JOB_TOKEN }}
+          FORCE_NEWS_INGEST: ${{ github.event_name == 'workflow_dispatch' }}
+          NEWS_TRIGGER_SCHEDULE: ${{ github.event.schedule }}
         run: |
           test -n "$STOCKS_API_URL"
           test -n "$STOCKS_INTERNAL_JOB_TOKEN"
+          endpoint="${STOCKS_API_URL%/}/internal/jobs/news-ingest"
+          if [ "$FORCE_NEWS_INGEST" = "true" ]; then
+            endpoint="${endpoint}?force=true"
+          elif [ "$NEWS_TRIGGER_SCHEDULE" = "0 * * * *" ]; then
+            endpoint="${endpoint}?trigger_kind=hourly"
+          else
+            endpoint="${endpoint}?trigger_kind=quarter_hour"
+          fi
           curl --fail-with-body --show-error --silent \
-            --retry 2 --retry-all-errors --connect-timeout 15 --max-time 180 \
+            --retry 2 --retry-connrefused --retry-delay 5 --retry-max-time 780 \
+            --connect-timeout 15 --max-time 780 \
             --request POST \
             --header "Authorization: Bearer $STOCKS_INTERNAL_JOB_TOKEN" \
-            "${STOCKS_API_URL%/}/internal/jobs/news-ingest"
+            "$endpoint"

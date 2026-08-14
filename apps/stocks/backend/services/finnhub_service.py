@@ -2,26 +2,28 @@
 """
 Finnhub API Service — replaces yfinance for all market data operations.
 
-Free tier limits (https://finnhub.io/docs/api/rate-limit):
+Free tier limits (https://finnhub.io/pricing):
  - 60 REST API calls per minute
- - 30 WebSocket messages per second
- - 1 request/second for some endpoints
+ - 30 API calls per second across all plans
 
 Endpoints used:
  - /quote              → real-time quote data
- - /stock-profile2     → company profile + fundamentals (via symbol search + profile)
- - /symbol-search      → search valid ticker symbols
- - /company-news2      → market news for a ticker
+ - /stock/profile2     → company profile + fundamentals
+ - /search             → search valid ticker symbols
+ - /company-news       → market news for a ticker
  - WebSocket           → real-time trade/quote streaming
 """
 
 import asyncio
+from email.utils import parsedate_to_datetime
 import logging
+import random
 import time
 from typing import Any, Dict, List, Optional
 
 import finnhub
-import tenacity
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout as RequestsTimeout
 
 from backend.config.settings import settings
 from backend.config.polling_settings import polling_settings
@@ -74,47 +76,148 @@ def _get_rate_lock() -> asyncio.Lock:
 
 
 async def _rate_limiter():
-    """Ensure we don't exceed the free-tier rate limit."""
+    """Pace every physical REST attempt below the configured shared ceiling."""
     global _last_call_time
     async with _get_rate_lock():
-        now = time.time()
+        now = time.monotonic()
         elapsed = now - _last_call_time
         if elapsed < _min_interval:
             wait_time = _min_interval - elapsed
             await asyncio.sleep(wait_time)
-        _last_call_time = time.time()
+        _last_call_time = time.monotonic()
 
 
 # ------------------------------------------------------------------
-# Async retry helper for transient failures (ARCH-003 fix)
+# Async retry helper for transient failures
 # ------------------------------------------------------------------
+
+def _exception_chain(exc: BaseException):
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _exception_status_code(exc: BaseException) -> Optional[int]:
+    """Return an HTTP status from an SDK/requests exception chain, if present."""
+    for current in _exception_chain(exc):
+        status = getattr(current, "status_code", None)
+        if isinstance(status, int):
+            return status
+        response = getattr(current, "response", None)
+        response_status = getattr(response, "status_code", None)
+        if isinstance(response_status, int):
+            return response_status
+    return None
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    return _exception_status_code(exc) == 429
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    status = _exception_status_code(exc)
+    transport_error = any(
+        isinstance(item, (TimeoutError, ConnectionError, RequestsTimeout, RequestsConnectionError))
+        for item in _exception_chain(exc)
+    )
+    return transport_error or (
+        status is not None and (status == 429 or status >= 500)
+    )
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    return any(isinstance(item, (TimeoutError, RequestsTimeout)) for item in _exception_chain(exc))
+
+
+def _retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """Parse Retry-After seconds or an HTTP date from a provider response."""
+    raw = None
+    for item in _exception_chain(exc):
+        response = getattr(item, "response", None)
+        headers = getattr(response, "headers", None)
+        raw = headers.get("Retry-After") if headers is not None else None
+        if raw:
+            break
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(raw))
+            return max(0.0, retry_at.timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _increment_metric(metrics: Optional[dict[str, Any]], key: str) -> None:
+    if metrics is not None:
+        metrics[key] = int(metrics.get(key, 0)) + 1
+
 
 async def _retry_api(func, *args, **kwargs):
-    """Call an async function with retry on transient network failures.
+    """Run an async Finnhub operation with paced, bounded transient retries.
 
-    Only retries TimeoutError and ConnectionError.
-    Programming errors, validation errors, and auth failures fail fast.
+    Private ``_request_*`` keywords configure safe logging and optional cycle
+    metrics. Every physical attempt re-enters the shared rate limiter.
     """
-    async for attempt in tenacity.AsyncRetrying(
-        stop=tenacity.stop_after_attempt(3),
-        wait=tenacity.wait_exponential(multiplier=0.5, max=5),
-        retry=tenacity.retry_if_exception_type((TimeoutError, ConnectionError)),
-        reraise=True,
-    ):
-        with attempt:
-            return await func(*args, **kwargs)
+    operation = kwargs.pop("_request_operation", getattr(func, "__name__", "unknown"))
+    ticker = kwargs.pop("_request_ticker", None)
+    metrics = kwargs.pop("_request_metrics", None)
+    attempts = polling_settings.FINNHUB_MAX_RETRY_ATTEMPTS
 
+    for attempt_number in range(1, attempts + 1):
+        await _rate_limiter()
+        _increment_metric(metrics, "provider_requests")
+        try:
+            result = await func(*args, **kwargs)
+            _increment_metric(metrics, "provider_successes")
+            return result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            rate_limited = _is_rate_limit_error(exc)
+            if rate_limited:
+                _increment_metric(metrics, "provider_rate_limits")
+            elif _is_timeout_error(exc):
+                _increment_metric(metrics, "provider_timeouts")
+            else:
+                _increment_metric(metrics, "provider_failures")
 
-def _retry_api_sync(func, *args, **kwargs):
-    """Call a synchronous function with retry on transient network failures."""
-    for attempt in tenacity.Retrying(
-        stop=tenacity.stop_after_attempt(3),
-        wait=tenacity.wait_exponential(multiplier=0.5, max=5),
-        retry=tenacity.retry_if_exception_type((TimeoutError, ConnectionError)),
-        reraise=True,
-    ):
-        with attempt:
-            return func(*args, **kwargs)
+            if not _is_retryable_error(exc) or attempt_number >= attempts:
+                raise
+
+            retry_after = _retry_after_seconds(exc) if rate_limited else None
+            if retry_after is not None and retry_after > polling_settings.FINNHUB_MAX_RETRY_AFTER_S:
+                logger.warning(
+                    "[Finnhub] event=retry_deferred operation=%s ticker=%s attempt=%d "
+                    "reason=retry_after_exceeds_bound retry_after_seconds=%.3f",
+                    operation, ticker or "-", attempt_number, retry_after,
+                )
+                raise
+
+            if retry_after is not None:
+                delay = retry_after
+            else:
+                exponential = min(
+                    polling_settings.FINNHUB_BACKOFF_INITIAL_S * (2 ** (attempt_number - 1)),
+                    polling_settings.FINNHUB_BACKOFF_MAX_S,
+                )
+                delay = exponential + random.uniform(0, polling_settings.FINNHUB_RETRY_JITTER_S)
+
+            _increment_metric(metrics, "provider_retries")
+            logger.warning(
+                "[Finnhub] event=retry_scheduled operation=%s ticker=%s attempt=%d "
+                "status_code=%s rate_limited=%s delay_seconds=%.3f",
+                operation, ticker or "-", attempt_number, _exception_status_code(exc),
+                str(rate_limited).lower(), delay,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError("unreachable Finnhub retry state")
 
 
 # ------------------------------------------------------------------
@@ -128,16 +231,21 @@ async def _do_quote(client: finnhub.Client, ticker: str):
 
 async def fetch_quote(ticker: str) -> Dict[str, Any]:
     """Fetch real-time quote for a ticker via Finnhub /quote endpoint."""
-    await _rate_limiter()
     client = get_finnhub_client()
     try:
-        quote = await _retry_api(_do_quote, client, ticker)
+        quote = await _retry_api(
+            _do_quote, client, ticker,
+            _request_operation="quote", _request_ticker=ticker.upper(),
+        )
         if not quote or quote.get("c") == 0:
             logger.warning("[Finnhub] No quote data for %s", ticker)
             return {}
         return quote
     except Exception as e:
-        logger.error("[Finnhub] Failed to fetch quote for %s: %s", ticker, e)
+        logger.error(
+            "[Finnhub] operation=quote ticker=%s outcome=failed exception_type=%s status_code=%s",
+            ticker.upper(), type(e).__name__, _exception_status_code(e),
+        )
         return {}
 
 
@@ -147,15 +255,17 @@ async def fetch_quote(ticker: str) -> Dict[str, Any]:
 
 async def _do_profile(client: finnhub.Client, ticker: str):
     """Inner API call — may raise on transient failures (retryable)."""
-    return client.company_profile2(symbol=ticker.upper())
+    return await asyncio.to_thread(client.company_profile2, symbol=ticker.upper())
 
 
 async def fetch_company_profile(ticker: str) -> Dict[str, Any]:
     """Fetch company profile via Finnhub /stock-profile2 endpoint."""
-    await _rate_limiter()
     client = get_finnhub_client()
     try:
-        profile = await _retry_api(_do_profile, client, ticker)
+        profile = await _retry_api(
+            _do_profile, client, ticker,
+            _request_operation="company_profile", _request_ticker=ticker.upper(),
+        )
         # finnhub-python 2.x returns profile2 as a dict. Accept the legacy list
         # shape as well so an SDK change cannot silently erase fundamentals.
         if isinstance(profile, dict):
@@ -172,9 +282,17 @@ async def fetch_company_profile(ticker: str) -> Dict[str, Any]:
         # Finnhub returns error code 0 for symbols it doesn't recognize as US equities
         err_str = str(e)
         if "0" in err_str or "not found" in err_str.lower():
-            logger.debug("[Finnhub] Profile unavailable for %s (not a traded equity): %s", ticker, e)
+            logger.debug(
+                "[Finnhub] operation=company_profile ticker=%s outcome=unavailable "
+                "exception_type=%s status_code=%s",
+                ticker.upper(), type(e).__name__, _exception_status_code(e),
+            )
         else:
-            logger.warning("[Finnhub] Unexpected profile error for %s: %s", ticker, e)
+            logger.warning(
+                "[Finnhub] operation=company_profile ticker=%s outcome=failed "
+                "exception_type=%s status_code=%s",
+                ticker.upper(), type(e).__name__, _exception_status_code(e),
+            )
         return {}
 
 
@@ -182,15 +300,25 @@ async def fetch_company_profile(ticker: str) -> Dict[str, Any]:
 # Core: Search symbol (replaces yfinance ticker validation)
 # ------------------------------------------------------------------
 
+async def _do_symbol_lookup(client: finnhub.Client, query: str):
+    return await asyncio.to_thread(client.symbol_lookup, query.upper())
+
+
 async def search_symbol(query: str) -> List[Dict[str, Any]]:
     """Search for valid ticker symbols via Finnhub /symbol-search endpoint."""
-    await _rate_limiter()
     client = get_finnhub_client()
     try:
-        results = _retry_api_sync(client.symbol_lookup, query.upper(), exchange="US")
+        results = await _retry_api(
+            _do_symbol_lookup, client, query,
+            _request_operation="symbol_search", _request_ticker=query.upper(),
+        )
         return results if results else []
     except Exception as e:
-        logger.error("[Finnhub] Symbol search failed for %s: %s", query, e)
+        logger.error(
+            "[Finnhub] operation=symbol_search query=%s outcome=failed "
+            "exception_type=%s status_code=%s",
+            query.upper(), type(e).__name__, _exception_status_code(e),
+        )
         return []
 
 
@@ -361,7 +489,10 @@ async def _fetch_stock_price_safe(ticker: str) -> Dict[str, Any]:
             return data
         return create_error_fallback(ticker, "fh")
     except Exception as e:
-        logger.error("[Finnhub] Batch fetch failed for %s: %s", ticker, e)
+        logger.error(
+            "[Finnhub] operation=batch_price ticker=%s outcome=failed exception_type=%s",
+            ticker.upper(), type(e).__name__,
+        )
         return create_error_fallback(ticker, "fh")
 
 

@@ -1,6 +1,8 @@
 """Regression coverage for database recovery and externally triggered ingestion."""
 
 import pytest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from sqlalchemy.exc import OperationalError
 
 from backend.config import database
@@ -63,6 +65,8 @@ def test_production_disables_in_process_scheduler_by_default(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.delenv("NEWS_SCHEDULER_ENABLED", raising=False)
     assert Settings().NEWS_SCHEDULER_ENABLED is False
+    monkeypatch.setenv("NEWS_SCHEDULER_ENABLED", "true")
+    assert Settings().NEWS_SCHEDULER_ENABLED is False
 
 
 @pytest.mark.asyncio
@@ -82,8 +86,11 @@ async def test_one_shot_watchlist_ingestion_returns_compact_summary(monkeypatch)
         return ["AAPL"]
 
     async def fake_many(tickers, _session, **kwargs):
-        kwargs["_cycle_counters"]["articles_fetched"] = 2
-        kwargs["_cycle_counters"]["articles_changed"] = 1
+        kwargs["_cycle_counters"]["articles_returned"] = 2
+        kwargs["_cycle_counters"]["articles_inserted"] = 1
+        kwargs["_cycle_counters"]["duplicates_ignored"] = 1
+        # Match the real per-symbol contract produced by fetch_and_ingest_news.
+        kwargs["_symbol_outcomes"]["AAPL"] = {"last_outcome": "success"}
         return {ticker: 1 for ticker in tickers}
 
     async def fake_recover(_session):
@@ -92,9 +99,15 @@ async def test_one_shot_watchlist_ingestion_returns_compact_summary(monkeypatch)
     monkeypatch.setattr(news, "get_all_tickers", fake_tickers)
     monkeypatch.setattr(news, "fetch_and_ingest_many", fake_many)
     monkeypatch.setattr(news, "_recover_thumbnails", fake_recover)
+    state = SimpleNamespace(last_successful_at=None, last_successful_window_end=None)
+    monkeypatch.setattr(news, "_load_ingestion_state", AsyncMock(return_value=state))
+    monkeypatch.setattr(news, "_acquire_ingestion_lease", AsyncMock(return_value=state))
+    monkeypatch.setattr(news, "_finish_ingestion_run", AsyncMock())
 
-    summary = await news.fetch_and_ingest_watchlist_once(lambda: _SessionContext(session))
+    summary = await news.fetch_and_ingest_watchlist_once(lambda: _SessionContext(session), force=True)
 
+    assert summary["status"] == "completed"
     assert summary["tickers"] == 1
-    assert summary["articles_fetched"] == 2
-    assert summary["articles_changed"] == 1
+    assert summary["articles_returned"] == 2
+    assert summary["articles_inserted"] == 1
+    assert summary["duplicates_ignored"] == 1

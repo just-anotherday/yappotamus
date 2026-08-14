@@ -33,7 +33,7 @@ from backend.models.ai_reports import AICompanyReport
 from backend.services.memory_diagnostics import log_memory
 from backend.models.asset import Asset, AssetTicker
 from backend.models.news import NewsArticle
-from backend.services.finnhub_service import get_finnhub_client
+from backend.services.finnhub_service import fetch_company_profile, fetch_quote
 from backend.services.article_scorer import rank_articles
 from backend.services.ai.ai_service import resolve_provider_model
 from backend.services.ollama_service import CURRENT_PROMPT_VERSION
@@ -826,15 +826,12 @@ class AIWorker:
     async def _fetch_price_data(self, ticker: str) -> PriceDataRequest:
         """Fetch current market price data from Finnhub."""
         try:
-            client = get_finnhub_client()
-            quote = client.quote(ticker.upper())
+            # Use the shared paced/retrying client path so background analysis
+            # cannot bypass the provider budget used by interactive and news work.
+            quote = await fetch_quote(ticker.upper())
             if quote and isinstance(quote, dict) and quote.get("c"):
                 # Fetch profile for beta + market cap
-                profile = {}
-                try:
-                    profile = client.company_profile2(symbol=ticker.upper()) or {}
-                except Exception:
-                    pass
+                profile = await fetch_company_profile(ticker.upper())
 
                 return PriceDataRequest(
                     current_price=quote.get("c", 0),

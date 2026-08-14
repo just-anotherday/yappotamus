@@ -1,24 +1,19 @@
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.news_schemas import NewsArticleOut, NewsPaginatedResponse
-from backend.config.database import get_async_session
+from backend.config.database import async_session_factory, get_async_session
 from backend.services.news_query_service import query_news, get_distinct_tickers as query_distinct_tickers
-from backend.services.news_ingestion_service import fetch_and_ingest_many, fetch_and_ingest_news
-from backend.services.watchlist_service import get_all_tickers
+from backend.services.news_ingestion_service import fetch_and_ingest_news, fetch_and_ingest_watchlist_once
 
 router = APIRouter(tags=["news"])
 
 
 @router.post("/api/news/ingest")
-async def ingest_watchlist_news(
-    session: AsyncSession = Depends(get_async_session),
-):
+async def ingest_watchlist_news():
     """Immediately ingest news for every ticker in the persisted watchlist."""
-    tickers = await get_all_tickers(session)
-    results = await fetch_and_ingest_many(tickers, session, limit=25) if tickers else {}
-    return {"tickers": len(tickers), "articles_processed": sum(results.values()), "results": results}
+    return await fetch_and_ingest_watchlist_once(async_session_factory, force=True)
 
 
 @router.post("/api/news/ingest/{ticker}")
@@ -28,8 +23,20 @@ async def ingest_ticker_news(
 ):
     """Immediately ingest recent news for one ticker."""
     normalized_ticker = ticker.strip().upper()
-    count = await fetch_and_ingest_news(normalized_ticker, session, limit=30)
-    return {"ticker": normalized_ticker, "articles_processed": count}
+    provider_state = {}
+    count = await fetch_and_ingest_news(
+        normalized_ticker,
+        session,
+        limit=30,
+        _provider_state=provider_state,
+    )
+    if provider_state.get("last_outcome") != "success":
+        raise HTTPException(status_code=503, detail="News provider request failed")
+    return {
+        "status": "completed",
+        "ticker": normalized_ticker,
+        "articles_processed": count,
+    }
 
 
 @router.get("/news", response_model=NewsPaginatedResponse)

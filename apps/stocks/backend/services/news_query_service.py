@@ -28,7 +28,7 @@ def _effective_date_expr() -> sa_case:
 
 def _sorted_news_query() -> select:
     """Return a base SELECT ordered by effective date descending."""
-    return select(NewsArticle).order_by(_effective_date_expr().desc())
+    return select(NewsArticle).order_by(_effective_date_expr().desc(), NewsArticle.id.desc())
 
 
 async def query_news(
@@ -69,8 +69,10 @@ async def query_news(
     if end_date:
         try:
             ed = datetime.strptime(end_date, "%Y-%m-%d")
-            ed = ed.replace(hour=23, minute=59, second=59)
-            stmt = stmt.where(effective_date <= ed)
+            # Half-open next-day boundary includes fractional timestamps in the
+            # final second and avoids precision-specific comparisons.
+            from datetime import timedelta
+            stmt = stmt.where(effective_date < ed + timedelta(days=1))
         except ValueError:
             logger.warning(f"[NewsQuery] Ignoring malformed end_date: {end_date}")
 

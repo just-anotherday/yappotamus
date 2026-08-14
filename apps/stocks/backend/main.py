@@ -349,6 +349,11 @@ def create_app() -> FastAPI:
             "status": "unhealthy", "queued_jobs": 0, "running_jobs": 0,
             "failed_jobs": 0, "last_success_at": None, "last_failure_at": None,
         }
+        news_ingestion = {
+            "status": "unavailable", "stale": True, "running": False,
+            "last_attempted_at": None, "last_successful_at": None,
+            "consecutive_failures": 0, "metrics": {},
+        }
         try:
             db_started = time.perf_counter()
             async with asyncio.timeout(2):
@@ -365,6 +370,11 @@ def create_app() -> FastAPI:
                         select(AIJobQueue.completed_at).where(AIJobQueue.status == "failed")
                         .order_by(AIJobQueue.completed_at.desc()).limit(1)
                     )).scalar_one_or_none()
+                    try:
+                        from backend.services.news_ingestion_service import get_news_ingestion_health
+                        news_ingestion = await get_news_ingestion_health(session)
+                    except Exception:
+                        logger.warning("[Health] News ingestion state check failed", exc_info=True)
             database = {"status": "healthy", "latency_ms": round((time.perf_counter() - db_started) * 1000, 1)}
             worker_running = bool(getattr(app.state, "ai_worker", None) and app.state.ai_worker._running)
             workers = {
@@ -392,7 +402,12 @@ def create_app() -> FastAPI:
         usable_ai = any(p["status"] == "available" for p in provider_status.values())
         if database["status"] != "healthy":
             overall = "unhealthy"
-        elif not usable_ai or workers["status"] != "healthy":
+        elif (
+            not usable_ai
+            or workers["status"] != "healthy"
+            or news_ingestion.get("stale", True)
+            or news_ingestion["status"] in {"never_run", "stale", "degraded", "unavailable"}
+        ):
             overall = "degraded"
         else:
             overall = "healthy"
@@ -411,6 +426,7 @@ def create_app() -> FastAPI:
                 **provider_status,
             },
             "workers": workers,
+            "news_ingestion": news_ingestion,
             "websocket": {"status": "available", "authentication": "required"},
         }
 

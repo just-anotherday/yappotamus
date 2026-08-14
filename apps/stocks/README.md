@@ -188,7 +188,7 @@ inside the FastAPI lifespan; there is no separate worker process command.
 ## Architecture Notes
 
 - **Database schema** is managed by Alembic (`python -m alembic upgrade head`); startup performs a connectivity check only.
-- **News ingestion** runs automatically every 15 minutes during market hours (8 AM – 6 PM EST) as a background scheduler.
+- **News ingestion** is externally triggered every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly overnight/weekend coverage; the in-process scheduler remains a local-development option.
 - **WebSocket price streaming** uses a background thread to listen to Yahoo Finance WebSockets, then bridges events back to the FastAPI event loop.
 - **Error handling** is centralized via FastAPI exception handlers (`backend/exceptions.py`).
 - **All mutable endpoints currently lack authentication** — intended for local/personal use only (see `docs/TECHNICAL_DEBT_REPORT.md` for details).

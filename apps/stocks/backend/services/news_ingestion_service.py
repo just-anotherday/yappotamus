@@ -6,7 +6,7 @@ and persists them to PostgreSQL using UPSERT logic (no duplicates).
 Includes a background scheduler for periodic auto-ingestion.
 
 Finnhub endpoints:
- - /company-news2  → market news for a specific ticker (free tier)
+ - /company-news  → market news for a specific ticker (free tier)
 
 Free tier limits:
  - 60 REST API calls/min
@@ -14,23 +14,34 @@ Free tier limits:
 """
 
 import asyncio
+from dataclasses import dataclass
+import hashlib
 import logging
 import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 from requests.exceptions import Timeout as RequestsTimeout
 from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.models.news import NewsArticle
+from backend.models.news_ingestion_state import NewsIngestionState
 from backend.models.news_schemas import NewsArticleIngest
-from backend.services.finnhub_service import get_finnhub_client, _rate_limiter
+from backend.services.finnhub_service import (
+    _exception_status_code,
+    _is_rate_limit_error,
+    _retry_api,
+    get_finnhub_client,
+)
 from backend.services.ticker_extractor import ticker_extractor
 from backend.services.asset_sync import get_asset_id_by_ticker
 from backend.services.watchlist_service import get_all_tickers
@@ -47,9 +58,269 @@ _OG_CONCURRENCY_LIMIT = 4
 _TICKER_DELAY = 2.0
 # Stop a cycle after a short run of provider-wide timeouts; a later cycle retries normally.
 _MAX_CONSECUTIVE_NEWS_PROVIDER_TIMEOUTS = 3
+_ARTICLE_DB_CHUNK_SIZE = 250
 # The Finnhub SDK client is process-singleton; this also serializes an in-flight
 # request whose async waiter was cancelled before its synchronous timeout expires.
 _finnhub_company_news_lock = threading.Lock()
+_NEWS_JOB_NAME = "production-watchlist-news"
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True)
+class IngestionWindow:
+    start: datetime
+    end: datetime
+    mode: str
+
+    @property
+    def lookback_minutes(self) -> int:
+        return max(0, round((self.end - self.start).total_seconds() / 60))
+
+
+@dataclass(frozen=True)
+class ArticlePersistResult:
+    inserted_ids: list[int]
+    submitted: int
+    unique_submitted: int
+
+    @property
+    def inserted(self) -> int:
+        return len(self.inserted_ids)
+
+    @property
+    def duplicates_ignored(self) -> int:
+        return self.submitted - self.inserted
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def calculate_ingestion_window(
+    now: datetime,
+    last_successful_window_end: Optional[datetime],
+) -> IngestionWindow:
+    """Calculate an overlapping, outage-aware, bounded logical window."""
+    end = _as_utc(now) or datetime.now(timezone.utc)
+    checkpoint = _as_utc(last_successful_window_end)
+    maximum_start = end - timedelta(hours=settings.NEWS_MAX_BACKFILL_HOURS)
+    if checkpoint is None:
+        start = max(maximum_start, end - timedelta(hours=settings.NEWS_INITIAL_BACKFILL_HOURS))
+        return IngestionWindow(start=start, end=end, mode="initial_backfill")
+
+    checkpoint = min(checkpoint, end)
+    proposed = checkpoint - timedelta(minutes=settings.NEWS_OVERLAP_MINUTES)
+    start = max(maximum_start, min(proposed, end))
+    gap_minutes = max(0.0, (end - checkpoint).total_seconds() / 60)
+    if proposed < maximum_start:
+        mode = "bounded_backfill"
+    elif gap_minutes > settings.NEWS_ACTIVE_INTERVAL_MINUTES * 1.5:
+        mode = "recovery"
+    else:
+        mode = "normal"
+    return IngestionWindow(start=start, end=end, mode=mode)
+
+
+def _active_news_window(now: datetime) -> bool:
+    local = (_as_utc(now) or now).astimezone(_NEW_YORK)
+    return local.weekday() < 5 and 4 <= local.hour < 20
+
+
+def should_run_ingestion(
+    now: datetime,
+    last_successful_window_end: Optional[datetime],
+    *,
+    trigger_kind: str = "auto",
+) -> bool:
+    """Apply the New York cadence guard to a classified external trigger."""
+    previous = _as_utc(last_successful_window_end)
+    if previous is not None:
+        repeat_guard_minutes = max(1.0, settings.NEWS_ACTIVE_INTERVAL_MINUTES / 3)
+        if (now - previous).total_seconds() / 60 < repeat_guard_minutes:
+            # Suppress an immediate transport retry after the server completed
+            # but its successful response did not reach the workflow runner.
+            return False
+    if trigger_kind == "hourly":
+        return True
+    if trigger_kind == "quarter_hour":
+        return _active_news_window(now)
+    if _active_news_window(now) or last_successful_window_end is None:
+        return True
+    if previous is None:
+        return True
+    elapsed_minutes = (now - previous).total_seconds() / 60
+    # Allow normal scheduler jitter without accidentally turning hourly into 75m.
+    return elapsed_minutes >= settings.NEWS_OFF_HOURS_INTERVAL_MINUTES - 5
+
+
+async def _load_ingestion_state(session: AsyncSession) -> Optional[NewsIngestionState]:
+    return await session.get(NewsIngestionState, _NEWS_JOB_NAME)
+
+
+async def _acquire_ingestion_lease(
+    session: AsyncSession,
+    *,
+    owner: str,
+    now: datetime,
+) -> Optional[NewsIngestionState]:
+    expires_at = now + timedelta(minutes=settings.NEWS_INGESTION_LEASE_MINUTES)
+    stmt = pg_insert(NewsIngestionState).values(
+        job_name=_NEWS_JOB_NAME,
+        last_attempted_at=now,
+        last_status="running",
+        consecutive_failures=0,
+        last_metrics={},
+        lease_owner=owner,
+        lease_expires_at=expires_at,
+        updated_at=now,
+    ).on_conflict_do_update(
+        index_elements=[NewsIngestionState.job_name],
+        set_={
+            "last_attempted_at": now,
+            "last_status": "running",
+            "last_error_code": None,
+            "lease_owner": owner,
+            "lease_expires_at": expires_at,
+            "updated_at": now,
+        },
+        where=or_(
+            NewsIngestionState.lease_expires_at.is_(None),
+            NewsIngestionState.lease_expires_at <= now,
+        ),
+    ).returning(NewsIngestionState)
+    state = (await session.execute(stmt)).scalar_one_or_none()
+    await session.commit()
+    return state
+
+
+async def _finish_ingestion_run(
+    session: AsyncSession,
+    *,
+    owner: str,
+    now: datetime,
+    status: str,
+    metrics: dict[str, Any],
+    successful_window_end: Optional[datetime] = None,
+    error_code: Optional[str] = None,
+) -> None:
+    successful = status == "completed"
+    values: dict[str, Any] = {
+        "last_completed_at": now,
+        "last_status": status,
+        "last_error_code": error_code,
+        "last_metrics": metrics,
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "updated_at": now,
+        "consecutive_failures": 0 if successful else NewsIngestionState.consecutive_failures + 1,
+    }
+    if successful:
+        values["last_successful_at"] = now
+        values["last_successful_window_end"] = successful_window_end or now
+    if int(metrics.get("articles_returned", 0)) > 0:
+        values["last_article_retrieved_at"] = now
+    if int(metrics.get("articles_inserted", 0)) > 0:
+        values["last_article_inserted_at"] = now
+    if metrics.get("newest_fetched_article_timestamp"):
+        values["latest_retrieved_pub_date"] = datetime.fromisoformat(
+            metrics["newest_fetched_article_timestamp"]
+        )
+    if metrics.get("newest_inserted_article_timestamp"):
+        values["latest_inserted_pub_date"] = datetime.fromisoformat(
+            metrics["newest_inserted_article_timestamp"]
+        )
+
+    result = await session.execute(
+        update(NewsIngestionState)
+        .where(
+            NewsIngestionState.job_name == _NEWS_JOB_NAME,
+            NewsIngestionState.lease_owner == owner,
+        )
+        .values(**values)
+    )
+    await session.commit()
+    if result.rowcount != 1:
+        logger.error("[NewsIngestion] event=lease_release_missed owner=%s", owner)
+        raise RuntimeError("news_ingestion_lease_lost")
+
+
+async def _renew_ingestion_lease(
+    session: AsyncSession,
+    *,
+    owner: str,
+    now: datetime,
+) -> None:
+    """Extend an owned lease or abort before another run can overlap it."""
+    result = await session.execute(
+        update(NewsIngestionState)
+        .where(
+            NewsIngestionState.job_name == _NEWS_JOB_NAME,
+            NewsIngestionState.lease_owner == owner,
+        )
+        .values(
+            lease_expires_at=now + timedelta(minutes=settings.NEWS_INGESTION_LEASE_MINUTES),
+            updated_at=now,
+        )
+    )
+    await session.commit()
+    if result.rowcount != 1:
+        raise RuntimeError("news_ingestion_lease_lost")
+
+
+async def get_news_ingestion_health(
+    session: AsyncSession,
+    *,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Return a safe authenticated health snapshot for operations tooling."""
+    checked_at = _as_utc(now) or datetime.now(timezone.utc)
+    state = await _load_ingestion_state(session)
+    if state is None:
+        return {
+            "status": "never_run", "stale": True, "running": False,
+            "last_attempted_at": None, "last_successful_at": None,
+            "consecutive_failures": 0, "metrics": {},
+        }
+
+    lease_expires = _as_utc(state.lease_expires_at)
+    running = bool(state.lease_owner and lease_expires and lease_expires > checked_at)
+    last_success = _as_utc(state.last_successful_at)
+    stale = last_success is None or (
+        checked_at - last_success > timedelta(minutes=settings.NEWS_STALE_AFTER_MINUTES)
+    )
+    if running:
+        health_status = "running"
+    elif stale:
+        health_status = "stale"
+    elif state.last_status != "completed":
+        health_status = "degraded"
+    else:
+        health_status = "healthy"
+
+    def iso(value: Optional[datetime]) -> Optional[str]:
+        normalized = _as_utc(value)
+        return normalized.isoformat() if normalized else None
+
+    return {
+        "status": health_status,
+        "stale": stale,
+        "running": running,
+        "last_run_status": state.last_status,
+        "last_attempted_at": iso(state.last_attempted_at),
+        "last_completed_at": iso(state.last_completed_at),
+        "last_successful_at": iso(state.last_successful_at),
+        "last_article_retrieved_at": iso(state.last_article_retrieved_at),
+        "last_article_inserted_at": iso(state.last_article_inserted_at),
+        "latest_retrieved_pub_date": iso(state.latest_retrieved_pub_date),
+        "latest_inserted_pub_date": iso(state.latest_inserted_pub_date),
+        "consecutive_failures": state.consecutive_failures,
+        "error_code": state.last_error_code,
+        "metrics": state.last_metrics or {},
+    }
 
 
 def _is_finnhub_timeout(exc: BaseException) -> bool:
@@ -139,54 +410,206 @@ async def fetch_and_ingest_watchlist_once(
     session_factory,
     *,
     connection_manager=None,
-    limit: int = 25,
+    limit: Optional[int] = None,
+    force: bool = False,
+    now: Optional[datetime] = None,
+    trigger_kind: str = "auto",
 ) -> dict[str, Any]:
-    """Run one complete, idempotent watchlist ingestion cycle and return its summary.
-
-    This operation has no scheduler lifetime dependency and is therefore safe for
-    an external job trigger.  A new session is used each invocation, allowing a
-    later job to recover naturally after a temporary database outage.
-    """
+    """Run one leased, checkpointed, idempotent production ingestion cycle."""
     started_at = time.monotonic()
-    counters = {"articles_fetched": 0, "articles_changed": 0, "report_candidates": 0,
+    now_utc = _as_utc(now) or datetime.now(timezone.utc)
+    owner = uuid4().hex
+    # Production persists the complete bounded provider response. Applying an
+    # article-count cutoff could permanently omit delayed/older stories while
+    # still advancing the successful-window checkpoint.
+    article_limit = limit
+    counters: dict[str, Any] = {
+        "articles_returned": 0, "articles_fetched": 0, "articles_inserted": 0,
+        "articles_changed": 0, "duplicates_ignored": 0,
+        "oldest_fetched_article_timestamp": None, "newest_fetched_article_timestamp": None,
+        "newest_inserted_article_timestamp": None, "report_candidates": 0,
         "report_candidates_discovered": 0, "report_candidates_unique": 0,
         "scheduler_duplicates_skipped": 0, "enqueue_attempts": 0, "jobs_created": 0,
-        "jobs_deduplicated": 0}
-    provider: dict[str, int | bool] = {"provider_requests": 0, "provider_successes": 0,
+        "jobs_deduplicated": 0,
+    }
+    provider: dict[str, int | bool] = {
+        "provider_requests": 0, "provider_successes": 0,
         "provider_timeouts": 0, "provider_failures": 0, "consecutive_timeouts": 0,
-        "provider_timeout_breaker_open": False, "tickers_skipped_provider_timeout": 0}
-    logger.info("[NewsIngestion] event=started operation=watchlist_once")
+        "provider_rate_limits": 0, "provider_retries": 0,
+        "provider_timeout_breaker_open": False, "provider_rate_limit_breaker_open": False,
+        "tickers_skipped_provider_timeout": 0, "tickers_skipped_rate_limit": 0,
+    }
+    symbol_outcomes: dict[str, dict[str, Any]] = {}
+
+    async with session_factory() as state_session:
+        previous = await _load_ingestion_state(state_session)
+        if not force and not should_run_ingestion(
+            now_utc,
+            previous.last_successful_window_end if previous else None,
+            trigger_kind=trigger_kind,
+        ):
+            return {
+                "status": "skipped_cadence", "tickers": 0,
+                "reason": "new_york_cadence_guard", "trigger_kind": trigger_kind,
+                "duration_seconds": 0.0,
+            }
+        lease = await _acquire_ingestion_lease(state_session, owner=owner, now=now_utc)
+    if lease is None:
+        logger.info("[NewsIngestion] event=skipped reason=active_lease")
+        return {"status": "skipped_overlap", "tickers": 0, "duration_seconds": 0.0}
+
+    window = calculate_ingestion_window(now_utc, lease.last_successful_window_end)
+    logger.info(
+        "[NewsIngestion] event=started operation=watchlist_once owner=%s "
+        "window_start=%s window_end=%s lookback_minutes=%d recovery_mode=%s",
+        owner, window.start.isoformat(), window.end.isoformat(),
+        window.lookback_minutes, window.mode,
+    )
+    tickers: list[str] = []
+    results: dict[str, int] = {}
     try:
         async with session_factory() as session:
             tickers = await get_all_tickers(session)
-            if not tickers:
-                summary = {"tickers": 0, "articles_fetched": 0, "articles_changed": 0,
-                    "provider_failures": 0, "duration_seconds": round(time.monotonic() - started_at, 3)}
-                logger.info("[NewsIngestion] event=completed operation=watchlist_once %s", summary)
-                return summary
-            results = await fetch_and_ingest_many(
-                tickers, session, limit=limit, _cycle_counters=counters,
-                _scheduler_attempted_asset_ids=set(), _provider_counters=provider,
-            )
-            if counters["articles_fetched"]:
-                await _recover_thumbnails(session)
+            if tickers:
+                results = await fetch_and_ingest_many(
+                    tickers, session, limit=article_limit, window=window,
+                    _cycle_counters=counters, _scheduler_attempted_asset_ids=set(),
+                    _provider_counters=provider, _symbol_outcomes=symbol_outcomes,
+                    _lease_owner=owner,
+                )
+                if counters["articles_inserted"]:
+                    try:
+                        await _recover_thumbnails(session)
+                    except Exception as exc:
+                        logger.warning(
+                            "[NewsIngestion] event=thumbnail_recovery_failed exception_type=%s",
+                            type(exc).__name__,
+                        )
+    except asyncio.CancelledError:
+        cancellation_metrics = {
+            "duration_seconds": round(time.monotonic() - started_at, 3),
+            "symbols_configured": len(tickers),
+            "symbols_attempted": len(symbol_outcomes),
+            "symbols_successful": sum(
+                1 for item in symbol_outcomes.values()
+                if item.get("last_outcome") == "success"
+            ),
+            "symbols_failed": len(tickers) - sum(
+                1 for item in symbol_outcomes.values()
+                if item.get("last_outcome") == "success"
+            ),
+            "lookback_minutes": window.lookback_minutes,
+            "recovery_mode": window.mode,
+            **provider,
+            **counters,
+        }
+
+        async def _record_cancellation() -> None:
+            async with session_factory() as state_session:
+                await _finish_ingestion_run(
+                    state_session,
+                    owner=owner,
+                    now=datetime.now(timezone.utc),
+                    status="cancelled",
+                    metrics=cancellation_metrics,
+                    error_code="cancelled",
+                )
+
+        try:
+            await asyncio.shield(_record_cancellation())
+        except Exception:
+            logger.error("[NewsIngestion] event=cancellation_state_write_failed")
+        logger.warning("[NewsIngestion] event=cancelled operation=watchlist_once")
+        raise
     except Exception as exc:
         logger.error(
             "[NewsIngestion] event=failed operation=watchlist_once exception_type=%s message=%s",
-            type(exc).__name__, sanitize_database_error(exc), exc_info=True,
+            type(exc).__name__, sanitize_database_error(exc),
         )
+        failure_successes = sum(
+            1 for item in symbol_outcomes.values()
+            if item.get("last_outcome") == "success"
+        )
+        failure_metrics = {
+            "duration_seconds": round(time.monotonic() - started_at, 3),
+            "symbols_attempted": len(symbol_outcomes),
+            "symbols_successful": failure_successes,
+            "symbols_failed": len(tickers) - failure_successes,
+            "lookback_minutes": window.lookback_minutes,
+            "recovery_mode": window.mode,
+            **provider,
+            **counters,
+        }
+        try:
+            async with session_factory() as state_session:
+                await _finish_ingestion_run(
+                    state_session, owner=owner, now=datetime.now(timezone.utc),
+                    status="failed", metrics=failure_metrics,
+                    error_code=type(exc).__name__,
+                )
+        except Exception:
+            logger.error("[NewsIngestion] event=failure_state_write_failed", exc_info=True)
         raise
 
-    summary = {
-        "tickers": len(tickers), "tickers_processed": len(results),
-        "articles_fetched": counters["articles_fetched"], "articles_changed": counters["articles_changed"],
-        "provider_failures": provider["provider_failures"], "provider_timeouts": provider["provider_timeouts"],
-        "results": results, "duration_seconds": round(time.monotonic() - started_at, 3),
+    successful_symbols = sum(
+        1 for item in symbol_outcomes.values()
+        if item.get("last_outcome") == "success"
+    )
+    failed_symbols = len(tickers) - successful_symbols
+    status = "completed" if failed_symbols == 0 else "partial"
+    if provider["provider_rate_limit_breaker_open"]:
+        error_code = "provider_rate_limited"
+    elif provider["provider_timeout_breaker_open"]:
+        error_code = "provider_timeout"
+    elif failed_symbols:
+        error_code = "provider_failure"
+    else:
+        error_code = None
+    duration = round(time.monotonic() - started_at, 3)
+    metrics = {
+        "duration_seconds": duration,
+        "symbols_configured": len(tickers),
+        "symbols_attempted": len(symbol_outcomes),
+        "symbols_successful": successful_symbols,
+        "symbols_failed": failed_symbols,
+        "lookback_minutes": window.lookback_minutes,
+        "window_start": window.start.isoformat(),
+        "window_end": window.end.isoformat(),
+        "provider_from_date": window.start.strftime("%Y-%m-%d"),
+        "provider_to_date": window.end.strftime("%Y-%m-%d"),
+        "recovery_mode": window.mode,
+        **provider,
+        **counters,
     }
-    logger.info("[NewsIngestion] event=database_persisted operation=watchlist_once articles_changed=%s", counters["articles_changed"])
-    logger.info("[NewsIngestion] event=completed operation=watchlist_once %s", summary)
-    if connection_manager is not None:
-        await connection_manager.broadcast({"type": "news_refresh"})
+    async with session_factory() as state_session:
+        await _finish_ingestion_run(
+            state_session, owner=owner, now=datetime.now(timezone.utc),
+            status=status, metrics=metrics,
+            successful_window_end=window.end if status == "completed" else None,
+            error_code=error_code,
+        )
+
+    summary = {
+        "status": status, "tickers": len(tickers), "tickers_processed": len(results),
+        "symbols_successful": successful_symbols, "symbols_failed": failed_symbols,
+        "articles_returned": counters["articles_returned"],
+        "articles_inserted": counters["articles_inserted"],
+        "duplicates_ignored": counters["duplicates_ignored"],
+        "provider_requests": provider["provider_requests"],
+        "provider_retries": provider["provider_retries"],
+        "provider_rate_limits": provider["provider_rate_limits"],
+        "results": results, "duration_seconds": duration,
+        "lookback_minutes": window.lookback_minutes, "recovery_mode": window.mode,
+    }
+    logger.info(
+        "[NewsIngestion] event=%s operation=watchlist_once status=%s metrics=%s",
+        "completed" if status == "completed" else "partial", status, metrics,
+    )
+    if connection_manager is not None and counters["articles_inserted"]:
+        try:
+            await connection_manager.broadcast({"type": "news_refresh"})
+        except Exception:
+            logger.warning("[NewsIngestion] event=broadcast_failed", exc_info=True)
     return summary
 
 async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager) -> None:
@@ -242,7 +665,7 @@ async def _scheduled_ingest_loop(session_factory, tickers_fn, connection_manager
                 if not tickers:
                     logger.info("[NewsScheduler] No tickers in watchlist; skipping cycle.")
                 else:
-                    results = await fetch_and_ingest_many(tickers, session, limit=25, _cycle_counters=cycle_counters,
+                    results = await fetch_and_ingest_many(tickers, session, limit=None, _cycle_counters=cycle_counters,
                         _scheduler_attempted_asset_ids=scheduler_attempted_asset_ids, _provider_counters=provider_counters)
                     articles_ingested = sum(results.values())
                     tickers_processed = len(results)
@@ -316,20 +739,22 @@ def stop_scheduler() -> None:
 
 
 def _parse_finnhub_timestamp(ts: Any) -> Optional[datetime]:
-    """Convert a Unix timestamp (int) or ISO string to a naive datetime."""
+    """Convert a Unix/ISO timestamp to the schema's UTC-naive representation."""
     if not ts:
         return None
     # Handle integer timestamps
     if isinstance(ts, (int, float)):
         try:
-            return datetime.fromtimestamp(ts).replace(tzinfo=None)
+            return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
         except (TypeError, ValueError, OSError):
             return None
     # Handle ISO format strings like "2025-08-13T09:30:43Z"
     if isinstance(ts, str):
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            return dt.replace(tzinfo=None)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
         except (TypeError, ValueError):
             return None
     return None
@@ -475,6 +900,33 @@ def _extract_ticker_from_related(article: Dict[str, Any], query_ticker: str) -> 
     return symbols[0]
 
 
+_TRACKING_QUERY_KEYS = {
+    "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "source",
+}
+
+
+def _canonical_url_for_identity(url: str) -> str:
+    """Remove fragments and known tracking parameters without changing routing keys."""
+    parts = urlsplit(url.strip())
+    filtered_query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_") and key.lower() not in _TRACKING_QUERY_KEYS
+    ]
+    return urlunsplit((
+        parts.scheme.lower(), parts.netloc.lower(), parts.path,
+        urlencode(filtered_query, doseq=True), "",
+    ))
+
+
+def _stable_finnhub_identity(article: Dict[str, Any], url: str) -> str:
+    provider_id = article.get("id")
+    if provider_id is not None and str(provider_id).strip():
+        return f"finnhub:{str(provider_id).strip()}"
+    canonical = _canonical_url_for_identity(url)
+    return f"url:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
 def normalize_finnhub_article(article: Dict[str, Any], ticker: str) -> Optional[NewsArticleIngest]:
     """Normalize a raw Finnhub company-news article into our schema.
 
@@ -502,9 +954,9 @@ def normalize_finnhub_article(article: Dict[str, Any], ticker: str) -> Optional[
     if not url:
         return None
 
-    # Generate a stable Finnhub ID from the URL for deduplication
-    import hashlib
-    finnhub_id = hashlib.md5(url.encode()).hexdigest()[:32]
+    # Prefer Finnhub's immutable provider identifier. Canonical URL hashing is
+    # the deterministic fallback for legacy/provider rows without an ID.
+    finnhub_id = _stable_finnhub_identity(article, url)
 
     pub_date = _parse_finnhub_timestamp(article.get("datetime"))
 
@@ -529,71 +981,62 @@ def normalize_finnhub_article(article: Dict[str, Any], ticker: str) -> Optional[
 
 
 async def ingest_article(session: AsyncSession, article_in: NewsArticleIngest) -> Optional[NewsArticle]:
-    """Insert or skip a single article (UPSERT on article_url)."""
+    """Insert one immutable article, ignoring either database identity conflict."""
     values = article_in.model_dump(exclude_unset=True)
-
-    stmt = pg_insert(NewsArticle).values(**values)
-
-    if article_in.article_url:
-        stmt = stmt.on_conflict_do_update(
-            constraint="news_articles_article_url_key",
-            set_={
-                "title": values.get("title"),
-                "summary": values.get("summary"),
-                "provider_name": values.get("provider_name"),
-                "thumbnail_url": values.get("thumbnail_url"),
-                "pub_date": values.get("pub_date"),
-                "raw_json": values.get("raw_json"),
-            },
-        )
-
-    await session.execute(stmt)
+    stmt = pg_insert(NewsArticle).values(**values).on_conflict_do_nothing().returning(NewsArticle.id)
+    inserted_id = (await session.execute(stmt)).scalar_one_or_none()
     await session.commit()
-
-    if article_in.article_url:
-        result = await session.execute(
-            select(NewsArticle).where(NewsArticle.article_url == article_in.article_url)
-        )
-        return result.scalar_one_or_none()
-
-    return None
+    if inserted_id is None:
+        return None
+    return (await session.execute(select(NewsArticle).where(NewsArticle.id == inserted_id))).scalar_one()
 
 
 async def batch_ingest_articles(
     session: AsyncSession, articles_in: list[NewsArticleIngest]
-) -> list[int]:
-    """Batch upsert multiple articles in a single transaction.
-
-    Uses PostgreSQL ON CONFLICT with RETURNING to avoid N+1 round-trips.
-    Returns IDs for articles that were inserted or materially updated.
-    """
+) -> ArticlePersistResult:
+    """Insert an in-memory de-duplicated batch and ignore all DB conflicts."""
     if not articles_in:
-        return []
+        return ArticlePersistResult(inserted_ids=[], submitted=0, unique_submitted=0)
 
-    values = [article.model_dump(exclude_unset=True) for article in articles_in]
+    unique_articles = _deduplicate_articles(articles_in)
+    values = [article.model_dump(exclude_unset=True) for article in unique_articles]
+    if not values:
+        return ArticlePersistResult(inserted_ids=[], submitted=len(articles_in), unique_submitted=0)
 
-    stmt = pg_insert(NewsArticle).values(values)
-
-    stmt = stmt.on_conflict_do_update(
-        constraint="news_articles_article_url_key",
-        set_={
-            "ticker": stmt.excluded.ticker,
-            "title": stmt.excluded.title,
-            "summary": stmt.excluded.summary,
-            "provider_name": stmt.excluded.provider_name,
-            "thumbnail_url": stmt.excluded.thumbnail_url,
-            "pub_date": stmt.excluded.pub_date,
-            "raw_json": stmt.excluded.raw_json,
-        },
-        where=(NewsArticle.title.is_distinct_from(stmt.excluded.title)
-               | NewsArticle.summary.is_distinct_from(stmt.excluded.summary)
-               | NewsArticle.ticker.is_distinct_from(stmt.excluded.ticker)
-               | NewsArticle.pub_date.is_distinct_from(stmt.excluded.pub_date)),
-    ).returning(NewsArticle.id)
-
-    result = await session.execute(stmt)
+    # No target means either unique(finnhub_id) or unique(article_url) safely
+    # suppresses replays and races. Avoiding an UPDATE also prevents ticker
+    # ownership from flapping when one story appears in several symbol feeds.
+    inserted_ids: list[int] = []
+    for offset in range(0, len(values), _ARTICLE_DB_CHUNK_SIZE):
+        chunk = values[offset:offset + _ARTICLE_DB_CHUNK_SIZE]
+        stmt = (
+            pg_insert(NewsArticle)
+            .values(chunk)
+            .on_conflict_do_nothing()
+            .returning(NewsArticle.id)
+        )
+        result = await session.execute(stmt)
+        inserted_ids.extend(result.scalars().all())
     await session.commit()
-    return list(result.scalars().all())
+    return ArticlePersistResult(
+        inserted_ids=inserted_ids,
+        submitted=len(articles_in),
+        unique_submitted=len(values),
+    )
+
+
+def _deduplicate_articles(articles_in: list[NewsArticleIngest]) -> list[NewsArticleIngest]:
+    """Preserve the first row for each strong ID/canonical URL in a response."""
+    unique: dict[tuple[str, str], NewsArticleIngest] = {}
+    for article in articles_in:
+        if article.finnhub_id:
+            identity = ("finnhub_id", article.finnhub_id)
+        elif article.article_url:
+            identity = ("article_url", _canonical_url_for_identity(article.article_url))
+        else:
+            continue
+        unique.setdefault(identity, article)
+    return list(unique.values())
 
 
 async def _enqueue_company_report_jobs(
@@ -633,100 +1076,122 @@ async def _enqueue_company_report_jobs(
 async def fetch_and_ingest_news(
     ticker: str,
     session: AsyncSession,
-    limit: int = 30,
+    limit: Optional[int] = 30,
     *,
+    window: Optional[IngestionWindow] = None,
     _cycle_counters: Optional[dict[str, int]] = None,
     _scheduler_attempted_asset_ids: Optional[set[int]] = None,
     _provider_counters: Optional[dict[str, int | bool]] = None,
-    _provider_state: Optional[dict[str, str]] = None,
+    _provider_state: Optional[dict[str, Any]] = None,
 ) -> int:
     """
     Fetch latest news for a ticker from Finnhub and persist to PostgreSQL.
     Returns the count of newly ingested articles.
     Uses batch upsert to minimize database round-trips.
     """
+    request_window = window or calculate_ingestion_window(datetime.now(timezone.utc), None)
+    from_date = request_window.start.strftime("%Y-%m-%d")
+    to_date = request_window.end.strftime("%Y-%m-%d")
+
+    async def _company_news_request(client, symbol: str, start_date: str, end_date: str):
+        return await asyncio.to_thread(
+            _fetch_finnhub_company_news, client, symbol, start_date, end_date,
+        )
+
     try:
-        await _rate_limiter()
         client = get_finnhub_client()
-        now_utc = datetime.now(timezone.utc)
-        to_date = now_utc.strftime("%Y-%m-%d")
-        from_date = (now_utc - timedelta(days=7)).strftime("%Y-%m-%d")
-        if _provider_counters is not None:
-            _provider_counters["provider_requests"] += 1
-        raw_news = await asyncio.to_thread(
-            _fetch_finnhub_company_news, client, ticker.upper(), from_date, to_date,
+        raw_news = await _retry_api(
+            _company_news_request, client, ticker.upper(), from_date, to_date,
+            _request_operation="company_news", _request_ticker=ticker.upper(),
+            _request_metrics=_provider_counters,
         )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         is_timeout = _is_finnhub_timeout(exc)
-        if _provider_counters is not None:
-            _provider_counters["provider_timeouts" if is_timeout else "provider_failures"] += 1
+        rate_limited = _is_rate_limit_error(exc)
         if _provider_state is not None:
-            _provider_state["last_outcome"] = "timeout" if is_timeout else "failure"
-        logger.error("[NewsIngestion] event=provider_failed ticker=%s exception_type=%s message=%s",
-            ticker.upper(), type(exc).__name__, sanitize_database_error(exc), exc_info=True)
+            _provider_state.update({
+                "last_outcome": "rate_limited" if rate_limited else ("timeout" if is_timeout else "failure"),
+                "status_code": _exception_status_code(exc),
+                "exception_type": type(exc).__name__,
+            })
+        logger.error(
+            "[NewsIngestion] event=provider_failed ticker=%s exception_type=%s "
+            "status_code=%s rate_limited=%s",
+            ticker.upper(), type(exc).__name__, _exception_status_code(exc),
+            str(rate_limited).lower(),
+        )
         return 0
 
-    if _provider_counters is not None:
-        _provider_counters["provider_successes"] += 1
     if _provider_state is not None:
-        _provider_state["last_outcome"] = "success"
-    logger.info("[NewsIngestion] event=provider_succeeded ticker=%s articles_returned=%d", ticker.upper(), len(raw_news or []))
+        _provider_state.update({"last_outcome": "success", "articles_returned": len(raw_news or [])})
+    if _cycle_counters is not None:
+        _cycle_counters.setdefault("articles_returned", 0)
+        _cycle_counters["articles_returned"] += len(raw_news or [])
+    logger.info(
+        "[NewsIngestion] event=provider_succeeded ticker=%s articles_returned=%d "
+        "provider_from_date=%s provider_to_date=%s lookback_minutes=%d recovery_mode=%s",
+        ticker.upper(), len(raw_news or []), from_date, to_date,
+        request_window.lookback_minutes, request_window.mode,
+    )
 
     if not raw_news:
         logger.info(f"[NewsIngestion] No news returned for {ticker}")
         return 0
 
+    def _sort_timestamp(article: dict[str, Any]) -> datetime:
+        parsed = _parse_finnhub_timestamp(article.get("datetime"))
+        return parsed or datetime.min
+
+    ordered_news = sorted(raw_news, key=_sort_timestamp, reverse=True)
+    if limit is not None and len(ordered_news) > limit:
+        logger.warning(
+            "[NewsIngestion] event=response_truncated ticker=%s returned=%d limit=%d",
+            ticker.upper(), len(ordered_news), limit,
+        )
+    selected_news = ordered_news if limit is None else ordered_news[:limit]
     normalized_articles: list[NewsArticleIngest] = []
-    articles_missing_images: list[tuple[NewsArticleIngest, str]] = []  # (article, url)
-    for article in raw_news[:limit]:
+    for article in selected_news:
         try:
             normalized = normalize_finnhub_article(article, ticker)
             if not normalized or not normalized.article_url:
                 logger.warning(f"[NewsIngestion] Skipping article without URL for {ticker}")
                 continue
             normalized_articles.append(normalized)
-            # Track articles that lost their thumbnail so we can try OG extraction
-            if not normalized.thumbnail_url and normalized.article_url:
-                articles_missing_images.append((normalized, normalized.article_url))
         except Exception as e:
             logger.error(f"[NewsIngestion] Failed to normalize Finnhub article for {ticker}: {e}")
             continue
 
-    # Extract OG images in parallel (concurrency-limited) for articles missing thumbnails
-    if articles_missing_images:
-        semaphore = asyncio.Semaphore(_OG_CONCURRENCY_LIMIT)
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            async def _extract_with_limit(url: str) -> Optional[str]:
-                async with semaphore:
-                    return await _extract_og_image(url, client=client)
-            og_tasks = [_extract_with_limit(url) for _, url in articles_missing_images]
-            og_results = await asyncio.gather(*og_tasks, return_exceptions=True)
-        og_success = 0
-        for (article, _), result in zip(articles_missing_images, og_results):
-            if isinstance(result, str):
-                article.thumbnail_url = result
-                og_success += 1
-        if og_success:
-            logger.info(f"[NewsIngestion] Recovered {og_success} OG images via scraping for {ticker}")
     if not normalized_articles:
         logger.info(f"[NewsIngestion] No valid articles to ingest for {ticker}")
         return 0
 
-    material_article_ids = await batch_ingest_articles(session, normalized_articles)
-    ingested = len(material_article_ids)
+    persist_result = await batch_ingest_articles(session, normalized_articles)
+    material_article_ids = persist_result.inserted_ids
+    ingested = persist_result.inserted
     articles_fetched = len(normalized_articles)
-    articles_changed = ingested
+    duplicates_ignored = persist_result.duplicates_ignored
+    article_dates = [item.pub_date for item in normalized_articles if item.pub_date is not None]
+    oldest_fetched = min(article_dates) if article_dates else None
+    newest_fetched = max(article_dates) if article_dates else None
+    inserted_rows: list[NewsArticle] = []
+    for offset in range(0, len(material_article_ids), _ARTICLE_DB_CHUNK_SIZE):
+        id_chunk = material_article_ids[offset:offset + _ARTICLE_DB_CHUNK_SIZE]
+        inserted_rows.extend((await session.execute(
+            select(NewsArticle).where(NewsArticle.id.in_(id_chunk))
+        )).scalars().all())
+    inserted_dates = [item.pub_date for item in inserted_rows if item.pub_date is not None]
+    newest_inserted = max(inserted_dates) if inserted_dates else None
     logger.info(
-        "[NewsIngestion] event=database_persisted ticker=%s articles_fetched=%d articles_changed=%d",
-        ticker.upper(), articles_fetched, articles_changed,
+        "[NewsIngestion] event=database_persisted ticker=%s articles_fetched=%d "
+        "articles_inserted=%d duplicates_ignored=%d",
+        ticker.upper(), articles_fetched, ingested, duplicates_ignored,
     )
 
     if settings.INTELLIGENCE_ENABLED and material_article_ids:
         from backend.intelligence.article_service import ARTICLE_PROMPT_HASH, article_source_content_hash
-        rows = (await session.execute(select(NewsArticle).where(NewsArticle.id.in_(material_article_ids)))).scalars().all()
-        for row in rows:
+        for row in inserted_rows:
             if not settings.is_intelligence_pilot_ticker(row.ticker):
                 continue
             source_hash = article_source_content_hash(row)
@@ -741,11 +1206,12 @@ async def fetch_and_ingest_news(
     jobs_deduplicated = 0
     try:
         affected_asset_ids = set()
-        for article in normalized_articles:
+        # Only genuinely new stories can trigger downstream market analysis.
+        # Replayed overlap rows therefore do not refresh quote/profile data.
+        for article in (inserted_rows if settings.NEWS_ENQUEUE_COMPANY_REPORTS else []):
             # Extract tickers from title + summary
             found_tickers = ticker_extractor.extract(
-                text=article.summary or "",
-                title=article.title or "",
+                text=article.summary or "", title=article.title or "",
             )
             for t in found_tickers:
                 aid = await get_asset_id_by_ticker(session, t)
@@ -773,7 +1239,8 @@ async def fetch_and_ingest_news(
     logger.info(
         f"[NewsIngestion] Company report enqueue summary "
         f"ticker={ticker.upper()} articles_fetched={articles_fetched} "
-        f"articles_changed={articles_changed} report_candidates={report_candidates} "
+        f"articles_inserted={ingested} duplicates_ignored={duplicates_ignored} "
+        f"report_candidates={report_candidates} "
         f"report_candidates_discovered={report_candidates_discovered} "
         f"report_candidates_unique={report_candidates_unique} "
         f"scheduler_duplicates_skipped={scheduler_duplicates_skipped} "
@@ -782,45 +1249,89 @@ async def fetch_and_ingest_news(
     )
 
     if _cycle_counters is not None:
-        _cycle_counters["articles_fetched"] += articles_fetched
-        _cycle_counters["articles_changed"] += articles_changed
-        _cycle_counters["report_candidates"] += report_candidates
-        _cycle_counters["report_candidates_discovered"] += report_candidates_discovered
-        _cycle_counters["report_candidates_unique"] += report_candidates_unique
-        _cycle_counters["scheduler_duplicates_skipped"] += scheduler_duplicates_skipped
-        _cycle_counters["enqueue_attempts"] += enqueue_attempts
-        _cycle_counters["jobs_created"] += jobs_created
-        _cycle_counters["jobs_deduplicated"] += jobs_deduplicated
+        for key, value in {
+            "articles_fetched": articles_fetched,
+            "articles_inserted": ingested,
+            "articles_changed": ingested,
+            "duplicates_ignored": duplicates_ignored,
+            "report_candidates": report_candidates,
+            "report_candidates_discovered": report_candidates_discovered,
+            "report_candidates_unique": report_candidates_unique,
+            "scheduler_duplicates_skipped": scheduler_duplicates_skipped,
+            "enqueue_attempts": enqueue_attempts,
+            "jobs_created": jobs_created,
+            "jobs_deduplicated": jobs_deduplicated,
+        }.items():
+            _cycle_counters[key] = int(_cycle_counters.get(key, 0)) + value
 
-    logger.info(f"[NewsIngestion] Ingested {ingested}/{min(len(raw_news), limit)} articles for {ticker}")
+        def _iso_utc_naive(value: Optional[datetime]) -> Optional[str]:
+            return value.replace(tzinfo=timezone.utc).isoformat() if value else None
+
+        oldest_iso = _iso_utc_naive(oldest_fetched)
+        newest_iso = _iso_utc_naive(newest_fetched)
+        inserted_iso = _iso_utc_naive(newest_inserted)
+        current_oldest = _cycle_counters.get("oldest_fetched_article_timestamp")
+        current_newest = _cycle_counters.get("newest_fetched_article_timestamp")
+        current_inserted = _cycle_counters.get("newest_inserted_article_timestamp")
+        if oldest_iso and (not current_oldest or oldest_iso < current_oldest):
+            _cycle_counters["oldest_fetched_article_timestamp"] = oldest_iso
+        if newest_iso and (not current_newest or newest_iso > current_newest):
+            _cycle_counters["newest_fetched_article_timestamp"] = newest_iso
+        if inserted_iso and (not current_inserted or inserted_iso > current_inserted):
+            _cycle_counters["newest_inserted_article_timestamp"] = inserted_iso
+
+    logger.info(f"[NewsIngestion] Ingested {ingested}/{len(normalized_articles)} articles for {ticker}")
     return ingested
 
 
 async def fetch_and_ingest_many(
     tickers: list[str],
     session: AsyncSession,
-    limit: int = 25,
+    limit: Optional[int] = None,
     *,
+    window: Optional[IngestionWindow] = None,
     _cycle_counters: Optional[dict[str, int]] = None,
     _scheduler_attempted_asset_ids: Optional[set[int]] = None,
     _provider_counters: Optional[dict[str, int | bool]] = None,
+    _symbol_outcomes: Optional[dict[str, dict[str, Any]]] = None,
+    _lease_owner: Optional[str] = None,
 ) -> dict[str, int]:
-    """Fetch and ingest news sequentially, stopping after repeated provider timeouts."""
+    """Fetch sequentially, with timeout and exhausted-429 circuit breakers."""
     results: dict[str, int] = {}
     scheduler_attempted_asset_ids = (
         _scheduler_attempted_asset_ids if _scheduler_attempted_asset_ids is not None else set()
     )
-    provider_state: dict[str, str] = {}
+    provider_state: dict[str, Any] = {}
     consecutive_timeouts = 0
 
     for index, ticker in enumerate(tickers):
         provider_state.clear()
         count = await fetch_and_ingest_news(
-            ticker.upper(), session, limit=limit, _cycle_counters=_cycle_counters,
+            ticker.upper(), session, limit=limit, window=window, _cycle_counters=_cycle_counters,
             _scheduler_attempted_asset_ids=scheduler_attempted_asset_ids,
             _provider_counters=_provider_counters, _provider_state=provider_state,
         )
         results[ticker.upper()] = count
+        if _symbol_outcomes is not None:
+            _symbol_outcomes[ticker.upper()] = dict(provider_state)
+        if _lease_owner and ((index + 1) % 5 == 0 or index == len(tickers) - 1):
+            await _renew_ingestion_lease(
+                session,
+                owner=_lease_owner,
+                now=datetime.now(timezone.utc),
+            )
+        if provider_state.get("last_outcome") == "rate_limited":
+            skipped = len(tickers) - index - 1
+            if _provider_counters is not None:
+                _provider_counters["provider_rate_limit_breaker_open"] = True
+                _provider_counters["tickers_skipped_rate_limit"] = int(
+                    _provider_counters.get("tickers_skipped_rate_limit", 0)
+                ) + skipped
+            logger.warning(
+                "[NewsScheduler] Provider rate-limit breaker opened tickers_skipped_rate_limit=%d",
+                skipped,
+            )
+            break
         if provider_state.get("last_outcome") == "timeout":
             consecutive_timeouts += 1
         else:

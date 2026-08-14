@@ -156,7 +156,7 @@ export default function TickerNewsPage() {
               </svg>
             </div>
             <p className="text-gray-500 dark:text-slate-400 text-sm mb-3">No news articles for {ticker}.</p>
-            <p className="text-xs text-gray-400 dark:text-slate-500">News auto-refreshes every 15 minutes during market hours (8 AM – 6 PM EST).</p>
+            <p className="text-xs text-gray-400 dark:text-slate-500">News updates every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly off-hours coverage.</p>
           </div>
         )}
 

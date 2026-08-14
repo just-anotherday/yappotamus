@@ -4,8 +4,59 @@ import asyncio
 import threading
 
 import pytest
+from unittest.mock import AsyncMock
 
 from backend.services import finnhub_service
+
+
+class _ProviderError(Exception):
+    def __init__(self, status_code, retry_after=None):
+        self.status_code = status_code
+        self.response = type(
+            "Response", (), {"status_code": status_code, "headers": {"Retry-After": retry_after} if retry_after else {}}
+        )()
+
+
+@pytest.mark.asyncio
+async def test_retry_api_honors_retry_after_and_counts_each_physical_attempt(monkeypatch):
+    attempts = 0
+
+    async def operation():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise _ProviderError(429, "7")
+        return {"ok": True}
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(finnhub_service.asyncio, "sleep", sleep)
+    metrics = {}
+
+    assert await finnhub_service._retry_api(
+        operation, _request_operation="test", _request_metrics=metrics,
+    ) == {"ok": True}
+    assert attempts == 2
+    sleep.assert_awaited_once_with(7.0)
+    assert metrics == {
+        "provider_requests": 2,
+        "provider_rate_limits": 1,
+        "provider_retries": 1,
+        "provider_successes": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_api_does_not_retry_permanent_client_failure(monkeypatch):
+    operation = AsyncMock(side_effect=_ProviderError(400))
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", AsyncMock())
+    sleep = AsyncMock()
+    monkeypatch.setattr(finnhub_service.asyncio, "sleep", sleep)
+
+    with pytest.raises(_ProviderError):
+        await finnhub_service._retry_api(operation, _request_operation="test")
+    assert operation.await_count == 1
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio

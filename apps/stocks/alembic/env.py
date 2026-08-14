@@ -30,6 +30,7 @@ if config.config_file_name is not None:
 # ---------------------------------------------------------------------
 from backend.config.database import Base, DATABASE_URL
 from backend.models.news import NewsArticle  # noqa: F401
+from backend.models.news_ingestion_state import NewsIngestionState  # noqa: F401
 from backend.models.watchlist import WatchlistModel  # noqa: F401
 from backend.models.report import AnalysisReportModel  # noqa: F401
 

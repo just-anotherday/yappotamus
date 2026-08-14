@@ -203,7 +203,7 @@ export default function NewsFeed({ ticker, limit = 20 }: NewsFeedProps) {
       {!loading && !error && articles.length === 0 && (
         <div className="text-center py-16 bg-white rounded-xl border">
           <p className="text-gray-500">No news articles found.</p>
-          <p className="text-xs text-gray-400 mt-2">News auto-refreshes every 15 minutes during market hours (8 AM – 6 PM EST).</p>
+          <p className="text-xs text-gray-400 mt-2">News updates every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly off-hours coverage.</p>
         </div>
       )}
 

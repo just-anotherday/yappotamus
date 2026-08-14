@@ -11,6 +11,7 @@ from urllib3.exceptions import ReadTimeoutError
 import pytest
 
 from backend.services import news_ingestion_service as service
+from backend.services import finnhub_service
 
 
 @pytest.mark.asyncio
@@ -222,40 +223,25 @@ async def test_recovery_uses_default_batch_limit_and_concurrency_four(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_per_ticker_og_recovery_reuses_one_closed_client(monkeypatch):
+async def test_per_ticker_ingestion_does_not_block_on_og_recovery(monkeypatch):
     class Article:
         def __init__(self, url):
             self.article_url = url
             self.thumbnail_url = None
-            self.title = "title"
-            self.summary = "summary"
+            self.title = "title"; self.summary = "summary"
+            self.finnhub_id = url; self.pub_date = None
 
     fake_client = type("FinnhubClient", (), {"company_news": lambda self, *_args, **_kwargs: [{}, {}]})()
-    original_client = httpx.AsyncClient
-    clients = []
-
-    class TrackingClient(original_client):
-        async def __aenter__(self):
-            clients.append(self)
-            return await super().__aenter__()
-
-    seen = []
-    async def extract(_url, *, client, timeout=8.0):
-        seen.append(client)
-        return None
-
-    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", AsyncMock())
     monkeypatch.setattr(service, "get_finnhub_client", lambda: fake_client)
     monkeypatch.setattr(service, "normalize_finnhub_article", lambda _raw, ticker: Article(f"https://example/{ticker}"))
-    monkeypatch.setattr(service, "batch_ingest_articles", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "batch_ingest_articles", AsyncMock(return_value=service.ArticlePersistResult([], 2, 1)))
     monkeypatch.setattr(service.ticker_extractor, "extract", lambda **_kwargs: set())
-    monkeypatch.setattr(service.httpx, "AsyncClient", TrackingClient)
+    extract = AsyncMock()
     monkeypatch.setattr(service, "_extract_og_image", extract)
 
     assert await service.fetch_and_ingest_news("spy", object(), limit=2) == 0
-    assert len(clients) == 1
-    assert clients[0].is_closed
-    assert len(seen) == 2 and len({id(client) for client in seen}) == 1
+    extract.assert_not_awaited()
 
 
 def _provider_counters():
@@ -283,7 +269,7 @@ async def test_finnhub_company_news_uses_to_thread(monkeypatch):
         assert fn is service._fetch_finnhub_company_news
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", AsyncMock())
     monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
     monkeypatch.setattr(service.asyncio, "to_thread", to_thread)
     counters = _provider_counters()
@@ -310,7 +296,7 @@ async def test_finnhub_blocking_call_does_not_block_event_loop(monkeypatch):
             release.wait(timeout=1)
             return []
 
-    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", AsyncMock())
     monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
 
     task = asyncio.create_task(service.fetch_and_ingest_news("spy", object()))
@@ -436,7 +422,7 @@ async def test_provider_cancellation_propagates_without_failure_counter(monkeypa
     async def cancelled_to_thread(*_args, **_kwargs):
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", AsyncMock())
     monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
     monkeypatch.setattr(service.asyncio, "to_thread", cancelled_to_thread)
     counters = _provider_counters()
@@ -506,7 +492,7 @@ async def test_finnhub_requests_remain_sequential(monkeypatch):
     async def no_delay(_seconds):
         await real_sleep(0)
 
-    monkeypatch.setattr(service, "_rate_limiter", AsyncMock())
+    monkeypatch.setattr(finnhub_service, "_rate_limiter", AsyncMock())
     monkeypatch.setattr(service, "get_finnhub_client", lambda: Client())
     monkeypatch.setattr(service.asyncio, "sleep", no_delay)
 

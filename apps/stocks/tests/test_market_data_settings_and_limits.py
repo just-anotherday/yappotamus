@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.config.polling_settings import PollingSettings
+from backend.config.settings import Settings
 from backend.services import finnhub_service
 
 
@@ -14,13 +15,29 @@ def test_polling_defaults(monkeypatch):
     config = PollingSettings()
     assert (config.LIVE_PRICE_POLL_S, config.MARKET_DATA_BATCH_SIZE) == (15, 50)
     assert (config.PM_FETCH_INTERVAL_S, config.PM_MAX_CONCURRENCY) == (30, 3)
-    assert config.FINNHUB_REQUESTS_PER_MINUTE == 55
+    assert config.FINNHUB_REQUESTS_PER_MINUTE == 45
 
 
 def test_invalid_polling_configuration_is_rejected(monkeypatch):
     monkeypatch.setenv("MARKET_DATA_BATCH_SIZE", "0")
     with pytest.raises(EnvironmentError):
         PollingSettings().MARKET_DATA_BATCH_SIZE
+
+
+def test_provider_operational_budget_cannot_exceed_45_per_minute(monkeypatch):
+    monkeypatch.setenv("FINNHUB_REQUESTS_PER_MINUTE", "46")
+    with pytest.raises(EnvironmentError):
+        PollingSettings().FINNHUB_REQUESTS_PER_MINUTE
+
+
+def test_retry_after_is_bounded_below_the_minimum_ingestion_lease(monkeypatch):
+    monkeypatch.setenv("FINNHUB_MAX_RETRY_AFTER_S", "121")
+    with pytest.raises(EnvironmentError):
+        PollingSettings().FINNHUB_MAX_RETRY_AFTER_S
+
+    monkeypatch.setenv("NEWS_INGESTION_LEASE_MINUTES", "9")
+    with pytest.raises(EnvironmentError):
+        Settings().NEWS_INGESTION_LEASE_MINUTES
 
 
 @pytest.mark.asyncio
@@ -33,7 +50,7 @@ async def test_finnhub_limiter_is_shared_and_enforces_spacing(monkeypatch):
     async def fake_sleep(delay):
         sleeps.append(delay)
 
-    with patch("backend.services.finnhub_service.time.time", side_effect=lambda: next(times)), patch(
+    with patch("backend.services.finnhub_service.time.monotonic", side_effect=lambda: next(times)), patch(
         "backend.services.finnhub_service.asyncio.sleep", side_effect=fake_sleep
     ):
         first_lock = finnhub_service._get_rate_lock()

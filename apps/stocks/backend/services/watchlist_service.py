@@ -34,7 +34,9 @@ async def seed_defaults(session: AsyncSession) -> int:
 
 async def get_all_tickers(session: AsyncSession) -> List[str]:
     """Return all ticker symbols ordered by position."""
-    stmt = select(WatchlistModel.ticker).order_by(WatchlistModel.position)
+    # Enforce the same supported ceiling on readers as on API mutations so a
+    # direct database mistake cannot create unbounded provider fan-out.
+    stmt = select(WatchlistModel.ticker).order_by(WatchlistModel.position).limit(MAX_WATCHLIST_SIZE)
     result = await session.execute(stmt)
     return [row[0] for row in result.all()]
 

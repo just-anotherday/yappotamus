@@ -17,6 +17,8 @@ import re
 from functools import cached_property
 from typing import List, Optional
 
+from backend.config.polling_settings import polling_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,8 +269,11 @@ class Settings:
         Production scheduling is intentionally external: a web process can be
         suspended or restarted independently of a schedule.
         """
-        default = "false" if self.ENVIRONMENT.lower() == "production" else "true"
-        return os.getenv("NEWS_SCHEDULER_ENABLED", default).strip().lower() in {"1", "true", "yes"}
+        if self.ENVIRONMENT.lower() == "production":
+            return False
+        return os.getenv("NEWS_SCHEDULER_ENABLED", "true").strip().lower() in {
+            "1", "true", "yes"
+        }
 
     @property
     def LIVE_PRICE_POLL_S(self) -> int:
@@ -300,7 +305,43 @@ class Settings:
 
     @property
     def FINNHUB_REQUESTS_PER_MINUTE(self) -> int:
-        return self._number("FINNHUB_REQUESTS_PER_MINUTE", "55", int, minimum=1, maximum=60)
+        """Compatibility view of the single provider-budget configuration."""
+        return polling_settings.FINNHUB_REQUESTS_PER_MINUTE
+
+    @property
+    def NEWS_ACTIVE_INTERVAL_MINUTES(self) -> int:
+        return self._number("NEWS_ACTIVE_INTERVAL_MINUTES", "15", int, minimum=5, maximum=60)
+
+    @property
+    def NEWS_OFF_HOURS_INTERVAL_MINUTES(self) -> int:
+        return self._number("NEWS_OFF_HOURS_INTERVAL_MINUTES", "60", int, minimum=15, maximum=240)
+
+    @property
+    def NEWS_OVERLAP_MINUTES(self) -> int:
+        return self._number("NEWS_OVERLAP_MINUTES", "30", int, minimum=15, maximum=180)
+
+    @property
+    def NEWS_INITIAL_BACKFILL_HOURS(self) -> int:
+        return self._number("NEWS_INITIAL_BACKFILL_HOURS", "24", int, minimum=1, maximum=168)
+
+    @property
+    def NEWS_MAX_BACKFILL_HOURS(self) -> int:
+        return self._number("NEWS_MAX_BACKFILL_HOURS", "72", int, minimum=24, maximum=168)
+
+    @property
+    def NEWS_INGESTION_LEASE_MINUTES(self) -> int:
+        return self._number("NEWS_INGESTION_LEASE_MINUTES", "20", int, minimum=10, maximum=60)
+
+    @property
+    def NEWS_STALE_AFTER_MINUTES(self) -> int:
+        return self._number("NEWS_STALE_AFTER_MINUTES", "90", int, minimum=30, maximum=1440)
+
+    @property
+    def NEWS_ENQUEUE_COMPANY_REPORTS(self) -> bool:
+        """Keep news collection independent from quote/profile report refreshes."""
+        return os.getenv("NEWS_ENQUEUE_COMPANY_REPORTS", "false").strip().lower() in {
+            "1", "true", "yes"
+        }
 
     @property
     def YF_PER_TICKER_DELAY_S(self) -> float:
@@ -455,8 +496,26 @@ class Settings:
             self.MARKET_DATA_BACKOFF_INITIAL_S, self.MARKET_DATA_BACKOFF_MAX_S,
             self.MARKET_DATA_JITTER_S, self.FINNHUB_REQUESTS_PER_MINUTE,
         )
+        polling_settings.validate()
+        news_values = (
+            self.NEWS_ACTIVE_INTERVAL_MINUTES,
+            self.NEWS_OFF_HOURS_INTERVAL_MINUTES,
+            self.NEWS_OVERLAP_MINUTES,
+            self.NEWS_INITIAL_BACKFILL_HOURS,
+            self.NEWS_MAX_BACKFILL_HOURS,
+            self.NEWS_INGESTION_LEASE_MINUTES,
+            self.NEWS_STALE_AFTER_MINUTES,
+        )
         if self.MARKET_DATA_BACKOFF_MAX_S < self.MARKET_DATA_BACKOFF_INITIAL_S:
             raise EnvironmentError("MARKET_DATA_BACKOFF_MAX_S must be >= MARKET_DATA_BACKOFF_INITIAL_S")
+        if self.NEWS_INITIAL_BACKFILL_HOURS > self.NEWS_MAX_BACKFILL_HOURS:
+            raise EnvironmentError(
+                "NEWS_INITIAL_BACKFILL_HOURS must be <= NEWS_MAX_BACKFILL_HOURS"
+            )
+        if self.NEWS_STALE_AFTER_MINUTES < self.NEWS_OFF_HOURS_INTERVAL_MINUTES:
+            raise EnvironmentError(
+                "NEWS_STALE_AFTER_MINUTES must be >= NEWS_OFF_HOURS_INTERVAL_MINUTES"
+            )
         if not self.APP_ACCESS_TOKENS:
             raise EnvironmentError(
                 "APP_ACCESS_TOKEN or APP_ACCESS_TOKENS is required"
