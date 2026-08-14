@@ -1,4 +1,4 @@
-import { formatApiTimestamp } from './formatters.ts';
+import { formatApiTimestamp } from './formatters';
 
 export const CURRENT_PROMPT_VERSION = '2.0';
 
