@@ -8,10 +8,16 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 import pytest
 
+from backend import main as backend_main
 from backend.main import app
 
 
-def test_health_liveness_is_lightweight():
+def test_health_liveness_is_lightweight(monkeypatch):
+    class UnexpectedDatabaseAccess:
+        def __call__(self):
+            raise AssertionError("liveness must not access the database")
+
+    monkeypatch.setattr("backend.main.async_session_factory", UnexpectedDatabaseAccess())
     response = TestClient(app).get("/health/live", headers={"X-Request-ID": "health-check-42"})
     assert response.status_code == 200
     assert response.json() == {"status": "healthy"}
@@ -43,16 +49,47 @@ def test_public_readiness_only_reports_overall_and_database_state(monkeypatch):
     assert response.json() == {"status": "ready", "database": "reachable"}
 
 
-def test_public_readiness_returns_503_when_database_is_unreachable(monkeypatch):
+def test_public_readiness_returns_503_when_database_is_unreachable(monkeypatch, caplog):
     class FailingSessionFactory:
         def __call__(self):
-            raise ConnectionError("database unavailable")
+            raise ConnectionError(
+                "database unavailable at postgresql+asyncpg://user:secret@db.example.test/postgres"
+            )
 
     monkeypatch.setattr("backend.main.async_session_factory", FailingSessionFactory())
-    response = TestClient(app).get("/health/ready")
+    with caplog.at_level(logging.WARNING, logger="backend.main"):
+        response = TestClient(app).get("/health/ready")
 
     assert response.status_code == 503
     assert response.json() == {"status": "not_ready", "database": "unreachable"}
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "exception_type=ConnectionError" in messages
+    assert "secret" not in messages
+    assert "postgresql+asyncpg://***@" in messages
+
+
+def test_rate_limit_middleware_emits_wire_429_instead_of_500(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "https://stocks.yapvibes.com")
+    backend_main._rate_limit_store.clear()
+    monkeypatch.setattr(backend_main, "_RATE_LIMIT_MAX_REQS", 0)
+    try:
+        response = TestClient(app, raise_server_exceptions=False).get(
+            "/api/operations/status",
+            headers={"Origin": "https://stocks.yapvibes.com"},
+        )
+    finally:
+        backend_main._rate_limit_store.clear()
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "error": "Too many requests. Please slow down.",
+        "status_code": 429,
+    }
+    assert response.headers["Retry-After"] == str(backend_main._RATE_LIMIT_WINDOW)
+    assert response.headers["access-control-allow-origin"] == "https://stocks.yapvibes.com"
+    exposed_headers = response.headers["access-control-expose-headers"].lower()
+    assert "x-request-id" in exposed_headers
+    assert "retry-after" in exposed_headers
 
 def test_operations_status_is_protected():
     response = TestClient(app).get("/api/operations/status")

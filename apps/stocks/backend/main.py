@@ -14,13 +14,13 @@ import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.auth import verify_app_access_token
 from backend.config.settings import settings
-from backend.config.database import init_db, async_session_factory
+from backend.config.database import init_db, async_session_factory, sanitize_database_error
 from backend.services.market_data_service import MarketDataService, set_event_loop
 from backend.services.watchlist_service import seed_defaults, get_all_tickers
 from backend.services.connection_manager import ConnectionManager
@@ -36,7 +36,7 @@ from backend.services.market_data_observability import (
     normalize_correlation_id,
 )
 from backend.services.memory_diagnostics import log_memory
-from backend.exceptions import register_exception_handlers
+from backend.exceptions import _configured_cors_headers, register_exception_handlers
 
 from backend.routers import stock as stock_router
 from backend.routers import watchlist as watchlist_router
@@ -267,7 +267,22 @@ def create_app() -> FastAPI:
 
             if len(timestamps) >= _RATE_LIMIT_MAX_REQS:
                 logger.warning("[RateLimit] %s exceeded %d req/%ds", client_ip, _RATE_LIMIT_MAX_REQS, _RATE_LIMIT_WINDOW)
-                raise HTTPException(status_code=429, detail="Too many requests. Please slow down.")
+                headers = _configured_cors_headers(request)
+                headers["Retry-After"] = str(_RATE_LIMIT_WINDOW)
+                if headers:
+                    headers["Access-Control-Expose-Headers"] = (
+                        "X-Request-ID, Retry-After"
+                    )
+                # HTTPException raised from user middleware bypasses FastAPI's
+                # registered handler and would otherwise become a wire 500.
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": "Too many requests. Please slow down.",
+                        "status_code": 429,
+                    },
+                    headers=headers,
+                )
 
             timestamps.append(now)
 
@@ -317,9 +332,11 @@ def create_app() -> FastAPI:
                 async with async_session_factory() as session:
                     await session.execute(text("SELECT 1"))
             database_reachable = True
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "[Health] readiness database check failed",
+                "[Health] readiness database check failed exception_type=%s message=%s",
+                type(exc).__name__,
+                sanitize_database_error(exc),
                 extra={"event": "readiness_failed", "dependency": "database"},
             )
 

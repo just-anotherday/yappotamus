@@ -19,7 +19,7 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Trigger one-shot ingestion
         env:
@@ -30,6 +30,153 @@ jobs:
         run: |
           test -n "$STOCKS_API_URL"
           test -n "$STOCKS_INTERNAL_JOB_TOKEN"
+
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+
+          print_response_body() {
+            local body_file="$1"
+            local body_size
+            if [ ! -s "$body_file" ]; then
+              echo "response_body_bytes=0"
+              echo "body | <empty response body>"
+              return
+            fi
+            body_size="$(wc -c < "$body_file")"
+            body_size="${body_size//[[:space:]]/}"
+            echo "response_body_bytes=$body_size"
+            if [ "$body_size" -le 8192 ]; then
+              sed 's/^/body | /' "$body_file"
+            else
+              {
+                head -c 4096 "$body_file"
+                printf '\n... response body truncated (%s bytes total) ...\n' "$body_size"
+                tail -c 4096 "$body_file"
+              } | sed 's/^/body | /'
+            fi
+            printf '\n'
+          }
+
+          is_transient_gateway_status() {
+            case "$1" in
+              000|408|429|500|502|503|504) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          health_retry_delay_seconds="${NEWS_INGEST_HEALTH_RETRY_DELAY_SECONDS:-10}"
+          case "$health_retry_delay_seconds" in
+            ''|*[!0-9]*)
+              echo "NEWS_INGEST_HEALTH_RETRY_DELAY_SECONDS must be a non-negative integer"
+              exit 1
+              ;;
+          esac
+
+          wake_url="${STOCKS_API_URL%/}/health/live"
+          wake_deadline=$((SECONDS + 180))
+          wake_attempt=1
+          while true; do
+            if [ "$SECONDS" -ge "$wake_deadline" ]; then
+              echo "phase=wake outcome=timeout hard_limit_seconds=180"
+              exit 1
+            fi
+            wake_request_timeout=$((wake_deadline - SECONDS))
+            if [ "$wake_request_timeout" -gt 15 ]; then
+              wake_request_timeout=15
+            fi
+            : > "$response_file"
+            wake_status="000"
+            if wake_status="$(curl --fail-with-body --show-error --silent \
+              --output "$response_file" --write-out '%{http_code}' \
+              --connect-timeout 15 --max-time "$wake_request_timeout" \
+              --request GET "$wake_url")"; then
+              wake_curl_exit=0
+            else
+              wake_curl_exit=$?
+            fi
+            wake_status="${wake_status:-000}"
+            echo "phase=wake attempt=$wake_attempt curl_exit=$wake_curl_exit http_status=$wake_status"
+            echo "phase=wake response_body:"
+            print_response_body "$response_file"
+
+            if [ "$wake_curl_exit" -eq 0 ] \
+              && [ "$wake_status" = "200" ] \
+              && grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"' "$response_file"; then
+              echo "phase=wake outcome=process_reachable"
+              break
+            fi
+
+            if [ "$wake_status" != "200" ] \
+              && ! is_transient_gateway_status "$wake_status"; then
+              echo "phase=wake outcome=permanent_http_failure http_status=$wake_status"
+              exit 1
+            fi
+            if [ "$wake_status" = "200" ]; then
+              echo "phase=wake outcome=unexpected_gateway_body"
+            else
+              echo "phase=wake outcome=render_gateway_or_transport_unavailable"
+            fi
+            if [ "$SECONDS" -ge "$wake_deadline" ]; then
+              echo "phase=wake outcome=timeout hard_limit_seconds=180"
+              exit 1
+            fi
+            wake_remaining=$((wake_deadline - SECONDS))
+            wake_sleep="$health_retry_delay_seconds"
+            if [ "$wake_sleep" -gt "$wake_remaining" ]; then
+              wake_sleep="$wake_remaining"
+            fi
+            if [ "$wake_sleep" -gt 0 ]; then
+              sleep "$wake_sleep"
+            fi
+            wake_attempt=$((wake_attempt + 1))
+          done
+
+          readiness_url="${STOCKS_API_URL%/}/health/ready"
+          readiness_attempt=1
+          while [ "$readiness_attempt" -le 3 ]; do
+            : > "$response_file"
+            readiness_status="000"
+            if readiness_status="$(curl --fail-with-body --show-error --silent \
+              --output "$response_file" --write-out '%{http_code}' \
+              --connect-timeout 5 --max-time 5 \
+              --request GET "$readiness_url")"; then
+              readiness_curl_exit=0
+            else
+              readiness_curl_exit=$?
+            fi
+            readiness_status="${readiness_status:-000}"
+            echo "phase=readiness attempt=$readiness_attempt/3 curl_exit=$readiness_curl_exit http_status=$readiness_status"
+            echo "phase=readiness response_body:"
+            print_response_body "$response_file"
+
+            if [ "$readiness_curl_exit" -eq 0 ] \
+              && [ "$readiness_status" = "200" ] \
+              && grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' "$response_file"; then
+              echo "phase=readiness outcome=application_ready"
+              break
+            fi
+
+            if [ "$readiness_status" = "503" ] \
+              && grep -Eq '"status"[[:space:]]*:[[:space:]]*"not_ready"' "$response_file"; then
+              echo "phase=readiness outcome=application_database_not_ready"
+            elif [ "$readiness_status" != "200" ] \
+              && ! is_transient_gateway_status "$readiness_status"; then
+              echo "phase=readiness outcome=permanent_http_failure http_status=$readiness_status"
+              exit 1
+            else
+              echo "phase=readiness outcome=gateway_transport_or_unexpected_response"
+            fi
+
+            if [ "$readiness_attempt" -eq 3 ]; then
+              echo "phase=readiness outcome=failed attempts=3"
+              exit 1
+            fi
+            if [ "$health_retry_delay_seconds" -gt 0 ]; then
+              sleep "$health_retry_delay_seconds"
+            fi
+            readiness_attempt=$((readiness_attempt + 1))
+          done
+
           endpoint="${STOCKS_API_URL%/}/internal/jobs/news-ingest"
           if [ "$FORCE_NEWS_INGEST" = "true" ]; then
             endpoint="${endpoint}?force=true"
@@ -38,9 +185,36 @@ jobs:
           else
             endpoint="${endpoint}?trigger_kind=quarter_hour"
           fi
-          curl --fail-with-body --show-error --silent \
-            --retry 2 --retry-connrefused --retry-delay 5 --retry-max-time 780 \
+
+          : > "$response_file"
+          ingestion_status="000"
+          if ingestion_status="$(curl --fail-with-body --show-error --silent \
+            --output "$response_file" --write-out '%{http_code}' \
             --connect-timeout 15 --max-time 780 \
             --request POST \
             --header "Authorization: Bearer $STOCKS_INTERNAL_JOB_TOKEN" \
-            "$endpoint"
+            "$endpoint")"; then
+            ingestion_curl_exit=0
+          else
+            ingestion_curl_exit=$?
+          fi
+          ingestion_status="${ingestion_status:-000}"
+          echo "phase=ingestion attempt=1/1 curl_exit=$ingestion_curl_exit http_status=$ingestion_status"
+          echo "phase=ingestion response_body:"
+          print_response_body "$response_file"
+
+          if [ "$ingestion_curl_exit" -ne 0 ]; then
+            exit "$ingestion_curl_exit"
+          fi
+          if [ "$ingestion_status" != "200" ]; then
+            echo "phase=ingestion outcome=unexpected_http_status http_status=$ingestion_status"
+            exit 1
+          fi
+          if grep -Eq '"status"[[:space:]]*:[[:space:]]*"completed"' "$response_file"; then
+            echo "phase=ingestion outcome=completed"
+          elif grep -Eq '"status"[[:space:]]*:[[:space:]]*"skipped_cadence"' "$response_file"; then
+            echo "phase=ingestion outcome=skipped_cadence"
+          else
+            echo "phase=ingestion outcome=unexpected_response_body http_status=200"
+            exit 1
+          fi
