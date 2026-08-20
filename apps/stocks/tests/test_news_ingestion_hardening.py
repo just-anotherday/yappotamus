@@ -132,6 +132,58 @@ async def test_production_path_persists_complete_bounded_response(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_response", [None, {}])
+async def test_non_list_provider_response_is_failure_not_zero_news(
+    monkeypatch, invalid_response
+):
+    provider = {
+        "provider_requests": 0,
+        "provider_successes": 0,
+        "provider_failures": 0,
+    }
+
+    async def execute_request(func, *args, **kwargs):
+        metrics = kwargs["_request_metrics"]
+        metrics["provider_requests"] += 1
+        try:
+            result = await func(*args)
+        except Exception:
+            metrics["provider_failures"] += 1
+            raise
+        metrics["provider_successes"] += 1
+        return result
+
+    monkeypatch.setattr(service, "_retry_api", execute_request)
+    monkeypatch.setattr(service, "get_finnhub_client", lambda: object())
+    monkeypatch.setattr(
+        service.asyncio,
+        "to_thread",
+        AsyncMock(return_value=invalid_response),
+    )
+    persist = AsyncMock()
+    monkeypatch.setattr(service, "batch_ingest_articles", persist)
+    outcome = {}
+
+    result = await service.fetch_and_ingest_news(
+        "AAPL",
+        object(),
+        limit=None,
+        _provider_counters=provider,
+        _provider_state=outcome,
+    )
+
+    assert result == 0
+    assert provider == {
+        "provider_requests": 1,
+        "provider_successes": 0,
+        "provider_failures": 1,
+    }
+    assert outcome["last_outcome"] == "failure"
+    assert outcome["exception_type"] == "TypeError"
+    persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_large_persistence_batch_is_chunked_without_discarding_rows():
     result = SimpleNamespace(
         scalars=lambda: SimpleNamespace(all=lambda: []),
@@ -210,6 +262,75 @@ async def test_completion_cannot_report_success_after_lease_ownership_is_lost():
             status="completed",
             metrics={},
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["partial", "failed", "cancelled"])
+async def test_noncompleted_finish_releases_lease_without_advancing_checkpoint(status):
+    class RecordingSession:
+        def __init__(self):
+            self.statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+            return SimpleNamespace(rowcount=1)
+
+        async def commit(self):
+            return None
+
+    session = RecordingSession()
+    candidate_checkpoint = datetime(2026, 8, 14, 14, 0, tzinfo=UTC)
+
+    await service._finish_ingestion_run(
+        session,
+        owner="owner",
+        now=candidate_checkpoint,
+        status=status,
+        metrics={},
+        successful_window_end=candidate_checkpoint,
+    )
+
+    values = {
+        column.key: getattr(value, "value", value)
+        for column, value in session.statement._values.items()
+    }
+    assert values["lease_owner"] is None
+    assert values["lease_expires_at"] is None
+    assert "last_successful_window_end" not in values
+
+
+@pytest.mark.asyncio
+async def test_completed_finish_releases_lease_and_advances_checkpoint():
+    class RecordingSession:
+        def __init__(self):
+            self.statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+            return SimpleNamespace(rowcount=1)
+
+        async def commit(self):
+            return None
+
+    session = RecordingSession()
+    checkpoint = datetime(2026, 8, 14, 14, 0, tzinfo=UTC)
+
+    await service._finish_ingestion_run(
+        session,
+        owner="owner",
+        now=checkpoint,
+        status="completed",
+        metrics={},
+        successful_window_end=checkpoint,
+    )
+
+    values = {
+        column.key: getattr(value, "value", value)
+        for column, value in session.statement._values.items()
+    }
+    assert values["lease_owner"] is None
+    assert values["lease_expires_at"] is None
+    assert values["last_successful_window_end"] == checkpoint
 
 
 class _SessionContext:

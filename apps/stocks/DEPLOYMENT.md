@@ -180,8 +180,19 @@ as **build variables before building**. They are not secrets.
 The production collector is a one-shot, authenticated internal operation. GitHub
 Actions supplies an hourly baseline plus weekday quarter-hour triggers spanning
 both EDT and EST, and can be run manually with `workflow_dispatch`; it wakes
-Render if necessary. The workflow labels baseline versus quarter-hour triggers,
-and the service applies the authoritative runtime schedule guard
+Render if necessary. Each job polls the process-only `GET /health/live` endpoint
+at most once every 10 seconds for up to 180 seconds, then makes at most three
+sequential `GET /health/ready` database checks. It stops probing as soon as
+readiness succeeds and makes exactly one authenticated ingestion POST. The POST
+is deliberately not replayed after a timeout or gateway error because the client
+cannot prove that the server did not already acquire the ingestion lease. HTTP
+409 (`skipped_overlap`) and HTTP 424 (`partial`) remain visible workflow failures:
+marking either as success could hide an earlier ambiguous request or an incomplete
+provider window. Every phase logs the HTTP status and a bounded response-body
+excerpt without printing the endpoint or bearer token.
+
+The workflow labels baseline versus quarter-hour triggers, and the service
+applies the authoritative runtime schedule guard
 in `America/New_York`: on weekdays from 4:00 AM until 8:00 PM it runs every 15
 minutes, while overnight and on weekends it runs only once per hour.
 Manual `workflow_dispatch` runs append `force=true` to bypass that cadence guard

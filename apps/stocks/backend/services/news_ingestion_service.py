@@ -557,9 +557,14 @@ async def fetch_and_ingest_watchlist_once(
     )
     failed_symbols = len(tickers) - successful_symbols
     status = "completed" if failed_symbols == 0 else "partial"
-    if provider["provider_rate_limit_breaker_open"]:
+    failure_outcomes = {
+        item.get("last_outcome")
+        for item in symbol_outcomes.values()
+        if item.get("last_outcome") != "success"
+    }
+    if provider["provider_rate_limit_breaker_open"] or failure_outcomes == {"rate_limited"}:
         error_code = "provider_rate_limited"
-    elif provider["provider_timeout_breaker_open"]:
+    elif provider["provider_timeout_breaker_open"] or failure_outcomes == {"timeout"}:
         error_code = "provider_timeout"
     elif failed_symbols:
         error_code = "provider_failure"
@@ -589,15 +594,38 @@ async def fetch_and_ingest_watchlist_once(
             error_code=error_code,
         )
 
+    provider_failure_details: dict[str, dict[str, Any]] = {}
+    for ticker, outcome in symbol_outcomes.items():
+        if outcome.get("last_outcome") == "success":
+            continue
+        safe_outcome: dict[str, Any] = {
+            "outcome": outcome.get("last_outcome") or "unknown",
+        }
+        if isinstance(outcome.get("status_code"), int):
+            safe_outcome["status_code"] = outcome["status_code"]
+        if isinstance(outcome.get("exception_type"), str):
+            safe_outcome["exception_type"] = outcome["exception_type"]
+        provider_failure_details[ticker] = safe_outcome
+
     summary = {
         "status": status, "tickers": len(tickers), "tickers_processed": len(results),
+        "symbols_attempted": len(symbol_outcomes),
         "symbols_successful": successful_symbols, "symbols_failed": failed_symbols,
+        "error_code": error_code,
         "articles_returned": counters["articles_returned"],
         "articles_inserted": counters["articles_inserted"],
         "duplicates_ignored": counters["duplicates_ignored"],
         "provider_requests": provider["provider_requests"],
+        "provider_successes": provider["provider_successes"],
+        "provider_timeouts": provider["provider_timeouts"],
+        "provider_failures": provider["provider_failures"],
         "provider_retries": provider["provider_retries"],
         "provider_rate_limits": provider["provider_rate_limits"],
+        "provider_timeout_breaker_open": provider["provider_timeout_breaker_open"],
+        "provider_rate_limit_breaker_open": provider["provider_rate_limit_breaker_open"],
+        "tickers_skipped_provider_timeout": provider["tickers_skipped_provider_timeout"],
+        "tickers_skipped_rate_limit": provider["tickers_skipped_rate_limit"],
+        "provider_failure_details": provider_failure_details,
         "results": results, "duration_seconds": duration,
         "lookback_minutes": window.lookback_minutes, "recovery_mode": window.mode,
     }
@@ -1094,9 +1122,12 @@ async def fetch_and_ingest_news(
     to_date = request_window.end.strftime("%Y-%m-%d")
 
     async def _company_news_request(client, symbol: str, start_date: str, end_date: str):
-        return await asyncio.to_thread(
+        response = await asyncio.to_thread(
             _fetch_finnhub_company_news, client, symbol, start_date, end_date,
         )
+        if not isinstance(response, list):
+            raise TypeError("Finnhub company-news response must be a list")
+        return response
 
     try:
         client = get_finnhub_client()
