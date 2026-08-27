@@ -1,10 +1,18 @@
 import { formatApiTimestamp } from './formatters.ts';
 
-export const CURRENT_PROMPT_VERSION = '2.0';
+export const CURRENT_PROMPT_VERSION = '3.0';
 
-// Intentionally empty until a historical prompt version can be proven from
-// stored metadata. Never classify a version as legacy based on age or "1.0" alone.
-const CONFIRMED_LEGACY_PROMPT_VERSIONS = new Set<string>();
+export function formatArticlesSupplied(count: number): string {
+  return `Articles Supplied: ${count}`;
+}
+
+export function formatArticlesCited(count: number): string {
+  return `Articles Cited: ${count}`;
+}
+
+// Prompt v2 is now a known historical version. Never classify other versions
+// as legacy based on age or a guessed default alone.
+const CONFIRMED_LEGACY_PROMPT_VERSIONS = new Set<string>(['2.0']);
 
 export function getPromptBadge(
   promptVersion?: string | null,

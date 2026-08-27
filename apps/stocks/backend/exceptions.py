@@ -5,7 +5,13 @@ from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
-from backend.services.ai.exceptions import AIConnectionError, AIValidationError
+from backend.services.ai.exceptions import (
+    AIConnectionError,
+    AIHTTPError,
+    AISemanticGroundingError,
+    AIStructuredOutputError,
+    AIValidationError,
+)
 from backend.config.database import sanitize_database_error
 from backend.config.settings import settings
 
@@ -63,6 +69,57 @@ def register_exception_handlers(app):
         return JSONResponse(
             status_code=503,
             content={"error": exc.message, "status_code": 503},
+        )
+
+    @app.exception_handler(AIStructuredOutputError)
+    async def ai_structured_output_exception_handler(
+        request: Request,
+        exc: AIStructuredOutputError,
+    ):
+        logger.error(
+            "[AI][StructuredOutput] %s %s: %s details=%s",
+            request.method,
+            request.url.path,
+            exc.message,
+            exc.details,
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": exc.message, "status_code": 502},
+            headers=_configured_cors_headers(request),
+        )
+
+    @app.exception_handler(AISemanticGroundingError)
+    async def ai_semantic_grounding_exception_handler(
+        request: Request,
+        exc: AISemanticGroundingError,
+    ):
+        logger.error(
+            "[AI][SemanticGrounding] %s %s: %s details=%s",
+            request.method,
+            request.url.path,
+            exc.message,
+            exc.details,
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": exc.message, "status_code": 502},
+            headers=_configured_cors_headers(request),
+        )
+
+    @app.exception_handler(AIHTTPError)
+    async def ai_http_exception_handler(request: Request, exc: AIHTTPError):
+        logger.error(
+            "[AI][ProviderHTTP] %s %s: %s details=%s",
+            request.method,
+            request.url.path,
+            exc.message,
+            exc.details,
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": exc.message, "status_code": 502},
+            headers=_configured_cors_headers(request),
         )
 
     @app.exception_handler(HTTPException)

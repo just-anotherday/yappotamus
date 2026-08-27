@@ -2,8 +2,11 @@
 
 from datetime import datetime, timezone
 
+import pytest
+
 from backend.models.analysis import FinancialAnalysisRequest, PriceDataRequest
 from backend.models.report_schemas import AnalysisReportDetail, ReportSummaryOut
+from backend.services import report_service
 from backend.services.ollama_service import (
     CURRENT_PROMPT_VERSION,
     get_effective_prompt_hash,
@@ -19,6 +22,7 @@ def test_report_summary_returns_prompt_metadata_and_creation_time():
         overall_sentiment="Bullish",
         confidence_score=72,
         articles_count=14,
+        articles_cited_count=6,
         model_used="example-model",
         prompt_version=CURRENT_PROMPT_VERSION,
         prompt_hash="a" * 64,
@@ -27,6 +31,8 @@ def test_report_summary_returns_prompt_metadata_and_creation_time():
 
     assert summary["prompt_version"] == CURRENT_PROMPT_VERSION
     assert summary["prompt_hash"] == "a" * 64
+    assert summary["articles_count"] == 14
+    assert summary["articles_cited_count"] == 6
     serialized_created_at = datetime.fromisoformat(summary["created_at"].replace("Z", "+00:00"))
     assert serialized_created_at == created_at
     assert serialized_created_at.utcoffset() == timezone.utc.utcoffset(created_at)
@@ -73,3 +79,48 @@ def test_effective_prompt_hash_is_deterministic_and_payload_sensitive():
     assert len(first) == 64
     assert first == second
     assert first != changed
+
+
+class _CapturingSession:
+    def __init__(self):
+        self.added = None
+
+    def add(self, value):
+        self.added = value
+
+    async def flush(self):
+        self.added.id = 901
+
+
+@pytest.mark.asyncio
+async def test_report_creation_persists_an_explicit_utc_wall_clock(monkeypatch):
+    generated_at_utc = datetime(2026, 8, 20, 17, 35)
+    monkeypatch.setattr(
+        report_service,
+        "utc_now_naive",
+        lambda: generated_at_utc,
+    )
+    session = _CapturingSession()
+
+    report_id = await report_service.create_report(
+        session=session,
+        ticker="AMD",
+        report_data={"overall_sentiment": "Bullish", "articles_used": []},
+        articles_count=35,
+        model_used="test-model",
+        prompt_version="3.0",
+    )
+
+    assert report_id == 901
+    assert session.added.created_at == generated_at_utc
+    assert session.added.created_at.tzinfo is None
+    assert report_service.count_cited_articles(session.added.report_data) == 0
+
+
+def test_cited_article_count_is_derived_safely_for_current_and_legacy_reports():
+    current = {"articles_used": [{"title": f"Article {index}"} for index in range(10)]}
+
+    assert report_service.count_cited_articles(current) == 10
+    assert report_service.count_cited_articles({}) == 0
+    assert report_service.count_cited_articles({"articles_used": None}) == 0
+    assert report_service.count_cited_articles(None) == 0

@@ -381,6 +381,7 @@ export interface ReportSummary {
   overall_sentiment: string;
   confidence_score: number;
   articles_count: number;
+  articles_cited_count: number;
   current_price_at_analysis: number | null;
   model_used: string;
   prompt_version: string;
@@ -401,7 +402,6 @@ export interface ReportDetail {
   ticker: string;
   report_data: FinancialAnalysisReport;
   articles_count: number;
-  days_back: number;
   model_used: string;
   prompt_version: string;
   prompt_hash: string | null;

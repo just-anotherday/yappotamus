@@ -14,7 +14,13 @@ from backend.routers.auth import router as auth_router
 from backend.routers.analysis import router as analysis_router
 from backend.services.ai import ProviderRegistry
 from backend.services.ai.ai_service import BaseAIClient, validate_provider_model
-from backend.services.ai.exceptions import AIConnectionError, AIValidationError
+from backend.services.ai.exceptions import (
+    AIConnectionError,
+    AIHTTPError,
+    AISemanticGroundingError,
+    AIStructuredOutputError,
+    AIValidationError,
+)
 from backend.services.ai.openai_provider import OpenAIProvider
 from backend.services.ollama_service import generate_analysis
 
@@ -166,3 +172,65 @@ async def test_ai_errors_map_to_http_statuses(monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/analysis/generate", json=payload)
     assert response.status_code == 503
+
+    async def structured_output_failure(*args, **kwargs):
+        raise AIStructuredOutputError(
+            "AI analysis could not be completed because the model returned "
+            "an invalid structured response."
+        )
+
+    monkeypatch.setattr(
+        "backend.routers.analysis.generate_analysis",
+        structured_output_failure,
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/analysis/generate", json=payload)
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": (
+            "AI analysis could not be completed because the model returned "
+            "an invalid structured response."
+        ),
+        "status_code": 502,
+    }
+
+    async def provider_http_failure(*args, **kwargs):
+        raise AIHTTPError(
+            "Ollama returned an unsuccessful response during generation",
+            details={"status_code": 500},
+        )
+
+    monkeypatch.setattr(
+        "backend.routers.analysis.generate_analysis",
+        provider_http_failure,
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/analysis/generate", json=payload)
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "Ollama returned an unsuccessful response during generation",
+        "status_code": 502,
+    }
+
+    async def semantic_grounding_failure(*args, **kwargs):
+        raise AISemanticGroundingError(
+            "AI analysis could not be completed because the corrected report "
+            "still violated semantic grounding rules.",
+            details={"rejected_output": "must-not-reach-client"},
+        )
+
+    monkeypatch.setattr(
+        "backend.routers.analysis.generate_analysis",
+        semantic_grounding_failure,
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/analysis/generate", json=payload)
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": (
+            "AI analysis could not be completed because the corrected report "
+            "still violated semantic grounding rules."
+        ),
+        "status_code": 502,
+    }
+    assert "must-not-reach-client" not in response.text
