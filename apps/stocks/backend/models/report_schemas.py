@@ -23,6 +23,7 @@ class ReportSummaryOut(BaseModel):
     overall_sentiment: str
     confidence_score: int
     articles_count: int
+    articles_cited_count: int = 0
     current_price_at_analysis: Optional[float] = None
     model_used: str
     prompt_version: str

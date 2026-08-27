@@ -633,7 +633,7 @@ class AIWorker:
                 logger.warning("[AIWorker] No ticker for asset_id=%d, skipping", job.target_id)
                 return {"status": "skipped", "reason": "no_ticker"}
 
-            # 2. Read per-asset analysis config (defaults: 7 days, 15 articles)
+            # 2. Read per-asset analysis config (defaults: 7 days, 50 articles)
             asset_cfg = await session.execute(
                 select(Asset.analysis_window_days, Asset.max_articles_per_analysis, Asset.name)
                 .where(Asset.id == job.target_id)
@@ -641,11 +641,11 @@ class AIWorker:
             cfg_row = asset_cfg.first()
             if cfg_row:
                 window_days = max(1, min(90, cfg_row[0] or 7))
-                max_articles = max(5, min(30, cfg_row[1] or 15))
+                max_articles = max(5, min(50, cfg_row[1] or 50))
                 company_name = cfg_row[2]
             else:
                 window_days = 7
-                max_articles = 15
+                max_articles = 50
                 company_name = None
 
             # Fetch more candidates than needed so scoring can pick the best ones
@@ -724,16 +724,12 @@ class AIWorker:
             existing_report = existing.scalar_one_or_none()
 
             report_dict = result.model_dump(exclude={"report_id"})
-
-            # Populate articles_used provenance so frontend can display source links
-            report_dict["articles_used"] = [
-                {
-                    "title": a.title or "",
-                    "url": a.article_url or "",
-                    "published_at": utc_isoformat(a.pub_date),
-                }
-                for a in articles
-            ]
+            logger.info(
+                "[AIWorker][Citations] persisted_count=%d supplied_count=%d ticker=%s",
+                len(report_dict.get("articles_used", [])),
+                len(articles),
+                ticker.upper(),
+            )
 
             # Import history model for audit trail
             from backend.models.ai_report_history import AICompanyReportHistory
@@ -760,6 +756,7 @@ class AIWorker:
                 existing_report.confidence_score = result.confidence_score
                 existing_report.articles_count = len(articles)
                 existing_report.model_used = effective_model
+                existing_report.prompt_version = CURRENT_PROMPT_VERSION
                 existing_report.price_snapshot = price_data.current_price
                 logger.info("[AIWorker] Updated report for %s", ticker)
             else:
@@ -839,8 +836,11 @@ class AIWorker:
                     daily_change_percent=(quote.get("d", 0) / quote.get("c", 1) * 100) if quote.get("c") else 0,
                     weekly_change_percent=None,
                     monthly_change_percent=None,
-                    fifty_two_week_high=quote.get("h", 0),
-                    fifty_two_week_low=quote.get("l", 0),
+                    # Finnhub quote h/l are the current day's high/low, not a
+                    # 52-week range. Omit unavailable annual-range data rather
+                    # than mislabeling daily prices in the analysis prompt.
+                    fifty_two_week_high=None,
+                    fifty_two_week_low=None,
                     trading_volume=int(quote.get("v", 0)),
                     beta=float(profile.get("beta", 0)) if profile.get("beta") else None,
                     market_cap=float(profile.get("marketCapitalization", 0)) if profile.get("marketCapitalization") else None,
@@ -852,8 +852,8 @@ class AIWorker:
         return PriceDataRequest(
             current_price=0.0,
             daily_change_percent=0.0,
-            fifty_two_week_high=0.0,
-            fifty_two_week_low=0.0,
+            fifty_two_week_high=None,
+            fifty_two_week_low=None,
             trading_volume=0,
         )
 

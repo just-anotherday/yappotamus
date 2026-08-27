@@ -9,7 +9,12 @@ import type { ReportSummary, ReportPaginationResponse, OllamaConfigStatus } from
 import { useAnalysisStatus } from '@/hooks/useAnalysisStatus';
 import ArticleSelectionMeter from '@/components/ArticleSelectionMeter';
 import { easternDayLabel, formatApiTimestamp } from '@/lib/formatters';
-import { formatReportDateTime, getPromptBadge } from '@/lib/reportPresentation';
+import {
+  formatArticlesCited,
+  formatArticlesSupplied,
+  formatReportDateTime,
+  getPromptBadge,
+} from '@/lib/reportPresentation';
 
 export default function ReportsPage() {
   const router = useRouter();
@@ -45,7 +50,7 @@ export default function ReportsPage() {
    const [availableArticles, setAvailableArticles] = useState<any[]>([]);
    const [selectedArticleIds, setSelectedArticleIds] = useState<number[]>([]);
    const [daysBack, setDaysBack] = useState(3);
-   const [maxArticles, setMaxArticles] = useState(15);
+   const [maxArticles, setMaxArticles] = useState(50);
    const [loadingArticles, setLoadingArticles] = useState(false);
    const [articleSearch, setArticleSearch] = useState('');
    const [articleGroupByDate, setArticleGroupByDate] = useState(true);
@@ -779,7 +784,8 @@ export default function ReportsPage() {
                 {/* Articles count */}
                 <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}
                   className="dark:text-slate-500">
-                  {report.articles_count} articles
+                  <div>{formatArticlesSupplied(report.articles_count)}</div>
+                  <div>{formatArticlesCited(report.articles_cited_count ?? 0)}</div>
                 </div>
 
                 {/* Prompt version & model */}
