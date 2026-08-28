@@ -23,6 +23,10 @@ from pydantic import ValidationError
 
 from backend.models.analysis import (
     ArticleReference,
+    CorrectionPatch,
+    CorrectionPatchSet,
+    CorrectionPatchTarget,
+    CorrectionTargetRegistry,
     FinancialAnalysisLLMResponse,
     FinancialAnalysisRequest,
     FinancialAnalysisResponse,
@@ -887,8 +891,8 @@ def _build_reviewable_claim_units(
     def add(unit_id: str, section: str, value: Any) -> None:
         if value is None:
             return
-        text = str(value).strip()
-        if text and text.upper() != "N/A":
+        text = str(value)
+        if text.strip() and text.strip().upper() != "N/A":
             units.append(ReviewableClaimUnit(
                 review_unit_id=unit_id, section=section, candidate_text=text
             ))
@@ -967,6 +971,786 @@ def _build_review_coverage_segments(
             ))
             ordinal += 1
     return segments
+
+
+_PATCHABLE_GROUNDING_SECTIONS = frozenset({
+    "news_summary",
+    "key_catalysts",
+    "key_risks",
+    "bull_case",
+    "bear_case",
+    "market_reaction_analysis",
+    "technical_analysis",
+    "outlook",
+    "actionable_insights",
+    "portfolio_fit",
+    "executive_summary",
+})
+
+
+def build_correction_target_registry(
+    review_units: List[ReviewableClaimUnit],
+    coverage_segments: Optional[List[ReviewCoverageSegment]] = None,
+    violation_rules_by_target: Optional[Dict[str, List[str]]] = None,
+) -> CorrectionTargetRegistry:
+    """Promote deterministic review segments into request-local patch targets.
+
+    Coverage segmentation remains the single source of target boundaries.  This
+    function performs no review, mutation, persistence, or provider work.
+    """
+
+    segments = (
+        coverage_segments
+        if coverage_segments is not None
+        else _build_review_coverage_segments(review_units)
+    )
+    units_by_id = {unit.review_unit_id: unit for unit in review_units}
+    if len(units_by_id) != len(review_units):
+        raise ValueError("review unit IDs must be unique")
+
+    segments_by_unit: Dict[str, List[ReviewCoverageSegment]] = {}
+    for segment in segments:
+        segments_by_unit.setdefault(segment.review_unit_id, []).append(segment)
+
+    targets: List[CorrectionPatchTarget] = []
+    for segment in segments:
+        unit = units_by_id.get(segment.review_unit_id)
+        if unit is None:
+            raise ValueError("coverage segment references an unknown review unit")
+        if unit.section not in _PATCHABLE_GROUNDING_SECTIONS:
+            continue
+        source = unit.candidate_text
+        if not (0 <= segment.source_start < segment.source_end <= len(source)):
+            raise ValueError("coverage segment offsets are outside the source value")
+        original_text = source[segment.source_start:segment.source_end]
+        if not original_text or not original_text.strip():
+            raise ValueError("coverage segment target text must not be blank")
+
+        siblings = segments_by_unit[segment.review_unit_id]
+        sibling_index = siblings.index(segment)
+        previous_context = None
+        next_context = None
+        if sibling_index > 0:
+            previous = siblings[sibling_index - 1]
+            previous_context = source[previous.source_start:previous.source_end]
+        if sibling_index + 1 < len(siblings):
+            following = siblings[sibling_index + 1]
+            next_context = source[following.source_start:following.source_end]
+
+        target_id = segment.coverage_segment_id
+        whole_list_item = bool(
+            segment.source_start == 0
+            and segment.source_end == len(source)
+            and re.fullmatch(
+                r"[a-z_]+(?:\[\d+\](?:\.[a-z_]+)?|\.[a-z_]+\[\d+\])",
+                unit.review_unit_id,
+            )
+        )
+        targets.append(CorrectionPatchTarget(
+            patch_target_id=target_id,
+            section=unit.section,
+            source_path=unit.review_unit_id,
+            source_start=segment.source_start,
+            source_end=segment.source_end,
+            original_target_text=original_text,
+            target_strategy="list_item" if whole_list_item else "text_segment",
+            previous_context=previous_context,
+            next_context=next_context,
+            applicable_violation_rules=list(
+                (violation_rules_by_target or {}).get(target_id, [])
+            ),
+        ))
+
+    return CorrectionTargetRegistry(targets=targets)
+
+
+def lookup_correction_target(
+    registry: CorrectionTargetRegistry,
+    patch_target_id: str,
+) -> Optional[CorrectionPatchTarget]:
+    """Return one exact request-local target, or ``None`` for an unknown ID."""
+
+    return registry.get(patch_target_id)
+
+
+def _patch_target_id_for_finding(
+    finding: NormalizedGroundingClaimFinding,
+) -> Optional[str]:
+    """Map reviewer evidence only for proposition-patchable report sections."""
+
+    if finding.section not in _PATCHABLE_GROUNDING_SECTIONS:
+        return None
+    return finding.coverage_segment_id
+
+
+CORRECTION_PATCH_FAILURE_KINDS = frozenset({
+    "correction_patch_unmappable_violation",
+    "correction_patch_unknown_target",
+    "correction_patch_unauthorized_target",
+    "correction_patch_duplicate_target",
+    "correction_patch_incomplete_target_set",
+    "correction_patch_schema_invalid",
+    "correction_patch_merge_failure",
+    "correction_patch_attribution_invalid",
+})
+
+_CORRECTION_PATCH_PATH_RE = re.compile(
+    r"^(?P<field>[a-z_]+)(?:\[(?P<index>\d+)\])?"
+    r"(?:\.(?P<nested>[a-z_]+)(?:\[(?P<nested_index>\d+)\])?)?$"
+)
+_CORRECTION_PATCH_REPLACEMENT_FLOOR = 160
+_CORRECTION_PATCH_REPLACEMENT_MULTIPLIER = 2
+_CORRECTION_PATCH_REPLACEMENT_CEILING = 400
+_CORRECTION_PATCH_PROTECTED_FIELDS = (
+    "asset",
+    "overall_sentiment",
+    "confidence_score",
+    "investment_rating",
+    "article_indices_used",
+)
+
+
+@dataclass(frozen=True)
+class CorrectionPatchMergeResult:
+    """Validated merged candidate plus freshly derived review structure."""
+
+    report: FinancialAnalysisLLMResponse
+    review_units: List[ReviewableClaimUnit]
+    coverage_segments: List[ReviewCoverageSegment]
+    target_registry: CorrectionTargetRegistry
+
+
+def _raise_correction_patch_error(failure_kind: str, **details: Any) -> None:
+    if failure_kind not in CORRECTION_PATCH_FAILURE_KINDS:
+        raise RuntimeError("unknown correction patch failure kind")
+    raise AISemanticGroundingError(
+        "AI analysis could not be completed because proposition correction failed.",
+        details={"failure_kind": failure_kind, **details},
+    )
+
+
+def derive_required_patch_targets(
+    violations: List[GroundingViolation],
+) -> List[str]:
+    """Return sorted unique targets, failing closed on any unmappable blocker."""
+
+    unmappable = [violation for violation in violations if violation.patch_target_id is None]
+    if unmappable:
+        _raise_correction_patch_error(
+            "correction_patch_unmappable_violation",
+            unmappable_count=len(unmappable),
+            rules=sorted({violation.rule for violation in unmappable}),
+        )
+    return sorted({
+        violation.patch_target_id
+        for violation in violations
+        if violation.patch_target_id is not None
+    })
+
+
+def _coerce_correction_patch_set(value: Any) -> CorrectionPatchSet:
+    if isinstance(value, CorrectionPatchSet):
+        return value
+    try:
+        return CorrectionPatchSet.model_validate(value)
+    except ValidationError as exc:
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            validation_errors=_summarize_validation_errors(exc),
+        )
+
+
+def _replacement_length_limit(target: CorrectionPatchTarget) -> int:
+    return min(
+        _CORRECTION_PATCH_REPLACEMENT_CEILING,
+        max(
+            _CORRECTION_PATCH_REPLACEMENT_FLOOR,
+            len(target.original_target_text)
+            * _CORRECTION_PATCH_REPLACEMENT_MULTIPLIER,
+        ),
+    )
+
+
+def _validate_patch_replacement(
+    patch: CorrectionPatch,
+    target: CorrectionPatchTarget,
+) -> None:
+    if patch.operation != "REPLACE":
+        return
+    replacement = patch.replacement
+    if replacement is None:
+        _raise_correction_patch_error("correction_patch_schema_invalid")
+    if replacement != replacement.strip():
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="replacement_not_trimmed",
+            target_id=patch.target_id,
+        )
+    if "\n" in replacement or "\r" in replacement:
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="replacement_contains_newline",
+            target_id=patch.target_id,
+        )
+    if re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)", replacement):
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="replacement_contains_list_syntax",
+            target_id=patch.target_id,
+        )
+    if len(replacement) > _replacement_length_limit(target):
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="replacement_too_long",
+            target_id=patch.target_id,
+        )
+    replacement_unit = ReviewableClaimUnit(
+        review_unit_id=target.source_path,
+        section=target.section,
+        candidate_text=replacement,
+    )
+    if len(_build_review_coverage_segments([replacement_unit])) != 1:
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="replacement_not_atomic",
+            target_id=patch.target_id,
+        )
+
+
+def validate_correction_patch_set(
+    patch_set: Any,
+    registry: CorrectionTargetRegistry,
+    required_target_ids: List[str],
+    article_count: Optional[int] = None,
+) -> CorrectionPatchSet:
+    """Validate exact request-local authorization and completeness."""
+
+    parsed = _coerce_correction_patch_set(patch_set)
+    target_ids = [patch.target_id for patch in parsed.patches]
+    if len(target_ids) != len(set(target_ids)):
+        _raise_correction_patch_error(
+            "correction_patch_duplicate_target",
+            duplicate_target_ids=sorted({
+                target_id for target_id in target_ids if target_ids.count(target_id) > 1
+            }),
+        )
+
+    registry_by_id = {target.patch_target_id: target for target in registry.targets}
+    required = set(required_target_ids)
+    for patch in parsed.patches:
+        target = registry_by_id.get(patch.target_id)
+        if target is None:
+            _raise_correction_patch_error(
+                "correction_patch_unknown_target",
+                target_id=patch.target_id,
+            )
+        if patch.target_id not in required:
+            _raise_correction_patch_error(
+                "correction_patch_unauthorized_target",
+                target_id=patch.target_id,
+            )
+        if (
+            len(patch.article_indices_used) != len(set(patch.article_indices_used))
+            or any(index <= 0 for index in patch.article_indices_used)
+            or (
+                article_count is not None
+                and any(index > article_count for index in patch.article_indices_used)
+            )
+            or (patch.operation == "DELETE" and bool(patch.article_indices_used))
+        ):
+            _raise_correction_patch_error(
+                "correction_patch_attribution_invalid",
+                target_id=patch.target_id,
+            )
+        _validate_patch_replacement(patch, target)
+
+    returned = set(target_ids)
+    if returned != required:
+        _raise_correction_patch_error(
+            "correction_patch_incomplete_target_set",
+            missing_target_ids=sorted(required - returned),
+            extra_target_ids=sorted(returned - required),
+        )
+    return parsed
+
+
+PATCH_CORRECTION_SYSTEM_PROMPT = """You repair only explicitly authorized report propositions.
+Return one JSON object matching the supplied CorrectionPatchSet schema. Use exactly one DELETE or
+REPLACE patch for every supplied target_id and no other IDs. DELETE removes an unnecessary invalid
+proposition. REPLACE substitutes exactly one concise atomic proposition. Never rewrite a section,
+modify context, invent a target, add unrelated facts, or include prose outside the JSON object."""
+
+
+def build_request_local_patch_schema(
+    required_target_ids: List[str],
+) -> Dict[str, Any]:
+    """Constrain patch IDs and count to the exact request-local authorization."""
+
+    if not required_target_ids:
+        _raise_correction_patch_error(
+            "correction_patch_incomplete_target_set",
+            reason="zero_required_targets",
+        )
+    if len(required_target_ids) != len(set(required_target_ids)):
+        raise ValueError("required patch target IDs must be unique")
+    schema = copy.deepcopy(CorrectionPatchSet.model_json_schema())
+    patches = schema["properties"]["patches"]
+    patches["minItems"] = len(required_target_ids)
+    patches["maxItems"] = len(required_target_ids)
+    target_id = schema["$defs"]["CorrectionPatch"]["properties"]["target_id"]
+    target_id["enum"] = list(required_target_ids)
+    return schema
+
+
+def _patch_rules_by_target(
+    violations: List[GroundingViolation],
+) -> Dict[str, List[str]]:
+    rules: Dict[str, List[str]] = {}
+    for violation in violations:
+        if violation.patch_target_id is not None:
+            rules.setdefault(violation.patch_target_id, []).append(violation.rule)
+    return {
+        target_id: sorted(set(target_rules))
+        for target_id, target_rules in rules.items()
+    }
+
+
+def _patch_claims_by_target(
+    claims: Optional[List[NormalizedGroundingClaimFinding]],
+) -> Dict[str, List[NormalizedGroundingClaimFinding]]:
+    grouped: Dict[str, List[NormalizedGroundingClaimFinding]] = {}
+    for claim in claims or []:
+        grouped.setdefault(claim.coverage_segment_id, []).append(claim)
+    return grouped
+
+
+def _patch_repair_instruction(target_rules: List[str]) -> str:
+    guidance = [
+        GROUNDING_RULE_CORRECTION_GUIDANCE[rule]
+        for rule in target_rules
+        if rule in GROUNDING_RULE_CORRECTION_GUIDANCE
+    ]
+    if "historical_range_not_technical_level" in target_rules:
+        guidance.append(
+            "Prefer DELETE. If replacement is structurally necessary, state only a supported "
+            "historical fact; do not infer trend, momentum, support, resistance, breakout, "
+            "breakdown, or directional bias from a 52-week range."
+        )
+    if set(target_rules) & {
+        "event_price_impact_grounding",
+        "investor_motive_grounding",
+        "causal_mechanism_grounding",
+    }:
+        guidance.append(
+            "Prefer DELETE unless supplied relationship evidence explicitly supports a "
+            "replacement; never substitute a different speculative motive or causal explanation."
+        )
+    return " ".join(guidance) or (
+        "Remove the unsupported proposition or replace it with one proposition supported only "
+        "by the supplied target evidence."
+    )
+
+
+def build_patch_correction_prompt(
+    required_target_ids: List[str],
+    registry: CorrectionTargetRegistry,
+    violations: List[GroundingViolation],
+    request: FinancialAnalysisRequest,
+    claims: Optional[List[NormalizedGroundingClaimFinding]] = None,
+) -> str:
+    """Build a bounded target-only proposition correction request."""
+
+    if not required_target_ids:
+        _raise_correction_patch_error(
+            "correction_patch_incomplete_target_set",
+            reason="zero_required_targets",
+        )
+    rules_by_target = _patch_rules_by_target(violations)
+    claims_by_target = _patch_claims_by_target(claims)
+    targets_payload: List[Dict[str, Any]] = []
+    used_article_indices: set[int] = set()
+    for target_id in required_target_ids:
+        target = registry.get(target_id)
+        if target is None:
+            _raise_correction_patch_error(
+                "correction_patch_unknown_target",
+                target_id=target_id,
+            )
+        target_claims = claims_by_target.get(target_id, [])
+        article_indices = sorted({
+            index
+            for claim in target_claims
+            for index in claim.supporting_selected_indices
+            if 1 <= index <= len(request.news_articles)
+        })
+        used_article_indices.update(article_indices)
+        target_rules = rules_by_target.get(target_id, [])
+        targets_payload.append({
+            "target_id": target_id,
+            "section": target.section,
+            "original_proposition": target.original_target_text,
+            "violating_rules": target_rules,
+            "repair_instruction": _patch_repair_instruction(target_rules),
+            "read_only_previous_context": target.previous_context,
+            "read_only_next_context": target.next_context,
+            "trusted_article_indices_available": article_indices,
+        })
+
+    article_manifest = [
+        {
+            "index": index,
+            "title": request.news_articles[index - 1].title,
+            "summary": request.news_articles[index - 1].summary,
+            "source": request.news_articles[index - 1].source,
+            "published_at": request.news_articles[index - 1].published_at,
+        }
+        for index in sorted(used_article_indices)
+    ]
+    available_market_data = build_available_market_data(request)
+    missing_ma_guidance = None
+    if (
+        any(target["section"] == "technical_analysis" for target in targets_payload)
+        and request.price_data.moving_average_50 is None
+        and request.price_data.moving_average_200 is None
+    ):
+        missing_ma_guidance = (
+            "MA50 and MA200 were not supplied. If this absence is material, say exactly that, "
+            "or say moving-average-based trend assessment is limited because MA50 and MA200 "
+            "were not supplied. Do not claim insufficient technical data, insufficient price "
+            "data, inability to perform technical analysis, or lack of detailed technical data."
+        )
+    request_payload = {
+        "targets": targets_payload,
+        "trusted_articles": article_manifest,
+        "available_structured_market_data": available_market_data,
+        "deterministic_input_context": derive_available_input_context(request),
+        "missing_moving_average_guidance": missing_ma_guidance,
+    }
+    return (
+        "Return only CorrectionPatchSet JSON. Patch every target exactly once. Only the target_id "
+        "values inside targets are authorized. DELETE must use replacement=null and an empty "
+        "article_indices_used list. REPLACE must be one trimmed atomic proposition with no "
+        "newline or bullet. Neighbor context is read-only and must not be edited. Prefer DELETE "
+        "when the invalid proposition is unnecessary; otherwise use only the supplied evidence. "
+        "Do not create IDs, paths, sections, unrelated facts, or whole-section rewrites. Article "
+        "indices are 1-based and must use the minimum useful trusted subset; structured-market-"
+        "only replacements use an empty list.\n\nCorrection request (JSON):\n"
+        + json.dumps(request_payload, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def parse_correction_patch_set(raw_response: str) -> CorrectionPatchSet:
+    """Strictly parse only the internal patch response contract."""
+
+    try:
+        parsed = json.loads(raw_response)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise AISemanticGroundingError(
+            "AI analysis could not be completed because proposition correction failed.",
+            details={"failure_kind": "correction_patch_schema_invalid"},
+        ) from exc
+    return _coerce_correction_patch_set(parsed)
+
+
+async def generate_correction_patch_set(
+    ai: Any,
+    request: FinancialAnalysisRequest,
+    registry: CorrectionTargetRegistry,
+    violations: List[GroundingViolation],
+    claims: Optional[List[NormalizedGroundingClaimFinding]],
+    provider: str,
+    model: str,
+) -> CorrectionPatchSet:
+    """Perform exactly one isolated structured patch generation."""
+
+    required_target_ids = derive_required_patch_targets(violations)
+    prompt = build_patch_correction_prompt(
+        required_target_ids, registry, violations, request, claims
+    )
+    response_schema = build_request_local_patch_schema(required_target_ids)
+    started = time.perf_counter()
+    raw_response = await ai.generate(
+        system_prompt=PATCH_CORRECTION_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        temperature=0,
+        model=model,
+        response_schema=response_schema,
+        max_attempts=1,
+    )
+    try:
+        parsed = parse_correction_patch_set(raw_response)
+        validated = validate_correction_patch_set(
+            parsed,
+            registry,
+            required_target_ids,
+            article_count=len(request.news_articles),
+        )
+    except AISemanticGroundingError:
+        logger.warning(
+            "[AI][PatchCorrectionGeneration] stage=patch_correction_generation "
+            "provider=%s model=%s required_target_count=%d response_chars=%d "
+            "schema_validation=false duration_s=%.3f",
+            provider,
+            model,
+            len(required_target_ids),
+            len(raw_response),
+            time.perf_counter() - started,
+        )
+        raise
+    logger.info(
+        "[AI][PatchCorrectionGeneration] stage=patch_correction_generation "
+        "provider=%s model=%s required_target_count=%d returned_patch_count=%d "
+        "response_chars=%d schema_validation=true duration_s=%.3f",
+        provider,
+        model,
+        len(required_target_ids),
+        len(validated.patches),
+        len(raw_response),
+        time.perf_counter() - started,
+    )
+    return validated
+
+
+def _patch_article_indices(
+    patch_set: CorrectionPatchSet,
+    article_count: int,
+) -> List[int]:
+    """Return trusted, ordered attribution additions from REPLACE patches."""
+
+    return _sanitize_article_indices(
+        [
+            index
+            for patch in patch_set.patches
+            if patch.operation == "REPLACE"
+            for index in patch.article_indices_used
+        ],
+        article_count,
+    )
+
+
+def _with_internal_article_indices(
+    report: FinancialAnalysisLLMResponse,
+    article_indices: List[int],
+) -> FinancialAnalysisLLMResponse:
+    payload = report.model_dump(mode="python")
+    payload["article_indices_used"] = article_indices
+    return FinancialAnalysisLLMResponse(**payload)
+
+
+def _log_patch_correction_trace(
+    registry: CorrectionTargetRegistry,
+    required_target_ids: List[str],
+    patch_set: CorrectionPatchSet,
+    *,
+    merge_applied: bool,
+    final_review_valid: Optional[bool],
+) -> None:
+    """Log bounded target-level patch provenance without replacement text."""
+
+    targets = {target.patch_target_id: target for target in registry.targets}
+    patches = {patch.target_id: patch for patch in patch_set.patches}
+    for target_id in required_target_ids:
+        target = targets.get(target_id)
+        patch = patches.get(target_id)
+        record = {
+            "correlation_id": current_correlation_id(),
+            "target_id": target_id,
+            "section": target.section if target is not None else None,
+            "operation": patch.operation if patch is not None else None,
+            "provider_returned": patch is not None,
+            "authorized": target is not None and target_id in required_target_ids,
+            "merge_applied": merge_applied,
+            "replacement_changed": bool(
+                patch is not None
+                and patch.operation == "REPLACE"
+                and target is not None
+                and patch.replacement != target.original_target_text
+            ),
+            "replacement_length": len(patch.replacement or "") if patch is not None else 0,
+            "article_indices": patch.article_indices_used if patch is not None else [],
+            "final_review_valid": final_review_valid,
+            "origin": (
+                "PATCH_REPLACEMENT"
+                if patch is not None and patch.operation == "REPLACE" and merge_applied
+                else "BACKEND_DETERMINISTIC_ENFORCEMENT"
+                if patch is not None and patch.operation == "DELETE" and merge_applied
+                else "PRIMARY_INHERITED"
+            ),
+        }
+        logger.info("[AI][CorrectionPatchTrace] %s", json.dumps(record, sort_keys=True))
+
+
+def _parse_correction_source_path(
+    source_path: str,
+) -> Tuple[str, Optional[int], Optional[str], Optional[int]]:
+    match = _CORRECTION_PATCH_PATH_RE.fullmatch(source_path)
+    if match is None:
+        _raise_correction_patch_error(
+            "correction_patch_merge_failure",
+            reason="invalid_source_path",
+        )
+    return (
+        match.group("field"),
+        int(match.group("index")) if match.group("index") is not None else None,
+        match.group("nested"),
+        int(match.group("nested_index"))
+        if match.group("nested_index") is not None
+        else None,
+    )
+
+
+def _resolve_correction_source_value(payload: Dict[str, Any], source_path: str) -> str:
+    field, index, nested, nested_index = _parse_correction_source_path(source_path)
+    if field not in payload:
+        _raise_correction_patch_error("correction_patch_merge_failure", reason="source_path_missing")
+    value: Any = payload[field]
+    if index is not None:
+        if not isinstance(value, list) or not (0 <= index < len(value)):
+            _raise_correction_patch_error("correction_patch_merge_failure", reason="source_index_invalid")
+        value = value[index]
+    if nested is not None:
+        if not isinstance(value, dict) or nested not in value:
+            _raise_correction_patch_error("correction_patch_merge_failure", reason="nested_source_missing")
+        value = value[nested]
+    if nested_index is not None:
+        if not isinstance(value, list) or not (0 <= nested_index < len(value)):
+            _raise_correction_patch_error("correction_patch_merge_failure", reason="nested_index_invalid")
+        value = value[nested_index]
+    if not isinstance(value, str):
+        _raise_correction_patch_error("correction_patch_merge_failure", reason="source_not_string")
+    return value
+
+
+def _set_correction_source_value(
+    payload: Dict[str, Any],
+    source_path: str,
+    replacement: str,
+) -> None:
+    field, index, nested, nested_index = _parse_correction_source_path(source_path)
+    if index is None and nested is None:
+        payload[field] = replacement
+    elif index is not None and nested is None:
+        payload[field][index] = replacement
+    elif index is None and nested is not None and nested_index is None:
+        payload[field][nested] = replacement
+    elif index is None and nested is not None:
+        payload[field][nested][nested_index] = replacement
+    else:
+        payload[field][index][nested] = replacement
+
+
+def _delete_correction_text_span(source: str, start: int, end: int) -> str:
+    """Delete one span and clean only whitespace duplicated at its seam."""
+
+    left, right = source[:start], source[end:]
+    if not left:
+        return right.lstrip(" \t")
+    if not right:
+        return left.rstrip(" \t")
+    if left[-1].isspace() and right[0].isspace():
+        right = right.lstrip(" \t")
+    return left + right
+
+
+def merge_correction_patch_set(
+    primary: FinancialAnalysisLLMResponse,
+    registry: CorrectionTargetRegistry,
+    required_target_ids: List[str],
+    patch_set: Any,
+) -> CorrectionPatchMergeResult:
+    """Apply a fully validated patch set atomically to a copy of ``primary``."""
+
+    parsed = validate_correction_patch_set(patch_set, registry, required_target_ids)
+    targets = {target.patch_target_id: target for target in registry.targets}
+    payload = primary.model_dump(mode="python")
+    payload["article_indices_used"] = list(primary.article_indices_used)
+
+    patches_by_path: Dict[str, List[Tuple[CorrectionPatch, CorrectionPatchTarget]]] = {}
+    container_deletes: List[Tuple[str, Optional[str], int]] = []
+    for patch in parsed.patches:
+        target = targets[patch.target_id]
+        source = _resolve_correction_source_value(payload, target.source_path)
+        if not (0 <= target.source_start < target.source_end <= len(source)) or (
+            source[target.source_start:target.source_end] != target.original_target_text
+        ):
+            _raise_correction_patch_error(
+                "correction_patch_merge_failure",
+                reason="stale_or_mismatched_target",
+                target_id=patch.target_id,
+            )
+        if patch.operation == "DELETE" and target.target_strategy == "list_item":
+            field, index, nested, nested_index = _parse_correction_source_path(
+                target.source_path
+            )
+            delete_index = nested_index if nested_index is not None else index
+            if delete_index is None:
+                _raise_correction_patch_error("correction_patch_merge_failure", reason="invalid_list_delete")
+            container_deletes.append((field, nested, delete_index))
+        else:
+            patches_by_path.setdefault(target.source_path, []).append((patch, target))
+
+    for source_path, path_patches in patches_by_path.items():
+        ordered_by_start = sorted(path_patches, key=lambda item: item[1].source_start)
+        for (_, previous), (_, current) in zip(ordered_by_start, ordered_by_start[1:]):
+            if current.source_start < previous.source_end:
+                _raise_correction_patch_error(
+                    "correction_patch_merge_failure",
+                    reason="overlapping_targets",
+                )
+        source = _resolve_correction_source_value(payload, source_path)
+        for patch, target in sorted(
+            path_patches,
+            key=lambda item: item[1].source_start,
+            reverse=True,
+        ):
+            if patch.operation == "REPLACE":
+                source = (
+                    source[:target.source_start]
+                    + (patch.replacement or "")
+                    + source[target.source_end:]
+                )
+            else:
+                source = _delete_correction_text_span(
+                    source, target.source_start, target.source_end
+                )
+        _set_correction_source_value(payload, source_path, source)
+
+    for field, nested, index in sorted(
+        container_deletes, key=lambda item: (item[0], item[1] or "", item[2]), reverse=True
+    ):
+        value = payload.get(field)
+        if nested is not None and isinstance(value, dict):
+            value = value.get(nested)
+        if not isinstance(value, list) or not (0 <= index < len(value)):
+            _raise_correction_patch_error("correction_patch_merge_failure", reason="list_delete_invalid")
+        del value[index]
+
+    try:
+        merged = FinancialAnalysisLLMResponse(**payload)
+    except ValidationError as exc:
+        _raise_correction_patch_error(
+            "correction_patch_merge_failure",
+            reason="post_merge_schema_invalid",
+            validation_errors=_summarize_validation_errors(exc),
+        )
+    for field in _CORRECTION_PATCH_PROTECTED_FIELDS:
+        if getattr(merged, field) != getattr(primary, field):
+            _raise_correction_patch_error(
+                "correction_patch_merge_failure",
+                reason="protected_field_changed",
+                field=field,
+            )
+
+    review_units = _build_reviewable_claim_units(merged)
+    coverage_segments = _build_review_coverage_segments(review_units)
+    return CorrectionPatchMergeResult(
+        report=merged,
+        review_units=review_units,
+        coverage_segments=coverage_segments,
+        target_registry=build_correction_target_registry(
+            review_units, coverage_segments
+        ),
+    )
 
 
 def _grounding_review_max_tokens(coverage_segment_count: int) -> int:
@@ -1243,6 +2027,16 @@ def _structured_level_contains_value(value: Any, expected: float) -> bool:
     return False
 
 
+def _unique_deterministic_patch_target_id(
+    registry: CorrectionTargetRegistry,
+    predicate: Any,
+) -> Optional[str]:
+    """Return an exact target only when deterministic inspection finds one."""
+
+    matches = [target.patch_target_id for target in registry.targets if predicate(target)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _deterministic_grounding_violations(
     request: FinancialAnalysisRequest,
     result: FinancialAnalysisLLMResponse,
@@ -1253,6 +2047,8 @@ def _deterministic_grounding_violations(
     violations: List[GroundingViolation] = []
     price = request.price_data
     technical = result.technical_analysis
+    review_units = _build_reviewable_claim_units(result)
+    target_registry = build_correction_target_registry(review_units)
 
     trend_text = technical.trend.lower()
     uses_52_week_context = bool(re.search(r"\b52(?:-|\s)?week\b", trend_text))
@@ -1268,6 +2064,20 @@ def _deterministic_grounding_violations(
         for value in (price.moving_average_50, price.moving_average_200)
     )
     if uses_52_week_context and asserts_trend and not independent_trend_signal:
+        trend_target_id = _unique_deterministic_patch_target_id(
+            target_registry,
+            lambda target: (
+                target.source_path == "technical_analysis.trend"
+                and bool(re.search(r"\b52(?:-|\s)?week\b", target.original_target_text.lower()))
+                and bool(
+                    re.search(
+                        r"\b(?:strong\s+)?(?:uptrend|downtrend|trend|momentum)\b"
+                        r"|\b(?:bullish|bearish|positive|negative)\s+trend\b",
+                        target.original_target_text.lower(),
+                    )
+                )
+            ),
+        )
         violations.append(
             GroundingViolation(
                 rule="historical_range_not_technical_level",
@@ -1276,6 +2086,7 @@ def _deterministic_grounding_violations(
                     "52-week range context was used to establish a trend or momentum "
                     "without an independently supplied trend indicator."
                 ),
+                patch_target_id=trend_target_id,
             )
         )
 
@@ -1294,6 +2105,18 @@ def _deterministic_grounding_violations(
             )
         )
     ):
+        high_target_id = _unique_deterministic_patch_target_id(
+            target_registry,
+            lambda target: (
+                (
+                    target.source_path.startswith("technical_analysis.resistance_levels[")
+                    or target.source_path == "technical_analysis.breakout_level"
+                )
+                and _number_is_present_in_text(
+                    price.fifty_two_week_high, target.original_target_text
+                )
+            ),
+        )
         violations.append(
             GroundingViolation(
                 rule="historical_range_not_technical_level",
@@ -1302,6 +2125,7 @@ def _deterministic_grounding_violations(
                     "The supplied 52-week high was used as resistance or a breakout "
                     "level although no independent technical significance was supplied."
                 ),
+                patch_target_id=high_target_id,
             )
         )
 
@@ -1320,6 +2144,18 @@ def _deterministic_grounding_violations(
             )
         )
     ):
+        low_target_id = _unique_deterministic_patch_target_id(
+            target_registry,
+            lambda target: (
+                (
+                    target.source_path.startswith("technical_analysis.support_levels[")
+                    or target.source_path == "technical_analysis.breakdown_level"
+                )
+                and _number_is_present_in_text(
+                    price.fifty_two_week_low, target.original_target_text
+                )
+            ),
+        )
         violations.append(
             GroundingViolation(
                 rule="historical_range_not_technical_level",
@@ -1328,6 +2164,7 @@ def _deterministic_grounding_violations(
                     "The supplied 52-week low was used as support or a breakdown "
                     "level although no independent technical significance was supplied."
                 ),
+                patch_target_id=low_target_id,
             )
         )
 
@@ -1974,6 +2811,7 @@ def _evidence_contract_contradictions_to_violations(
                     f"reviewer labeled this claim {claim.classification} but "
                     f"declared incompatible evidence."
                 ),
+                patch_target_id=_patch_target_id_for_finding(claim),
             )
         )
     return violations
@@ -2152,6 +2990,7 @@ def _claim_findings_to_violations(
                     f"{finding.atomic_claim_id}: {finding.atomic_proposition}."
                     f"{evidence_note}"
                 ).strip(),
+                patch_target_id=_patch_target_id_for_finding(finding),
             )
         )
     for finding in claims:
@@ -2213,6 +3052,7 @@ def _claim_findings_to_violations(
                     f"{finding.claim_role} under {relationship_rule}; "
                     f"reviewer_rule={rule}."
                 ),
+                patch_target_id=_patch_target_id_for_finding(finding),
             ))
     return violations
 
@@ -3147,108 +3987,66 @@ async def generate_analysis(
                 [violation.rule for violation in grounding_review.violations],
                 [violation.section for violation in grounding_review.violations],
             )
-            allowed_sections = _derive_semantic_correction_sections(
+            initial_review_units = _build_reviewable_claim_units(llm_result)
+            initial_coverage_segments = _build_review_coverage_segments(
+                initial_review_units
+            )
+            violation_rules_by_target: Dict[str, List[str]] = {}
+            for violation in grounding_review.violations:
+                if violation.patch_target_id is not None:
+                    rules = violation_rules_by_target.setdefault(
+                        violation.patch_target_id, []
+                    )
+                    if violation.rule not in rules:
+                        rules.append(violation.rule)
+            target_registry = build_correction_target_registry(
+                initial_review_units,
+                initial_coverage_segments,
+                violation_rules_by_target,
+            )
+            required_target_ids = derive_required_patch_targets(
                 grounding_review.violations
             )
-            correction_started = time.perf_counter()
-            corrected_raw = await ai.generate(
-                system_prompt=SYSTEM_PROMPT,
-                user_prompt=_build_semantic_correction_prompt(
-                    user_prompt,
+            try:
+                patch_set = await generate_correction_patch_set(
+                    ai,
+                    request,
+                    target_registry,
                     grounding_review.violations,
                     grounding_review.claims,
-                    allowed_sections,
-                ),
-                temperature=temperature,
-                model=active_model,
-                response_schema=response_schema,
-            )
-            logger.info(
-                "[AI][Timing] stage=semantic_correction duration_s=%.3f response_len=%d",
-                time.perf_counter() - correction_started,
-                len(corrected_raw),
-            )
-            try:
-                # Validate the raw corrected structured response
-                raw_corrected, corrected_raw_indices, _ = (
-                    _validate_semantic_correction(corrected_raw, request)
+                    target_provider,
+                    active_model,
                 )
-                # Conservative citation union: primary + corrected additions
+                merge_result = merge_correction_patch_set(
+                    llm_result,
+                    target_registry,
+                    required_target_ids,
+                    patch_set,
+                )
+                patch_indices = _patch_article_indices(
+                    patch_set, len(request.news_articles)
+                )
                 final_indices = _merge_citation_indices(
                     sanitized_indices,
-                    corrected_raw_indices,
+                    patch_indices,
                     len(request.news_articles),
                 )
-                # Deterministic section-scoped merge into a fresh object
-                merged_result = _merge_scoped_semantic_correction(
-                    llm_result,
-                    raw_corrected,
-                    allowed_sections,
-                    final_indices,
+                llm_result = _with_internal_article_indices(
+                    merge_result.report, final_indices
                 )
-                _log_semantic_correction_origins(
-                    llm_result,
-                    raw_corrected,
-                    merged_result,
-                    allowed_sections,
-                )
-                # Trusted citation remap from merged indices
                 trusted_articles = _resolve_articles_used(
                     final_indices, request.news_articles
                 )
-                # Operational citation metrics (preserved for live-run comparison)
-                initial_selected = set(sanitized_indices)
-                corrected_selected = set(corrected_raw_indices)
                 logger.info(
-                    "[AI][SemanticCorrection] corrected_raw_count=%d "
-                    "corrected_sanitized_count=%d corrected_mapped_count=%d "
-                    "added_indices_count=%d removed_indices_count=%d "
-                    "added_indices=%s removed_indices=%s",
-                    len(raw_corrected.article_indices_used),
-                    len(corrected_raw_indices),
-                    len(_resolve_articles_used(corrected_raw_indices, request.news_articles)),
-                    len(corrected_selected - initial_selected),
-                    len(initial_selected - corrected_selected),
-                    sorted(corrected_selected - initial_selected),
-                    sorted(initial_selected - corrected_selected),
+                    "[AI][PatchCorrection] required_target_count=%d patch_count=%d "
+                    "primary_citation_count=%d patch_added_citation_count=%d "
+                    "final_citation_count=%d",
+                    len(required_target_ids),
+                    len(patch_set.patches),
+                    len(sanitized_indices),
+                    len(patch_indices),
+                    len(final_indices),
                 )
-                # Safe scope logging
-                primary_idx_set = set(sanitized_indices)
-                corrected_idx_set = set(corrected_raw_indices)
-                final_idx_set = set(final_indices)
-                discarded = _detect_unauthorized_changed_sections(
-                    llm_result, raw_corrected, allowed_sections
-                )
-                accepted_changed = [
-                    s for s in allowed_sections
-                    if getattr(llm_result, s) != getattr(raw_corrected, s)
-                ]
-                preserved_count = (
-                    len(_CORRECTION_CAPABLE_SECTIONS) - len(allowed_sections)
-                )
-                logger.info(
-                    "[AI][SemanticCorrectionScope] "
-                    "allowed_sections=%s "
-                    "discarded_changed_sections=%s "
-                    "preserved_section_count=%d "
-                    "accepted_changed_section_count=%d "
-                    "primary_citation_count=%d "
-                    "corrected_citation_count=%d "
-                    "final_citation_count=%d "
-                    "added_indices_count=%d "
-                    "ignored_removed_indices_count=%d",
-                    sorted(allowed_sections),
-                    discarded,
-                    preserved_count,
-                    len(accepted_changed),
-                    len(primary_idx_set),
-                    len(corrected_idx_set),
-                    len(final_idx_set),
-                    len(final_idx_set - primary_idx_set),
-                    len(primary_idx_set - final_idx_set),
-                )
-                # Use merged result for final review and persistence
-                llm_result = merged_result
                 sanitized_indices = final_indices
             except AISemanticGroundingError:
                 logger.warning(
@@ -3274,6 +4072,13 @@ async def generate_analysis(
             _log_grounding_delta(
                 grounding_review.violations,
                 final_review.violations,
+            )
+            _log_patch_correction_trace(
+                target_registry,
+                required_target_ids,
+                patch_set,
+                merge_applied=True,
+                final_review_valid=final_review.valid,
             )
             if not final_review.valid:
                 logger.error(

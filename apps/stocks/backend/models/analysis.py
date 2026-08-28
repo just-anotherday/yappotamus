@@ -286,6 +286,81 @@ class GroundingViolation(BaseModel):
     rule: GroundingRule
     section: GroundingSection
     issue: str = Field(min_length=1, max_length=500)
+    patch_target_id: Optional[str] = Field(default=None, min_length=1, max_length=240)
+
+
+CorrectionPatchOperation = Literal["DELETE", "REPLACE"]
+
+
+class CorrectionPatch(BaseModel):
+    """Internal-only proposition correction requested from a provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str = Field(min_length=1, max_length=240)
+    operation: CorrectionPatchOperation
+    replacement: Optional[str] = None
+    article_indices_used: List[StrictInt] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_operation_payload(self) -> "CorrectionPatch":
+        if self.operation == "DELETE" and self.replacement is not None:
+            raise ValueError("DELETE patches must not include replacement text")
+        if self.operation == "REPLACE" and (
+            self.replacement is None or not self.replacement.strip()
+        ):
+            raise ValueError("REPLACE patches require non-empty replacement text")
+        return self
+
+
+class CorrectionPatchSet(BaseModel):
+    """Internal-only correction response; authorization is validated later."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patches: List[CorrectionPatch]
+
+
+class CorrectionPatchTarget(BaseModel):
+    """Backend-owned request-local anchor for one patchable text segment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patch_target_id: str = Field(min_length=1, max_length=240)
+    section: GroundingSection
+    source_path: str = Field(min_length=1, max_length=200)
+    source_start: StrictInt = Field(ge=0)
+    source_end: StrictInt = Field(gt=0)
+    original_target_text: str = Field(min_length=1)
+    target_strategy: Literal["text_segment", "list_item"] = "text_segment"
+    previous_context: Optional[str] = None
+    next_context: Optional[str] = None
+    applicable_violation_rules: List[GroundingRule] = Field(default_factory=list)
+
+
+class CorrectionTargetRegistry(BaseModel):
+    """Ephemeral lookup table for targets belonging to one report cycle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    targets: List[CorrectionPatchTarget]
+
+    @model_validator(mode="after")
+    def require_unique_target_ids(self) -> "CorrectionTargetRegistry":
+        target_ids = [target.patch_target_id for target in self.targets]
+        if len(target_ids) != len(set(target_ids)):
+            raise ValueError("correction patch target IDs must be unique")
+        return self
+
+    def get(self, patch_target_id: str) -> Optional[CorrectionPatchTarget]:
+        return next(
+            (
+                target
+                for target in self.targets
+                if target.patch_target_id == patch_target_id
+            ),
+            None,
+        )
 
 
 ClaimEvidenceClassification = Literal[

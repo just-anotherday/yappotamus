@@ -9,12 +9,17 @@ import pytest
 from pydantic import ValidationError
 
 from backend.models.analysis import (
+    CorrectionPatch,
+    CorrectionPatchSet,
+    CorrectionTargetRegistry,
     FinancialAnalysisLLMResponse,
     FinancialAnalysisRequest,
     GroundingClaimFinding,
+    GroundingViolation,
     GroundingReviewResult,
     GroundingReviewWireResponse,
     NewsArticleRequest,
+    NormalizedGroundingClaimFinding,
     PriceDataRequest,
     ReviewableClaimUnit,
     ReviewCoverageSegment,
@@ -204,6 +209,38 @@ class _SequencedClient:
     async def generate(self, **kwargs):
         self.calls.append(kwargs)
         response = self.responses.pop(0)
+        if (
+            isinstance(response, dict)
+            and "asset" in response
+            and kwargs.get("system_prompt") == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
+        ):
+            correction_request = json.loads(
+                kwargs["user_prompt"].split("Correction request (JSON):\n", 1)[1]
+            )
+            corrected = FinancialAnalysisLLMResponse(**response)
+            corrected_units = ollama_service._build_reviewable_claim_units(corrected)
+            corrected_registry = ollama_service.build_correction_target_registry(
+                corrected_units
+            )
+            patches = []
+            for requested in correction_request["targets"]:
+                target_id = requested["target_id"]
+                corrected_target = corrected_registry.get(target_id)
+                if corrected_target is None:
+                    patches.append({
+                        "target_id": target_id,
+                        "operation": "DELETE",
+                        "replacement": None,
+                        "article_indices_used": [],
+                    })
+                else:
+                    patches.append({
+                        "target_id": target_id,
+                        "operation": "REPLACE",
+                        "replacement": corrected_target.original_target_text,
+                        "article_indices_used": response["article_indices_used"],
+                    })
+            response = {"patches": patches}
         # Legacy readable fixtures are adapted only at this mock provider
         # boundary. Runtime reviewer responses must use the compact wire form.
         if isinstance(response, dict) and "claims" in response and "review_coverage_segments" in kwargs.get("user_prompt", ""):
@@ -853,7 +890,7 @@ async def test_three_live_failures_get_one_correction_and_citations_are_remapped
     assert sum(
         call["response_schema"] == FinancialAnalysisLLMResponse.model_json_schema()
         for call in client.calls
-    ) == 2
+    ) == 1
     assert sum(
         set(call["response_schema"].get("$defs", {}).get(
             "GroundingReviewWireFinding", {}
@@ -861,29 +898,15 @@ async def test_three_live_failures_get_one_correction_and_citations_are_remapped
         for call in client.calls
     ) == 2
     correction_prompt = client.calls[2]["user_prompt"]
-    assert correction_prompt.count("## Semantic Grounding Correction") == 1
+    assert "Correction request (JSON):" in correction_prompt
+    assert '"asset":"AMD"' not in correction_prompt
     assert "historical_range_not_technical_level" in correction_prompt
     assert "prospective_event_treated_as_completed" in correction_prompt
     assert "unsupported_valuation_claim" in correction_prompt
-    findings = json.loads(correction_prompt.split("Blocking findings (JSON):\n", 1)[1].split("\n\n", 1)[0])
-    technical_finding = next(
-        item for item in findings if item["classification"] == "technical_role_mismatch"
+    correction_request = json.loads(
+        correction_prompt.split("Correction request (JSON):\n", 1)[1]
     )
-    assert {key: technical_finding[key] for key in (
-        "section", "atomic_proposition", "classification", "rule",
-        "supporting_article_indices", "supporting_market_data_fields",
-        "supporting_selected_indices", "supporting_unselected_indices",
-    )} == {
-        "section": "technical_analysis",
-        "atomic_proposition": "The 52-week high is resistance",
-        "classification": "technical_role_mismatch",
-        "supporting_article_indices": [],
-        "supporting_market_data_fields": [],
-        "supporting_selected_indices": [],
-        "supporting_unselected_indices": [],
-        "rule": "historical_range_not_technical_level",
-    }
-    assert len(technical_finding["finding_id"]) == 16
+    assert len(correction_request["targets"]) == 4
     assert "preserve planned, preparing, pending, expected, or conditional status" in (
         correction_prompt
     )
@@ -896,7 +919,7 @@ async def test_three_live_failures_get_one_correction_and_citations_are_remapped
         "https://trusted.example/expectations",
     ]
     assert result.technical_analysis.resistance_levels == []
-    assert "if completed" in result.key_risks[0].risk
+    assert result.key_risks[0].risk == "The planned financing"
     assert "high valuation" not in result.executive_summary
 
 
@@ -915,7 +938,7 @@ async def test_second_semantic_failure_is_rejected_after_exactly_one_correction(
     assert len(client.calls) == 4
     assert exc_info.value.details["failure_kind"] == "semantic_grounding_rejected"
     assert sum(
-        "## Semantic Grounding Correction" in call["user_prompt"]
+        call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
         for call in client.calls
     ) == 1
 
@@ -1204,16 +1227,12 @@ async def test_correction_introducing_new_financing_violations_is_rejected(monke
 
     # No second correction was issued
     correction_count = sum(
-        "## Semantic Grounding Correction" in call["user_prompt"]
+        call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
         for call in client.calls
     )
     assert correction_count == 1
 
-    # The correction prompt explicitly instructs NOT to create financing mechanics
-    correction_prompt = " ".join(client.calls[2]["user_prompt"].split())
-    assert "Do NOT introduce new catalysts" in correction_prompt
-    assert "financing consequences, dilution" in correction_prompt
-    assert "Do not introduce dilution, share issuance, leverage, debt burden" in correction_prompt
+    assert "whole-section rewrites" in client.calls[2]["user_prompt"]
 
 
 @pytest.mark.asyncio
@@ -1830,16 +1849,11 @@ async def test_report_84_correction_revalidates_and_remaps_the_corrected_selecte
     ]
     assert [article.url for article in result.articles_used] == expected_urls
     correction_prompt = client.calls[2]["user_prompt"]
-    findings = json.loads(
-        correction_prompt.split("Blocking findings (JSON):\n", 1)[1].split("\n\n", 1)[0]
+    correction_request = json.loads(
+        correction_prompt.split("Correction request (JSON):\n", 1)[1]
     )
-    assert findings[0]["supporting_unselected_indices"] == [15]
-    assert findings[0]["supporting_selected_indices"] == []
-    assert findings[0]["supporting_article_indices"] == [15]
-    assert findings[0]["supporting_market_data_fields"] == ["current_price"]
-    assert findings[0]["atomic_proposition"] == "Moving averages establish resistance"
-    assert "Do not blindly add discovered or tangential evidence" in " ".join(
-        correction_prompt.split()
+    assert correction_request["targets"][0]["target_id"] == (
+        "technical_analysis.trend.segment_0"
     )
     final_manifest = json.loads(client.calls[3]["user_prompt"].split("\n", 1)[1])
     selected_by_index = {
@@ -1853,13 +1867,9 @@ async def test_report_84_correction_revalidates_and_remaps_the_corrected_selecte
     }
     assert initial_selected_by_index[15] is False
     assert selected_by_index[15] is retain_resistance
-    assert "corrected_raw_count=" in caplog.text
-    assert "corrected_sanitized_count=" in caplog.text
-    assert "corrected_mapped_count=" in caplog.text
-    assert "added_indices_count=" in caplog.text
-    assert "removed_indices_count=" in caplog.text
-    assert f"added_indices={'[15]' if retain_resistance else '[]'}" in caplog.text
-    assert "removed_indices=[]" in caplog.text
+    assert "[AI][PatchCorrection]" in caplog.text
+    assert f"patch_added_citation_count={3 if retain_resistance else 2}" in caplog.text
+    assert f"final_citation_count={3 if retain_resistance else 2}" in caplog.text
     assert "[AI][GroundingDelta]" in caplog.text
 
 
@@ -2380,10 +2390,7 @@ async def test_amd_live_failure_section_scoped_correction(monkeypatch, caplog):
     assert "remaining_count=0" in caplog.text
     assert "new_count=0" in caplog.text
 
-    # Scope logging present
-    assert "[AI][SemanticCorrectionScope]" in caplog.text
-    assert "allowed_sections=['outlook', 'technical_analysis']" in caplog.text
-    assert "discarded_changed_sections" in caplog.text
+    assert "[AI][CorrectionPatchTrace]" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -2446,7 +2453,7 @@ async def test_authorized_section_still_fail_closed_on_bad_correction(monkeypatc
 
     # Only one correction prompt
     assert sum(
-        "## Semantic Grounding Correction" in call["user_prompt"]
+        call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
         for call in client.calls
     ) == 1
 
@@ -3528,3 +3535,715 @@ def test_semantic_trace_includes_derived_market_and_deterministic_violation(capl
     assert records[0]["backend_derived_market_fields"] == ["current_price"]
     assert deterministic[0]["rule"] == "historical_range_not_technical_level"
     assert deterministic[0]["blocking"] is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "valid"),
+    [
+        ({"target_id": "bull_case[0].segment_0", "operation": "DELETE", "replacement": None, "article_indices_used": []}, True),
+        ({"target_id": "bull_case[0].segment_0", "operation": "DELETE", "replacement": "text", "article_indices_used": []}, False),
+        ({"target_id": "bull_case[0].segment_0", "operation": "REPLACE", "replacement": "Supported replacement.", "article_indices_used": []}, True),
+        ({"target_id": "bull_case[0].segment_0", "operation": "REPLACE", "replacement": None, "article_indices_used": []}, False),
+        ({"target_id": "bull_case[0].segment_0", "operation": "REPLACE", "replacement": "   ", "article_indices_used": []}, False),
+    ],
+)
+def test_correction_patch_operation_payload_validation(payload, valid):
+    if valid:
+        patch = CorrectionPatch(**payload)
+        assert patch.article_indices_used == []
+        assert CorrectionPatchSet(patches=[patch]).patches == [patch]
+    else:
+        with pytest.raises(ValidationError):
+            CorrectionPatch(**payload)
+
+
+def test_correction_target_registry_is_deterministic_and_excludes_metadata():
+    report = FinancialAnalysisLLMResponse(**_report())
+    units = ollama_service._build_reviewable_claim_units(report)
+    segments = ollama_service._build_review_coverage_segments(units)
+
+    first = ollama_service.build_correction_target_registry(units, segments)
+    second = ollama_service.build_correction_target_registry(units, segments)
+
+    assert first == second
+    assert len(first.targets) == len({target.patch_target_id for target in first.targets})
+    excluded = {
+        "asset", "ticker", "current_price_at_analysis", "report_id",
+        "article_indices_used", "articles_used", "overall_sentiment",
+        "confidence_score", "investment_rating", "prompt_version",
+    }
+    assert not ({target.source_path for target in first.targets} & excluded)
+    for target in first.targets:
+        unit = next(unit for unit in units if unit.review_unit_id == target.source_path)
+        assert unit.candidate_text[target.source_start:target.source_end] == target.original_target_text
+        assert ollama_service.lookup_correction_target(first, target.patch_target_id) == target
+    assert ollama_service.lookup_correction_target(first, "unknown.segment_0") is None
+
+
+def test_correction_target_registry_distinguishes_duplicate_text_locations():
+    text = "The same proposition appears here."
+    units = [
+        ReviewableClaimUnit(review_unit_id="bull_case[0]", section="bull_case", candidate_text=text),
+        ReviewableClaimUnit(review_unit_id="bear_case[0]", section="bear_case", candidate_text=text),
+    ]
+    registry = ollama_service.build_correction_target_registry(units)
+
+    assert [target.original_target_text for target in registry.targets] == [text, text]
+    assert len({target.patch_target_id for target in registry.targets}) == 2
+    assert len({target.source_path for target in registry.targets}) == 2
+
+
+def test_correction_target_registry_preserves_multisegment_offsets_and_context():
+    source = "First proposition. Second proposition, suggesting a third implication."
+    unit = ReviewableClaimUnit(
+        review_unit_id="technical_analysis.trend",
+        section="technical_analysis",
+        candidate_text=source,
+    )
+    registry = ollama_service.build_correction_target_registry([unit])
+
+    assert len(registry.targets) == 3
+    assert {target.source_path for target in registry.targets} == {"technical_analysis.trend"}
+    assert [target.patch_target_id for target in registry.targets] == [
+        "technical_analysis.trend.segment_0",
+        "technical_analysis.trend.segment_1",
+        "technical_analysis.trend.segment_2",
+    ]
+    for target in registry.targets:
+        assert source[target.source_start:target.source_end] == target.original_target_text
+    assert registry.targets[1].previous_context == registry.targets[0].original_target_text
+    assert registry.targets[1].next_context == registry.targets[2].original_target_text
+
+
+def test_correction_target_registry_uses_real_list_and_nested_paths():
+    report = FinancialAnalysisLLMResponse(**_report())
+    units = ollama_service._build_reviewable_claim_units(report)
+    registry = ollama_service.build_correction_target_registry(units)
+
+    news = registry.get("news_summary[0].segment_0")
+    risk = registry.get("key_risks[0].risk.segment_0")
+    assert news is not None and news.source_path == "news_summary[0]"
+    assert risk is not None and risk.source_path == "key_risks[0].risk"
+    assert risk.original_target_text in report.key_risks[0].risk
+
+
+def test_reviewer_violation_uses_coverage_segment_not_finding_order():
+    base = dict(
+        review_unit_id="bull_case[0]",
+        claim_role="fact",
+        classification="unsupported_by_any_evidence",
+        supporting_article_indices=[],
+        supporting_market_data_fields=[],
+        rule="unsupported_company_specific_claim",
+        section="bull_case",
+        supporting_selected_indices=[],
+        supporting_unselected_indices=[],
+    )
+    findings = [
+        NormalizedGroundingClaimFinding(
+            **base,
+            coverage_segment_id="bull_case[0].segment_1",
+            atomic_ordinal=0,
+            atomic_proposition="Second finding",
+            atomic_claim_id="bull_case[0].atomic_0",
+        ),
+        NormalizedGroundingClaimFinding(
+            **base,
+            coverage_segment_id="bull_case[0].segment_0",
+            atomic_ordinal=1,
+            atomic_proposition="First finding",
+            atomic_claim_id="bull_case[0].atomic_1",
+        ),
+    ]
+
+    forward = ollama_service._claim_findings_to_violations(findings)
+    reverse = ollama_service._claim_findings_to_violations(list(reversed(findings)))
+    assert {item.patch_target_id for item in forward} == {
+        "bull_case[0].segment_0", "bull_case[0].segment_1"
+    }
+    assert {item.patch_target_id for item in reverse} == {
+        "bull_case[0].segment_0", "bull_case[0].segment_1"
+    }
+
+    legacy = NormalizedGroundingClaimFinding(
+        **{**base, "section": "overall_sentiment"},
+        coverage_segment_id="overall_sentiment.segment_0",
+        atomic_ordinal=0,
+        atomic_proposition="Bullish",
+        atomic_claim_id="overall_sentiment.atomic_0",
+    )
+    assert ollama_service._claim_findings_to_violations([legacy])[0].patch_target_id is None
+
+
+def test_deterministic_violation_maps_only_an_exact_unique_target():
+    request = _request()
+    exact_report = FinancialAnalysisLLMResponse(**_report())
+    exact = ollama_service._deterministic_grounding_violations(request, exact_report, [1])
+    assert any(
+        violation.patch_target_id == "technical_analysis.resistance_levels[0].segment_0"
+        for violation in exact
+    )
+
+    ambiguous_payload = _report()
+    ambiguous_payload["technical_analysis"]["breakout_level"] = "$584.73"
+    ambiguous_report = FinancialAnalysisLLMResponse(**ambiguous_payload)
+    ambiguous = ollama_service._deterministic_grounding_violations(request, ambiguous_report, [1])
+    high = [
+        violation for violation in ambiguous
+        if "52-week high" in violation.issue
+    ]
+    assert len(high) == 1
+    assert high[0].patch_target_id is None
+
+
+def _phase_b_report_and_registry(payload=None):
+    report = FinancialAnalysisLLMResponse(**(payload or _report()))
+    units = ollama_service._build_reviewable_claim_units(report)
+    registry = ollama_service.build_correction_target_registry(units)
+    return report, registry
+
+
+def _phase_b_patch(target_id, operation="REPLACE", replacement="Supported replacement.", indices=None):
+    return {
+        "target_id": target_id,
+        "operation": operation,
+        "replacement": replacement,
+        "article_indices_used": [] if indices is None else indices,
+    }
+
+
+def _patch_failure_kind(callable_):
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        callable_()
+    return exc_info.value.details["failure_kind"]
+
+
+def test_required_patch_targets_are_deduplicated_sorted_and_fail_on_unmappable():
+    violations = [
+        GroundingViolation(rule="scope_preservation", section="bull_case", issue="b", patch_target_id="bull_case[0].segment_1"),
+        GroundingViolation(rule="selected_evidence_attribution_boundary", section="bull_case", issue="a", patch_target_id="bull_case[0].segment_0"),
+        GroundingViolation(rule="unsupported_company_specific_claim", section="bull_case", issue="c", patch_target_id="bull_case[0].segment_1"),
+    ]
+    assert ollama_service.derive_required_patch_targets(list(reversed(violations))) == [
+        "bull_case[0].segment_0", "bull_case[0].segment_1"
+    ]
+    violations.append(GroundingViolation(
+        rule="historical_range_not_technical_level",
+        section="technical_analysis",
+        issue="ambiguous",
+    ))
+    assert _patch_failure_kind(
+        lambda: ollama_service.derive_required_patch_targets(violations)
+    ) == "correction_patch_unmappable_violation"
+
+
+def test_phase_b_replace_middle_segment_preserves_exact_neighbors():
+    payload = _report()
+    original = "First proposition. Invalid middle proposition. Final proposition."
+    payload["executive_summary"] = original
+    report, registry = _phase_b_report_and_registry(payload)
+    target_id = "executive_summary.segment_1"
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(target_id, replacement="Supported middle proposition.")]},
+    )
+    assert merged.report.executive_summary == (
+        "First proposition. Supported middle proposition. Final proposition."
+    )
+    assert report.executive_summary == original
+    assert len(merged.coverage_segments) > 0
+
+
+def test_phase_b_delete_middle_segment_uses_seam_only_whitespace_cleanup():
+    payload = _report()
+    payload["executive_summary"] = "First proposition. Delete this proposition. Final proposition."
+    report, registry = _phase_b_report_and_registry(payload)
+    target_id = "executive_summary.segment_1"
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(target_id, operation="DELETE", replacement=None)]},
+    )
+    assert merged.report.executive_summary == "First proposition. Final proposition."
+
+
+def test_phase_b_multiple_same_field_patches_use_original_descending_offsets():
+    payload = _report()
+    payload["executive_summary"] = "Bad first. Keep middle. Bad final."
+    report, registry = _phase_b_report_and_registry(payload)
+    required = ["executive_summary.segment_0", "executive_summary.segment_2"]
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        required,
+        {"patches": [
+            _phase_b_patch(required[0], replacement="Good first."),
+            _phase_b_patch(required[1], replacement="Good final."),
+        ]},
+    )
+    assert merged.report.executive_summary == "Good first. Keep middle. Good final."
+
+
+def test_phase_b_multiple_sections_are_atomic_and_metadata_is_immutable():
+    report, registry = _phase_b_report_and_registry()
+    required = [
+        "technical_analysis.trend.segment_0",
+        "news_summary[0].segment_0",
+        "bear_case[0].segment_0",
+    ]
+    original_metadata = (
+        report.asset, report.overall_sentiment, report.confidence_score,
+        report.investment_rating, list(report.article_indices_used),
+    )
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        required,
+        {"patches": [
+            _phase_b_patch(required[0], replacement="Technical evidence remains limited."),
+            _phase_b_patch(required[1], replacement="The financing remains planned."),
+            _phase_b_patch(required[2], replacement="Execution risk remains conditional."),
+        ]},
+    ).report
+    assert merged.technical_analysis.trend == "Technical evidence remains limited."
+    assert merged.news_summary[0] == "The financing remains planned."
+    assert merged.bear_case[0] == "Execution risk remains conditional."
+    assert (
+        merged.asset, merged.overall_sentiment, merged.confidence_score,
+        merged.investment_rating, list(merged.article_indices_used),
+    ) == original_metadata
+    assert merged.bull_case == report.bull_case
+
+
+@pytest.mark.parametrize(
+    ("patches", "required", "failure_kind"),
+    [
+        ([_phase_b_patch("unknown.segment_0")], ["unknown.segment_0"], "correction_patch_unknown_target"),
+        ([_phase_b_patch("bull_case[0].segment_0")], ["bear_case[0].segment_0"], "correction_patch_unauthorized_target"),
+        ([_phase_b_patch("bull_case[0].segment_0"), _phase_b_patch("bull_case[0].segment_0")], ["bull_case[0].segment_0"], "correction_patch_duplicate_target"),
+        ([_phase_b_patch("bull_case[0].segment_0")], ["bull_case[0].segment_0", "bear_case[0].segment_0"], "correction_patch_incomplete_target_set"),
+        ([_phase_b_patch("bull_case[0].segment_0"), _phase_b_patch("bear_case[0].segment_0")], ["bull_case[0].segment_0"], "correction_patch_unauthorized_target"),
+    ],
+)
+def test_phase_b_authorization_failures_are_specific(patches, required, failure_kind):
+    _, registry = _phase_b_report_and_registry()
+    assert _patch_failure_kind(
+        lambda: ollama_service.validate_correction_patch_set(
+            {"patches": patches}, registry, required
+        )
+    ) == failure_kind
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        _phase_b_patch("bull_case[0].segment_0", operation="DELETE", replacement="invalid"),
+        _phase_b_patch("bull_case[0].segment_0", replacement=None),
+        _phase_b_patch("bull_case[0].segment_0", replacement=""),
+        _phase_b_patch("bull_case[0].segment_0", replacement="   "),
+        _phase_b_patch("bull_case[0].segment_0", replacement="First sentence. Second sentence."),
+        _phase_b_patch("bull_case[0].segment_0", replacement="Line one.\nLine two."),
+        _phase_b_patch("bull_case[0].segment_0", replacement="- Bullet claim"),
+        _phase_b_patch("bull_case[0].segment_0", replacement="x" * 401),
+    ],
+)
+def test_phase_b_invalid_operation_or_replacement_is_schema_failure(patch):
+    _, registry = _phase_b_report_and_registry()
+    target_id = "bull_case[0].segment_0"
+    assert _patch_failure_kind(
+        lambda: ollama_service.validate_correction_patch_set(
+            {"patches": [patch]}, registry, [target_id]
+        )
+    ) == "correction_patch_schema_invalid"
+
+
+@pytest.mark.parametrize("indices", [[0], [-1], [1, 1]])
+def test_phase_b_article_index_structure_is_fail_closed(indices):
+    _, registry = _phase_b_report_and_registry()
+    target_id = "bull_case[0].segment_0"
+    assert _patch_failure_kind(
+        lambda: ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(target_id, indices=indices)]},
+            registry,
+            [target_id],
+        )
+    ) == "correction_patch_attribution_invalid"
+
+
+def test_phase_b_delete_required_list_item_fails_without_mutating_primary():
+    report, registry = _phase_b_report_and_registry()
+    target_id = "news_summary[0].segment_0"
+    original = report.model_dump(mode="python")
+    assert registry.get(target_id).target_strategy == "list_item"
+    assert _patch_failure_kind(
+        lambda: ollama_service.merge_correction_patch_set(
+            report,
+            registry,
+            [target_id],
+            {"patches": [_phase_b_patch(target_id, operation="DELETE", replacement=None)]},
+        )
+    ) == "correction_patch_merge_failure"
+    assert report.model_dump(mode="python") == original
+
+
+def test_phase_b_whole_optional_list_item_delete_uses_registry_strategy():
+    report, registry = _phase_b_report_and_registry()
+    target_id = "key_catalysts[0].segment_0"
+    assert registry.get(target_id).target_strategy == "list_item"
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(target_id, operation="DELETE", replacement=None)]},
+    )
+    assert merged.report.key_catalysts == []
+
+
+def test_phase_b_nested_risk_replace_preserves_severity_and_neighbors():
+    payload = _report()
+    payload["key_risks"].append({"risk": "Neighbor risk remains.", "severity": "High"})
+    report, registry = _phase_b_report_and_registry(payload)
+    target_id = "key_risks[0].risk.segment_0"
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(target_id, replacement="Corrected risk remains conditional.")]},
+    ).report
+    assert merged.key_risks[0].risk == "Corrected risk remains conditional."
+    assert merged.key_risks[0].severity == report.key_risks[0].severity
+    assert merged.key_risks[1] == report.key_risks[1]
+
+
+def test_phase_b_overlapping_trusted_targets_fail_atomically():
+    payload = _report()
+    payload["executive_summary"] = "First proposition. Second proposition."
+    report, registry = _phase_b_report_and_registry(payload)
+    first = registry.get("executive_summary.segment_0")
+    second = registry.get("executive_summary.segment_1")
+    source = report.executive_summary
+    overlapping_second = second.model_copy(update={
+        "source_start": first.source_start + 1,
+        "source_end": first.source_end,
+        "original_target_text": source[first.source_start + 1:first.source_end],
+    })
+    overlap_registry = CorrectionTargetRegistry(targets=[
+        target if target.patch_target_id != second.patch_target_id else overlapping_second
+        for target in registry.targets
+    ])
+    required = [first.patch_target_id, second.patch_target_id]
+    assert _patch_failure_kind(
+        lambda: ollama_service.merge_correction_patch_set(
+            report,
+            overlap_registry,
+            required,
+            {"patches": [
+                _phase_b_patch(first.patch_target_id, replacement="Good first."),
+                _phase_b_patch(second.patch_target_id, replacement="Good second."),
+            ]},
+        )
+    ) == "correction_patch_merge_failure"
+    assert report.executive_summary == source
+
+
+def test_phase_b_request_local_registry_rejects_stale_offsets_without_text_matching():
+    report_a, registry_a = _phase_b_report_and_registry()
+    payload_b = _report()
+    payload_b["bull_case"][0] = "Different request-local proposition."
+    report_b, registry_b = _phase_b_report_and_registry(payload_b)
+    target_id = "bull_case[0].segment_0"
+    patch_set = {"patches": [_phase_b_patch(target_id)]}
+
+    assert ollama_service.merge_correction_patch_set(
+        report_a, registry_a, [target_id], patch_set
+    ).report.bull_case[0] == "Supported replacement."
+    assert _patch_failure_kind(
+        lambda: ollama_service.merge_correction_patch_set(
+            report_b, registry_a, [target_id], patch_set
+        )
+    ) == "correction_patch_merge_failure"
+    assert ollama_service.merge_correction_patch_set(
+        report_b, registry_b, [target_id], patch_set
+    ).report.bull_case[0] == "Supported replacement."
+
+
+def _phase_c_violation(target_id, rule="unsupported_company_specific_claim", section="executive_summary"):
+    return GroundingViolation(
+        rule=rule,
+        section=section,
+        issue="Targeted semantic blocker.",
+        patch_target_id=target_id,
+    )
+
+
+def _phase_c_claim(target_id, section="executive_summary", indices=None):
+    source_path, _, segment_ordinal = target_id.rpartition(".segment_")
+    return NormalizedGroundingClaimFinding(
+        review_unit_id=source_path,
+        coverage_segment_id=target_id,
+        atomic_ordinal=int(segment_ordinal),
+        claim_role="fact",
+        atomic_proposition="Target proposition",
+        classification="unsupported_by_any_evidence",
+        supporting_article_indices=indices or [],
+        supporting_market_data_fields=[],
+        rule="unsupported_company_specific_claim",
+        section=section,
+        atomic_claim_id=f"{source_path}.atomic_0",
+        supporting_selected_indices=indices or [],
+        supporting_unselected_indices=[],
+    )
+
+
+def test_phase_c_request_schema_has_exact_target_enum_and_patch_count():
+    required = ["a.segment_0", "b.segment_1", "c.segment_0"]
+    schema = ollama_service.build_request_local_patch_schema(required)
+    patch_schema = schema["$defs"]["CorrectionPatch"]
+
+    assert patch_schema["properties"]["target_id"]["enum"] == required
+    assert patch_schema["properties"]["operation"]["enum"] == ["DELETE", "REPLACE"]
+    assert schema["properties"]["patches"]["minItems"] == 3
+    assert schema["properties"]["patches"]["maxItems"] == 3
+    assert set(patch_schema["required"]) == {"target_id", "operation"}
+
+
+def test_phase_c_patch_prompt_isolates_targets_context_and_relevant_articles():
+    payload = _report()
+    payload["executive_summary"] = (
+        "Read-only previous proposition. Invalid target proposition. "
+        "Read-only next proposition."
+    )
+    payload["bull_case"] = ["UNRELATED_BULL_CASE_PROSE_MUST_NOT_APPEAR"]
+    report, registry = _phase_b_report_and_registry(payload)
+    target_id = "executive_summary.segment_1"
+    prompt = ollama_service.build_patch_correction_prompt(
+        [target_id],
+        registry,
+        [_phase_c_violation(target_id)],
+        _request(),
+        [_phase_c_claim(target_id, indices=[1])],
+    )
+
+    assert prompt.count(target_id) == 1
+    assert "Invalid target proposition." in prompt
+    assert "Read-only previous proposition." in prompt
+    assert "Read-only next proposition." in prompt
+    assert "context is read-only" in prompt.lower()
+    assert "AMD prepares a $5B bond sale" in prompt
+    assert "UNRELATED_BULL_CASE_PROSE_MUST_NOT_APPEAR" not in prompt
+    assert "source_path" not in prompt
+    assert "atomic_ordinal" not in prompt
+
+
+def test_phase_c_prompt_preserves_missing_ma_and_historical_range_guidance():
+    report, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+    prompt = ollama_service.build_patch_correction_prompt(
+        [target_id],
+        registry,
+        [_phase_c_violation(
+            target_id,
+            rule="historical_range_not_technical_level",
+            section="technical_analysis",
+        )],
+        _request(),
+    )
+
+    assert "MA50 and MA200 were not supplied" in prompt
+    assert "insufficient technical data" in prompt
+    assert "Do not claim insufficient technical data" in prompt
+    assert "do not infer trend, momentum, support, resistance, breakout" in prompt
+    assert "Prefer DELETE" in prompt
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "event_price_impact_grounding",
+        "investor_motive_grounding",
+        "causal_mechanism_grounding",
+    ],
+)
+def test_phase_c_relationship_prompt_prohibits_alternative_speculation(rule):
+    report, registry = _phase_b_report_and_registry()
+    target_id = "executive_summary.segment_0"
+    prompt = ollama_service.build_patch_correction_prompt(
+        [target_id],
+        registry,
+        [_phase_c_violation(target_id, rule=rule)],
+        _request(),
+    )
+    assert "never substitute a different speculative motive or causal explanation" in prompt
+
+
+@pytest.mark.parametrize(
+    ("raw", "valid"),
+    [
+        ('{"patches":[{"target_id":"a.segment_0","operation":"DELETE","replacement":null,"article_indices_used":[]}]}', True),
+        ("not json", False),
+        ('{"asset":"AMD"}', False),
+        ('{"patches":[{"target_id":"a.segment_0","operation":"INSERT"}]}', False),
+    ],
+)
+def test_phase_c_parser_accepts_only_patch_set_json(raw, valid):
+    if valid:
+        assert ollama_service.parse_correction_patch_set(raw).patches[0].operation == "DELETE"
+    else:
+        assert _patch_failure_kind(
+            lambda: ollama_service.parse_correction_patch_set(raw)
+        ) == "correction_patch_schema_invalid"
+
+
+def test_phase_c_article_range_and_delete_attribution_are_rejected():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "bull_case[0].segment_0"
+    assert _patch_failure_kind(
+        lambda: ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(target_id, indices=[41])]},
+            registry,
+            [target_id],
+            article_count=40,
+        )
+    ) == "correction_patch_attribution_invalid"
+    assert _patch_failure_kind(
+        lambda: ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(
+                target_id, operation="DELETE", replacement=None, indices=[1]
+            )]},
+            registry,
+            [target_id],
+            article_count=40,
+        )
+    ) == "correction_patch_attribution_invalid"
+
+
+@pytest.mark.asyncio
+async def test_phase_c_generation_uses_one_request_local_schema_call(caplog):
+    report, registry = _phase_b_report_and_registry()
+    target_id = "bull_case[0].segment_0"
+    response = json.dumps({"patches": [{
+        "target_id": target_id,
+        "operation": "REPLACE",
+        "replacement": "Supplied evidence supports a conditional interpretation.",
+        "article_indices_used": [1],
+    }]})
+
+    class CapturingPatchClient:
+        def __init__(self):
+            self.calls = []
+
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return response
+
+    client = CapturingPatchClient()
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        patch_set = await ollama_service.generate_correction_patch_set(
+            client,
+            _request(),
+            registry,
+            [_phase_c_violation(target_id, section="bull_case")],
+            [_phase_c_claim(target_id, section="bull_case", indices=[1])],
+            provider="ollama",
+            model="test-model",
+        )
+
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["temperature"] == 0
+    assert call["max_attempts"] == 1
+    assert call["response_schema"]["$defs"]["CorrectionPatch"]["properties"]["target_id"]["enum"] == [target_id]
+    assert call["response_schema"]["properties"]["patches"]["minItems"] == 1
+    assert patch_set.patches[0].article_indices_used == [1]
+    assert "stage=patch_correction_generation" in caplog.text
+    assert "required_target_count=1" in caplog.text
+    assert "returned_patch_count=1" in caplog.text
+    assert "Supplied evidence supports" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_phase_c_zero_or_unmappable_targets_make_no_provider_call():
+    _, registry = _phase_b_report_and_registry()
+
+    class UnexpectedPatchClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, **kwargs):
+            self.calls += 1
+            raise AssertionError("provider must not be called")
+
+    client = UnexpectedPatchClient()
+    for violations in ([], [GroundingViolation(
+        rule="historical_range_not_technical_level",
+        section="technical_analysis",
+        issue="unmappable",
+    )]):
+        with pytest.raises(AISemanticGroundingError) as exc_info:
+            await ollama_service.generate_correction_patch_set(
+                client,
+                _request(),
+                registry,
+                violations,
+                None,
+                provider="ollama",
+                model="test-model",
+            )
+    assert exc_info.value.details["failure_kind"] == "correction_patch_unmappable_violation"
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("section", ["overall_sentiment", "investment_rating"])
+async def test_phase_d_unmappable_legacy_scalar_fails_before_correction_provider(
+    monkeypatch, section
+):
+    invalid_scalar_review = {
+        "claims": [{
+            "section": section,
+            "claim": "Bullish" if section == "overall_sentiment" else "Hold",
+            "classification": "unsupported_by_any_evidence",
+            "supporting_article_indices": [],
+            "supporting_market_data_fields": [],
+            "rule": "unsupported_valuation_claim",
+        }]
+    }
+    client = _SequencedClient([_report(corrected=True), invalid_scalar_review])
+    await _install_client(monkeypatch, "ollama", client)
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        await ollama_service.generate_analysis(
+            _request(), provider="ollama", model="test-model"
+        )
+
+    assert exc_info.value.details["failure_kind"] == (
+        "correction_patch_unmappable_violation"
+    )
+    assert len(client.calls) == 2
+    assert all(
+        call["system_prompt"] != ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
+        for call in client.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase_d_incomplete_patch_set_has_no_final_review_or_fallback(monkeypatch):
+    client = _SequencedClient([_report(), _invalid_review(), {"patches": []}])
+    await _install_client(monkeypatch, "ollama", client)
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        await ollama_service.generate_analysis(
+            _request(), provider="ollama", model="test-model"
+        )
+
+    assert exc_info.value.details["failure_kind"] == (
+        "correction_patch_incomplete_target_set"
+    )
+    assert len(client.calls) == 3
+    assert sum(
+        call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
+        for call in client.calls
+    ) == 1
