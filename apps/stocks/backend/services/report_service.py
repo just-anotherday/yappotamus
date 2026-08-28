@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.lib.timestamps import utc_now_naive
 from backend.models.report import AnalysisReportModel
 from backend.models.report_schemas import ReportSummaryOut
 
@@ -18,6 +19,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+
+
+def count_cited_articles(report_data: Any) -> int:
+    """Return the trusted stored citation count, safely handling legacy reports."""
+
+    if not isinstance(report_data, dict):
+        return 0
+    articles_used = report_data.get("articles_used")
+    return len(articles_used) if isinstance(articles_used, list) else 0
 
 async def create_report(
     session: AsyncSession,
@@ -43,8 +53,17 @@ async def create_report(
         prompt_version=prompt_version,
         prompt_hash=prompt_hash,
         current_price_at_analysis=current_price_at_analysis,
+        # Do not depend on the database session timezone for this legacy
+        # TIMESTAMP WITHOUT TIME ZONE column. Persist a UTC wall clock value.
+        created_at=utc_now_naive(),
     )
     session.add(obj)
+    logger.info(
+        "[AI][Citations] persisted_count=%d supplied_count=%d ticker=%s",
+        count_cited_articles(report_data),
+        articles_count,
+        ticker.upper(),
+    )
     await session.flush()
     return obj.id
 
@@ -102,6 +121,7 @@ async def list_reports(
             "overall_sentiment": r.overall_sentiment,
             "confidence_score": r.confidence_score,
             "articles_count": r.articles_count,
+            "articles_cited_count": count_cited_articles(r.report_data),
             "model_used": r.model_used,
             "prompt_version": r.prompt_version,
             "prompt_hash": r.prompt_hash,

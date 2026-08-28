@@ -6,6 +6,9 @@ Exception hierarchy:
     AIProviderError          — base exception for all AI provider errors
     └── AIValidationError    — invalid provider, model, or configuration (HTTP 400)
     └── AIConnectionError    — provider unreachable, offline, or timeout (HTTP 503)
+    └── AIHTTPError          — provider returned a non-success HTTP response (HTTP 502)
+    └── AIStructuredOutputError — malformed or schema-invalid model output (HTTP 502)
+        └── AIResponseEnvelopeError — invalid/empty provider response envelope (HTTP 502)
 
 Usage:
     from backend.services.ai.exceptions import AIValidationError, AIConnectionError
@@ -50,3 +53,31 @@ class AIConnectionError(AIProviderError):
         - Connection timeout during generation
         - Network error reaching provider
     """
+
+
+class AIHTTPError(AIProviderError):
+    """Raised when a reachable provider returns a non-success HTTP response.
+
+    Maps to HTTP 502 Bad Gateway. Details must contain only safe response metadata,
+    never the provider response body.
+    """
+
+
+class AIStructuredOutputError(AIProviderError):
+    """Raised when generation succeeds but no valid structured report is produced.
+
+    Maps to HTTP 502 Bad Gateway because the selected upstream model responded,
+    but its response could not satisfy the application's report contract.
+    """
+
+
+class AISemanticGroundingError(AIStructuredOutputError):
+    """Raised when a structured report cannot satisfy grounding rules.
+
+    Maps to HTTP 502 without exposing the rejected model output. This remains
+    distinct from malformed JSON, schema validation, and citation attribution.
+    """
+
+
+class AIResponseEnvelopeError(AIStructuredOutputError):
+    """Raised when an HTTP-success provider envelope has no usable output text."""

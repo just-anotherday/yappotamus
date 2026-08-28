@@ -23,7 +23,7 @@ export default function ArticleSelectionMeter({
   available,
   onMaxChange,
   minMax = 5,
-  maxMax = 40,
+  maxMax = 50,
   step = 5,
 }: ArticleSelectionMeterProps) {
   const ratio = max > 0 ? Math.min(selected / max, 1) : 0;

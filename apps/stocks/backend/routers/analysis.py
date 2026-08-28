@@ -34,6 +34,7 @@ from backend.services.ollama_service import (
     _get_timeout_for_model,
 )
 from backend.services.hybrid_data_service import get_hybrid_stock_price
+from backend.services.market_data_observability import current_correlation_id
 
 from backend.config.settings import settings
 from backend.services.ai.ai_service import resolve_provider_model
@@ -48,7 +49,19 @@ ANALYSIS_TIMEOUT = settings.ANALYSIS_TIMEOUT_S
 # Upper bound on how many articles can be sent to the LLM in one analysis.
 # Keeps prompt size (and cost) bounded regardless of how many articles the
 # picker surfaces for browsing.
-MAX_ARTICLES_PER_ANALYSIS = 40
+MAX_ARTICLES_PER_ANALYSIS = 50
+
+
+def _order_articles_by_requested_ids(articles, requested_ids: List[int]):
+    """Restore deterministic caller order after an unordered SQL IN query."""
+    by_id = {article.id: article for article in articles}
+    seen = set()
+    ordered = []
+    for article_id in requested_ids:
+        if article_id in by_id and article_id not in seen:
+            ordered.append(by_id[article_id])
+            seen.add(article_id)
+    return ordered
 
 
 @router.get("/config", response_model=OllamaConfigResponse)
@@ -170,7 +183,7 @@ async def analysis_get_available_articles(
 @router.post("/analyze_ticker", response_model=FinancialAnalysisResponse)
 async def analysis_analyze_ticker(
     ticker: str = Body(..., embed=True, description="Ticker symbol to analyze"),
-    max_articles: int = Body(15, ge=1, le=MAX_ARTICLES_PER_ANALYSIS, description=f"Max news articles to include (default 15, max {MAX_ARTICLES_PER_ANALYSIS} for cost/performance)"),
+    max_articles: int = Body(50, ge=1, le=MAX_ARTICLES_PER_ANALYSIS, description=f"Max news articles to include (default 50, max {MAX_ARTICLES_PER_ANALYSIS} for cost/performance)"),
     days_back: int = Body(3, ge=1, le=14, description="Only consider articles from the last N days (default 3, max 14)"),
     model: Optional[str] = Body(None, embed=True, description="Override default model"),
     provider: Optional[str] = Body(None, embed=True, description="AI provider to use (ollama, openai)"),
@@ -191,7 +204,12 @@ async def analysis_analyze_ticker(
     # 1. Fetch news articles for this ticker
     if article_ids is not None and len(article_ids) > 0:
         # Custom selection: fetch only the specified articles, but filter by ticker for safety
-        capped_ids = article_ids[:MAX_ARTICLES_PER_ANALYSIS]
+        capped_ids = list(dict.fromkeys(article_ids))
+        if len(capped_ids) > MAX_ARTICLES_PER_ANALYSIS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"A maximum of {MAX_ARTICLES_PER_ANALYSIS} distinct article IDs may be analyzed",
+            )
         try:
             result = await session.execute(
                 select(NewsArticle)
@@ -200,7 +218,10 @@ async def analysis_analyze_ticker(
                     NewsArticle.ticker == ticker.upper(),  # Safety: only include articles matching this ticker
                 )
             )
-            articles = result.scalars().all()
+            articles = _order_articles_by_requested_ids(
+                result.scalars().all(),
+                capped_ids,
+            )
         except Exception as e:
             logger.error(f"[Analysis] Failed to fetch news for {ticker}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to fetch news: {e}")
@@ -278,8 +299,8 @@ async def analysis_analyze_ticker(
     price_data = PriceDataRequest(
         current_price=current_price or 0,
         daily_change_percent=daily_change_pct,
-        fifty_two_week_high=price_info.get("fifty_two_week_high", 0) or 0,
-        fifty_two_week_low=price_info.get("fifty_two_week_low", 0) or 0,
+        fifty_two_week_high=price_info.get("fifty_two_week_high") or None,
+        fifty_two_week_low=price_info.get("fifty_two_week_low") or None,
         trading_volume=int(price_info.get("volume", 0) or 0),
         beta=price_info.get("beta"),
         support_level=price_info.get("support_level"),
@@ -293,6 +314,14 @@ async def analysis_analyze_ticker(
         news_articles=news_requests,
         price_data=price_data,
         analysis_date=datetime.now(timezone.utc).isoformat(),
+    )
+    logger.info(
+        "[Analysis] event=analysis_request_built correlation_id=%s ticker=%s "
+        "requested_max_articles=%d supplied_count=%d",
+        current_correlation_id(),
+        ticker.upper(),
+        max_articles,
+        len(analysis_request.news_articles),
     )
 
     # 4. Generate analysis

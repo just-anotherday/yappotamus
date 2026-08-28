@@ -4,6 +4,17 @@ from datetime import datetime, timezone
 from typing import overload
 
 
+def utc_now_naive() -> datetime:
+    """Return the current UTC wall clock for legacy UTC-naive DB columns.
+
+    The value is intentionally naive because existing report tables use
+    ``TIMESTAMP WITHOUT TIME ZONE``. Its UTC semantics are restored explicitly
+    by :func:`utc_isoformat` at API boundaries.
+    """
+
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 @overload
 def utc_isoformat(value: datetime) -> str:
     ...
