@@ -3403,6 +3403,74 @@ def test_descriptive_52_week_fact_remains_allowed():
     assert ollama_service._deterministic_grounding_violations(_request(), result, [1]) == []
 
 
+def test_historical_range_trend_violation_preserves_exact_segment_and_proposition():
+    request = _request()
+    request.price_data.current_price = 479.18
+    result = _technical_trend_result(
+        "The current price of $479.18 is below the 52-week high of $584.73 and "
+        "above the 52-week low of $149.22. Price position suggests a range-bound "
+        "or indecisive trend."
+    )
+
+    violations = ollama_service._deterministic_grounding_violations(request, result, [1])
+
+    assert len(violations) == 1
+    violation = violations[0]
+    assert violation.coverage_segment_id == "technical_analysis.trend.segment_1"
+    assert violation.atomic_proposition == "Price position suggests a range-bound or indecisive trend."
+    assert violation.patch_target_id == violation.coverage_segment_id
+    assert ollama_service.derive_required_patch_targets(violations) == [
+        "technical_analysis.trend.segment_1"
+    ]
+
+
+def test_descriptive_historical_range_segments_do_not_create_a_blocker():
+    request = _request()
+    request.price_data.current_price = 479.18
+    result = _technical_trend_result(
+        "The 52-week range is $149.22 - $584.73. The current price is below the "
+        "52-week high and above the 52-week low. The current price is in the lower "
+        "half of the 52-week range."
+    )
+
+    assert ollama_service._deterministic_grounding_violations(request, result, [1]) == []
+
+
+def test_historical_range_rule_emits_one_exact_violation_per_invalid_segment():
+    result = _technical_trend_result(
+        "The price is within the 52-week range. Price position suggests a range-bound "
+        "trend. The range signals downside momentum."
+    )
+
+    violations = ollama_service._deterministic_grounding_violations(_request(), result, [1])
+
+    assert [item.coverage_segment_id for item in violations] == [
+        "technical_analysis.trend.segment_1",
+        "technical_analysis.trend.segment_2",
+    ]
+    assert [item.patch_target_id for item in violations] == [
+        "technical_analysis.trend.segment_1",
+        "technical_analysis.trend.segment_2",
+    ]
+    assert all(item.atomic_proposition for item in violations)
+
+
+def test_historical_range_and_reviewer_blocker_share_one_required_target():
+    result = _technical_trend_result(
+        "The price is within the 52-week range. Price position suggests a range-bound trend."
+    )
+    deterministic = ollama_service._deterministic_grounding_violations(_request(), result, [1])
+    target_id = deterministic[0].patch_target_id
+    reviewer = GroundingViolation(
+        rule="unsupported_company_specific_claim",
+        section="technical_analysis",
+        issue="technical_analysis.trend.atomic_1: unsupported trend interpretation.",
+        patch_target_id=target_id,
+    )
+
+    assert ollama_service.derive_required_patch_targets(deterministic + [reviewer]) == [target_id]
+
+
 def test_moving_average_supported_downtrend_is_not_blocked_by_52_week_rule():
     request = _request()
     request.price_data.moving_average_50 = 500.0
@@ -3675,7 +3743,7 @@ def test_reviewer_violation_uses_coverage_segment_not_finding_order():
     assert ollama_service._claim_findings_to_violations([legacy])[0].patch_target_id is None
 
 
-def test_deterministic_violation_maps_only_an_exact_unique_target():
+def test_deterministic_violation_maps_every_exact_target():
     request = _request()
     exact_report = FinancialAnalysisLLMResponse(**_report())
     exact = ollama_service._deterministic_grounding_violations(request, exact_report, [1])
@@ -3692,8 +3760,11 @@ def test_deterministic_violation_maps_only_an_exact_unique_target():
         violation for violation in ambiguous
         if "52-week high" in violation.issue
     ]
-    assert len(high) == 1
-    assert high[0].patch_target_id is None
+    assert {item.patch_target_id for item in high} == {
+        "technical_analysis.resistance_levels[0].segment_0",
+        "technical_analysis.breakout_level.segment_0",
+    }
+    assert all(item.coverage_segment_id == item.patch_target_id for item in high)
 
 
 def _phase_b_report_and_registry(payload=None):

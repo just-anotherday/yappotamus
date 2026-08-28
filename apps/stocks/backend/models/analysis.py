@@ -286,6 +286,10 @@ class GroundingViolation(BaseModel):
     rule: GroundingRule
     section: GroundingSection
     issue: str = Field(min_length=1, max_length=500)
+    # Deterministic rules preserve the same source identity that reviewer
+    # findings carry. Target enrichment remains registry-owned.
+    coverage_segment_id: Optional[str] = Field(default=None, min_length=1, max_length=240)
+    atomic_proposition: Optional[str] = Field(default=None, min_length=1, max_length=300)
     patch_target_id: Optional[str] = Field(default=None, min_length=1, max_length=240)
 
 

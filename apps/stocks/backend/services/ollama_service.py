@@ -2027,14 +2027,53 @@ def _structured_level_contains_value(value: Any, expected: float) -> bool:
     return False
 
 
-def _unique_deterministic_patch_target_id(
+def _deterministic_targets(
     registry: CorrectionTargetRegistry,
     predicate: Any,
-) -> Optional[str]:
-    """Return an exact target only when deterministic inspection finds one."""
+) -> List[CorrectionPatchTarget]:
+    """Return every exact registry target selected by deterministic structure."""
 
-    matches = [target.patch_target_id for target in registry.targets if predicate(target)]
-    return matches[0] if len(matches) == 1 else None
+    return [target for target in registry.targets if predicate(target)]
+
+
+def _historical_range_violation(
+    target: CorrectionPatchTarget,
+    issue: str,
+) -> GroundingViolation:
+    """Preserve the exact segment identity found by the deterministic rule."""
+
+    return GroundingViolation(
+        rule="historical_range_not_technical_level",
+        section="technical_analysis",
+        issue=issue,
+        coverage_segment_id=target.patch_target_id,
+        atomic_proposition=target.original_target_text,
+    )
+
+
+def _enrich_deterministic_patch_targets(
+    violations: List[GroundingViolation],
+    registry: CorrectionTargetRegistry,
+) -> List[GroundingViolation]:
+    """Map exact segment identities through the authoritative target registry."""
+
+    enriched: List[GroundingViolation] = []
+    for violation in violations:
+        target = (
+            lookup_correction_target(registry, violation.coverage_segment_id)
+            if violation.coverage_segment_id is not None
+            else None
+        )
+        enriched.append(
+            violation.model_copy(
+                update={
+                    "patch_target_id": (
+                        target.patch_target_id if target is not None else None
+                    )
+                }
+            )
+        )
+    return enriched
 
 
 def _deterministic_grounding_violations(
@@ -2052,23 +2091,15 @@ def _deterministic_grounding_violations(
 
     trend_text = technical.trend.lower()
     uses_52_week_context = bool(re.search(r"\b52(?:-|\s)?week\b", trend_text))
-    asserts_trend = bool(
-        re.search(
-            r"\b(?:strong\s+)?(?:uptrend|downtrend|trend|momentum)\b"
-            r"|\b(?:bullish|bearish|positive|negative)\s+trend\b",
-            trend_text,
-        )
-    )
     independent_trend_signal = any(
         value is not None
         for value in (price.moving_average_50, price.moving_average_200)
     )
-    if uses_52_week_context and asserts_trend and not independent_trend_signal:
-        trend_target_id = _unique_deterministic_patch_target_id(
+    if uses_52_week_context and not independent_trend_signal:
+        trend_targets = _deterministic_targets(
             target_registry,
             lambda target: (
                 target.source_path == "technical_analysis.trend"
-                and bool(re.search(r"\b52(?:-|\s)?week\b", target.original_target_text.lower()))
                 and bool(
                     re.search(
                         r"\b(?:strong\s+)?(?:uptrend|downtrend|trend|momentum)\b"
@@ -2078,16 +2109,13 @@ def _deterministic_grounding_violations(
                 )
             ),
         )
-        violations.append(
-            GroundingViolation(
-                rule="historical_range_not_technical_level",
-                section="technical_analysis",
-                issue=(
-                    "52-week range context was used to establish a trend or momentum "
-                    "without an independently supplied trend indicator."
-                ),
-                patch_target_id=trend_target_id,
+        violations.extend(
+            _historical_range_violation(
+                target,
+                "52-week range context was used to establish a trend or momentum "
+                "without an independently supplied trend indicator.",
             )
+            for target in trend_targets
         )
 
     if (
@@ -2105,7 +2133,7 @@ def _deterministic_grounding_violations(
             )
         )
     ):
-        high_target_id = _unique_deterministic_patch_target_id(
+        high_targets = _deterministic_targets(
             target_registry,
             lambda target: (
                 (
@@ -2117,16 +2145,13 @@ def _deterministic_grounding_violations(
                 )
             ),
         )
-        violations.append(
-            GroundingViolation(
-                rule="historical_range_not_technical_level",
-                section="technical_analysis",
-                issue=(
-                    "The supplied 52-week high was used as resistance or a breakout "
-                    "level although no independent technical significance was supplied."
-                ),
-                patch_target_id=high_target_id,
+        violations.extend(
+            _historical_range_violation(
+                target,
+                "The supplied 52-week high was used as resistance or a breakout "
+                "level although no independent technical significance was supplied.",
             )
+            for target in high_targets
         )
 
     if (
@@ -2144,7 +2169,7 @@ def _deterministic_grounding_violations(
             )
         )
     ):
-        low_target_id = _unique_deterministic_patch_target_id(
+        low_targets = _deterministic_targets(
             target_registry,
             lambda target: (
                 (
@@ -2156,19 +2181,16 @@ def _deterministic_grounding_violations(
                 )
             ),
         )
-        violations.append(
-            GroundingViolation(
-                rule="historical_range_not_technical_level",
-                section="technical_analysis",
-                issue=(
-                    "The supplied 52-week low was used as support or a breakdown "
-                    "level although no independent technical significance was supplied."
-                ),
-                patch_target_id=low_target_id,
+        violations.extend(
+            _historical_range_violation(
+                target,
+                "The supplied 52-week low was used as support or a breakdown "
+                "level although no independent technical significance was supplied.",
             )
+            for target in low_targets
         )
 
-    return violations
+    return _enrich_deterministic_patch_targets(violations, target_registry)
 
 
 def _build_grounding_review_prompt(
@@ -2950,8 +2972,10 @@ def _log_semantic_finding_trace(
                     "correlation_id": correlation_id,
                     "review_phase": phase,
                     "section": violation.section,
-                    "coverage_segment_id": None,
-                    "atomic_proposition": proposition.strip() or None,
+                    "coverage_segment_id": violation.coverage_segment_id,
+                    "atomic_proposition": (
+                        violation.atomic_proposition or proposition.strip() or None
+                    ),
                     "rule": violation.rule,
                     "blocking": True,
                 },
@@ -3102,7 +3126,7 @@ def _merge_grounding_violations(
         key = _normalized_finding_id(
             violation.section,
             violation.rule,
-            violation.issue,
+            f"{violation.coverage_segment_id or ''}:{violation.issue}",
         )
         if key in seen:
             continue
@@ -3125,7 +3149,11 @@ def _normalized_finding_id(
 
 def _violation_ids(violations: List[GroundingViolation]) -> List[str]:
     return [
-        _normalized_finding_id(item.section, item.rule, item.issue)
+        _normalized_finding_id(
+            item.section,
+            item.rule,
+            f"{item.coverage_segment_id or ''}:{item.issue}",
+        )
         for item in violations
     ]
 
