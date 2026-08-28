@@ -3,11 +3,13 @@
 import json
 import logging
 
+import httpx
 import pytest
 
-from backend.models.analysis import FinancialAnalysisLLMResponse, GroundingReviewWireResponse
+from backend.models.analysis import CorrectionPatchSet, FinancialAnalysisLLMResponse, GroundingReviewWireResponse
 from backend.services import ollama_service
 from backend.services.ai.exceptions import (
+    AIConnectionError,
     AIHTTPError,
     AIResponseEnvelopeError,
     AIValidationError,
@@ -256,7 +258,7 @@ class _FakeOpenAIResponse:
 
 
 @pytest.mark.asyncio
-async def test_shared_schema_does_not_change_the_openai_request_payload(
+async def test_openai_forwards_generic_json_schema_response_format(
     monkeypatch,
 ):
     captured = []
@@ -278,10 +280,245 @@ async def test_shared_schema_does_not_change_the_openai_request_payload(
         user_prompt="user",
         model="gpt-4o-mini",
         response_schema=FinancialAnalysisLLMResponse.model_json_schema(),
+        max_attempts=1,
     )
 
     assert json.loads(response) == {"asset": "AMD"}
     assert len(captured) == 1
     assert captured[0]["url"] == "https://api.openai.com/v1/chat/completions"
     assert "format" not in captured[0]["payload"]
+    assert captured[0]["payload"]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "structured_response",
+            "strict": False,
+            "schema": FinancialAnalysisLLMResponse.model_json_schema(),
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_non_schema_request_shape_remains_backward_compatible(monkeypatch):
+    captured = []
+
+    class _CapturingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            captured.append({"url": url, "payload": json, "headers": headers})
+            return _FakeOpenAIResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _CapturingOpenAIClient([], **kwargs),
+    )
+
+    await OpenAIProvider().generate(
+        system_prompt="system",
+        user_prompt="user",
+        model="gpt-4o-mini",
+    )
+
+    assert len(captured) == 1
     assert "response_format" not in captured[0]["payload"]
+    assert captured[0]["payload"]["temperature"] == 0.3
+
+
+@pytest.mark.asyncio
+async def test_openai_rejects_non_object_schema_before_network(monkeypatch):
+    post_called = False
+
+    class _UnexpectedOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            nonlocal post_called
+            post_called = True
+            return _FakeOpenAIResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _UnexpectedOpenAIClient([], **kwargs),
+    )
+
+    with pytest.raises(AIValidationError, match="JSON Schema object"):
+        await OpenAIProvider().generate(
+            system_prompt="system",
+            user_prompt="user",
+            model="gpt-4o-mini",
+            response_schema="json",
+        )
+
+    assert post_called is False
+
+
+@pytest.mark.asyncio
+async def test_openai_explicit_single_attempt_stops_after_transport_failure(monkeypatch):
+    post_count = 0
+
+    class _FailingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            nonlocal post_count
+            post_count += 1
+            raise httpx.ConnectError("transient transport failure")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _FailingOpenAIClient([], **kwargs),
+    )
+
+    with pytest.raises(AIConnectionError, match="after 1 attempt"):
+        await OpenAIProvider().generate(
+            system_prompt="system",
+            user_prompt="patch correction",
+            model="gpt-4o-mini",
+            max_attempts=1,
+        )
+
+    assert post_count == 1
+
+
+@pytest.mark.asyncio
+async def test_openai_explicit_single_attempt_stops_after_http_failure(monkeypatch):
+    post_count = 0
+
+    class _FailedOpenAIResponse:
+        status_code = 503
+        text = "present"
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+
+        def json(self):
+            return {"error": "unavailable"}
+
+    class _FailingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            nonlocal post_count
+            post_count += 1
+            return _FailedOpenAIResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _FailingOpenAIClient([], **kwargs),
+    )
+
+    with pytest.raises(AIConnectionError, match="after 1 attempt"):
+        await OpenAIProvider().generate(
+            system_prompt="system",
+            user_prompt="patch correction",
+            model="gpt-4o-mini",
+            max_attempts=1,
+        )
+
+    assert post_count == 1
+
+
+@pytest.mark.asyncio
+async def test_openai_default_retry_behavior_remains_three_attempts(monkeypatch):
+    post_count = 0
+
+    class _RetryingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            nonlocal post_count
+            post_count += 1
+            if post_count == 1:
+                raise httpx.ConnectError("transient transport failure")
+            return _FakeOpenAIResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _RetryingOpenAIClient([], **kwargs),
+    )
+
+    response = await OpenAIProvider().generate(
+        system_prompt="system",
+        user_prompt="primary generation",
+        model="gpt-4o-mini",
+    )
+
+    assert json.loads(response) == {"asset": "AMD"}
+    assert post_count == 2
+
+
+@pytest.mark.asyncio
+async def test_openai_explicit_two_attempt_limit_is_honored(monkeypatch):
+    post_count = 0
+
+    class _FailingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            nonlocal post_count
+            post_count += 1
+            raise httpx.ConnectError("transport failure")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _FailingOpenAIClient([], **kwargs),
+    )
+
+    with pytest.raises(AIConnectionError, match="after 2 attempt"):
+        await OpenAIProvider().generate(
+            system_prompt="system",
+            user_prompt="user",
+            model="gpt-4o-mini",
+            max_attempts=2,
+        )
+
+    assert post_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_attempts", [True, 0, -1, 4, 1.5, "1"])
+async def test_openai_rejects_invalid_explicit_attempt_limits(monkeypatch, max_attempts):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+
+    with pytest.raises(AIValidationError, match="max_attempts"):
+        await OpenAIProvider().generate(
+            system_prompt="system",
+            user_prompt="user",
+            model="gpt-4o-mini",
+            max_attempts=max_attempts,
+        )
+
+
+@pytest.mark.asyncio
+async def test_request_local_patch_schema_is_forwarded_to_ollama(monkeypatch):
+    captured = []
+    response = _FakeOllamaResponse({
+        "response": json.dumps({
+            "patches": [{
+                "target_id": "bull_case[0].segment_0",
+                "operation": "DELETE",
+                "replacement": None,
+                "article_indices_used": [],
+            }]
+        }),
+        "done": True,
+    })
+    monkeypatch.setattr(
+        "backend.services.ai.ollama_provider.httpx.AsyncClient",
+        lambda **kwargs: _CapturingAsyncClient(captured, response, **kwargs),
+    )
+    schema = ollama_service.build_request_local_patch_schema([
+        "bull_case[0].segment_0"
+    ])
+
+    result = await OllamaProvider().generate(
+        system_prompt="patch correction",
+        user_prompt="one target",
+        model="compatible-model",
+        response_schema=schema,
+    )
+
+    assert CorrectionPatchSet(**json.loads(result)).patches[0].operation == "DELETE"
+    assert captured[0]["payload"]["format"] == schema
+    assert captured[0]["payload"]["stream"] is False
+    assert captured[0]["payload"]["think"] is False
+    assert captured[0]["payload"]["options"]["temperature"] == 0

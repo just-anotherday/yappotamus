@@ -48,6 +48,14 @@ class OpenAIProvider(BaseAIClient):
         if not self.api_key:
             raise AIValidationError("OPENAI_API_KEY is not set")
 
+        max_attempts = kwargs.get("max_attempts", 3)
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or not 1 <= max_attempts <= 3
+        ):
+            raise AIValidationError("OpenAI max_attempts must be an integer from 1 to 3")
+
         # Use provided model override, fall back to configured default
         active_model = model or self.model
 
@@ -70,13 +78,32 @@ class OpenAIProvider(BaseAIClient):
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
+        response_schema = kwargs.get("response_schema")
+        if response_schema is not None:
+            if not isinstance(response_schema, dict):
+                raise AIValidationError(
+                    "OpenAI response_schema must be a JSON Schema object"
+                )
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    # Generic callers may provide valid JSON Schema features
+                    # outside OpenAI's smaller strict-schema subset. The
+                    # service layer still performs authoritative Pydantic
+                    # validation on every structured response.
+                    "strict": False,
+                    "schema": response_schema,
+                },
+            }
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
         last_error = None
-        for attempt in range(1, 4):
+        for attempt in range(1, max_attempts + 1):
             try:
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     resp = await client.post(
@@ -101,12 +128,12 @@ class OpenAIProvider(BaseAIClient):
             except Exception as exc:
                 last_error = exc
                 logger.warning(
-                    "[AI][OpenAI] Generate attempt %d/3 failed: %s",
-                    attempt, exc,
+                    "[AI][OpenAI] Generate attempt %d/%d failed: %s",
+                    attempt, max_attempts, exc,
                 )
 
         raise AIConnectionError(
-            f"OpenAI generate failed after 3 retries: {last_error}"
+            f"OpenAI generate failed after {max_attempts} attempt(s): {last_error}"
         ) from last_error
 
     async def is_available(self) -> bool:
