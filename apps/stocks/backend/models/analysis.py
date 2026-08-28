@@ -277,6 +277,8 @@ GroundingSection = Literal[
     "multiple_sections",
 ]
 
+GroundingTargetScope = Literal["PROPOSITION", "GLOBAL"]
+
 
 class GroundingViolation(BaseModel):
     """Internal-only description of a scoped semantic-grounding failure."""
@@ -286,6 +288,9 @@ class GroundingViolation(BaseModel):
     rule: GroundingRule
     section: GroundingSection
     issue: str = Field(min_length=1, max_length=500)
+    # Internal-only scope is explicit so missing proposition metadata is never
+    # interpreted as proof that a violation is intentionally global.
+    target_scope: GroundingTargetScope = "PROPOSITION"
     # Deterministic rules preserve the same source identity that reviewer
     # findings carry. Target enrichment remains registry-owned.
     coverage_segment_id: Optional[str] = Field(default=None, min_length=1, max_length=240)

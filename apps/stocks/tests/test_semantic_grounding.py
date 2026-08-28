@@ -3465,6 +3465,8 @@ def test_historical_range_and_reviewer_blocker_share_one_required_target():
         rule="unsupported_company_specific_claim",
         section="technical_analysis",
         issue="technical_analysis.trend.atomic_1: unsupported trend interpretation.",
+        coverage_segment_id=target_id,
+        atomic_proposition=deterministic[0].atomic_proposition,
         patch_target_id=target_id,
     )
 
@@ -3696,6 +3698,20 @@ def test_correction_target_registry_uses_real_list_and_nested_paths():
 
 
 def test_reviewer_violation_uses_coverage_segment_not_finding_order():
+    units = [
+        ReviewableClaimUnit(
+            review_unit_id="bull_case[0]",
+            section="bull_case",
+            candidate_text="First finding. Second finding.",
+        ),
+        ReviewableClaimUnit(
+            review_unit_id="overall_sentiment",
+            section="overall_sentiment",
+            candidate_text="Bullish",
+        ),
+    ]
+    segments = ollama_service._build_review_coverage_segments(units)
+    registry = ollama_service.build_correction_target_registry(units, segments)
     base = dict(
         review_unit_id="bull_case[0]",
         claim_role="fact",
@@ -3724,8 +3740,12 @@ def test_reviewer_violation_uses_coverage_segment_not_finding_order():
         ),
     ]
 
-    forward = ollama_service._claim_findings_to_violations(findings)
-    reverse = ollama_service._claim_findings_to_violations(list(reversed(findings)))
+    forward = ollama_service._claim_findings_to_violations(
+        findings, registry=registry
+    )
+    reverse = ollama_service._claim_findings_to_violations(
+        list(reversed(findings)), registry=registry
+    )
     assert {item.patch_target_id for item in forward} == {
         "bull_case[0].segment_0", "bull_case[0].segment_1"
     }
@@ -3740,7 +3760,9 @@ def test_reviewer_violation_uses_coverage_segment_not_finding_order():
         atomic_proposition="Bullish",
         atomic_claim_id="overall_sentiment.atomic_0",
     )
-    assert ollama_service._claim_findings_to_violations([legacy])[0].patch_target_id is None
+    assert ollama_service._claim_findings_to_violations(
+        [legacy], registry=registry
+    )[0].patch_target_id is None
 
 
 def test_deterministic_violation_maps_every_exact_target():
@@ -3791,9 +3813,21 @@ def _patch_failure_kind(callable_):
 
 def test_required_patch_targets_are_deduplicated_sorted_and_fail_on_unmappable():
     violations = [
-        GroundingViolation(rule="scope_preservation", section="bull_case", issue="b", patch_target_id="bull_case[0].segment_1"),
-        GroundingViolation(rule="selected_evidence_attribution_boundary", section="bull_case", issue="a", patch_target_id="bull_case[0].segment_0"),
-        GroundingViolation(rule="unsupported_company_specific_claim", section="bull_case", issue="c", patch_target_id="bull_case[0].segment_1"),
+        GroundingViolation(
+            rule="scope_preservation", section="bull_case", issue="b",
+            coverage_segment_id="bull_case[0].segment_1",
+            atomic_proposition="b", patch_target_id="bull_case[0].segment_1",
+        ),
+        GroundingViolation(
+            rule="selected_evidence_attribution_boundary", section="bull_case",
+            issue="a", coverage_segment_id="bull_case[0].segment_0",
+            atomic_proposition="a", patch_target_id="bull_case[0].segment_0",
+        ),
+        GroundingViolation(
+            rule="unsupported_company_specific_claim", section="bull_case",
+            issue="c", coverage_segment_id="bull_case[0].segment_1",
+            atomic_proposition="c", patch_target_id="bull_case[0].segment_1",
+        ),
     ]
     assert ollama_service.derive_required_patch_targets(list(reversed(violations))) == [
         "bull_case[0].segment_0", "bull_case[0].segment_1"
@@ -4046,6 +4080,8 @@ def _phase_c_violation(target_id, rule="unsupported_company_specific_claim", sec
         rule=rule,
         section=section,
         issue="Targeted semantic blocker.",
+        coverage_segment_id=target_id,
+        atomic_proposition="Target proposition",
         patch_target_id=target_id,
     )
 

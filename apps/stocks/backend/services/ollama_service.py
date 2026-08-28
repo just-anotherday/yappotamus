@@ -1075,12 +1075,38 @@ def lookup_correction_target(
 
 def _patch_target_id_for_finding(
     finding: NormalizedGroundingClaimFinding,
+    registry: Optional[CorrectionTargetRegistry] = None,
 ) -> Optional[str]:
-    """Map reviewer evidence only for proposition-patchable report sections."""
+    """Resolve reviewer evidence through the request-local target registry."""
 
     if finding.section not in _PATCHABLE_GROUNDING_SECTIONS:
         return None
-    return finding.coverage_segment_id
+    if registry is None:
+        # Without the current request-local registry no patch identity can be
+        # authorized. The production reviewer path always supplies it below.
+        return None
+    target = lookup_correction_target(registry, finding.coverage_segment_id)
+    if target is None:
+        raise RuntimeError("reviewer_finding_patch_target_identity_lost")
+    return target.patch_target_id
+
+
+def _violation_identity_for_finding(
+    finding: NormalizedGroundingClaimFinding,
+    registry: Optional[CorrectionTargetRegistry] = None,
+) -> Dict[str, Any]:
+    """Preserve validated backend finding identity on its violation."""
+
+    return {
+        "target_scope": (
+            "PROPOSITION"
+            if finding.section in _PATCHABLE_GROUNDING_SECTIONS
+            else "GLOBAL"
+        ),
+        "coverage_segment_id": finding.coverage_segment_id,
+        "atomic_proposition": finding.atomic_proposition,
+        "patch_target_id": _patch_target_id_for_finding(finding, registry),
+    }
 
 
 CORRECTION_PATCH_FAILURE_KINDS = frozenset({
@@ -1132,13 +1158,34 @@ def _raise_correction_patch_error(failure_kind: str, **details: Any) -> None:
 def derive_required_patch_targets(
     violations: List[GroundingViolation],
 ) -> List[str]:
-    """Return sorted unique targets, failing closed on any unmappable blocker."""
+    """Return unique targets only for fully normalized proposition blockers."""
 
-    unmappable = [violation for violation in violations if violation.patch_target_id is None]
+    unmappable = [
+        violation
+        for violation in violations
+        if (
+            violation.target_scope == "GLOBAL"
+            or violation.coverage_segment_id is None
+            or violation.atomic_proposition is None
+            or violation.patch_target_id is None
+        )
+    ]
     if unmappable:
         _raise_correction_patch_error(
             "correction_patch_unmappable_violation",
             unmappable_count=len(unmappable),
+            global_count=sum(
+                violation.target_scope == "GLOBAL" for violation in unmappable
+            ),
+            identity_loss_count=sum(
+                violation.target_scope == "PROPOSITION"
+                and (
+                    violation.coverage_segment_id is None
+                    or violation.atomic_proposition is None
+                    or violation.patch_target_id is None
+                )
+                for violation in unmappable
+            ),
             rules=sorted({violation.rule for violation in unmappable}),
         )
     return sorted({
@@ -2795,6 +2842,7 @@ def _validate_reviewer_finding_metadata(
 def _evidence_contract_contradictions_to_violations(
     contradictions: List[ReviewerEvidenceContractContradiction],
     normalized_claims: List[NormalizedGroundingClaimFinding],
+    registry: Optional[CorrectionTargetRegistry] = None,
 ) -> List[GroundingViolation]:
     """Turn safe evidence-contract contradictions into scoped blockers.
 
@@ -2833,7 +2881,7 @@ def _evidence_contract_contradictions_to_violations(
                     f"reviewer labeled this claim {claim.classification} but "
                     f"declared incompatible evidence."
                 ),
-                patch_target_id=_patch_target_id_for_finding(claim),
+                **_violation_identity_for_finding(claim, registry),
             )
         )
     return violations
@@ -2987,6 +3035,7 @@ def _log_semantic_finding_trace(
 def _claim_findings_to_violations(
     claims: List[NormalizedGroundingClaimFinding],
     relationship_manifest: Optional[Dict[int, List[ArticleRelationshipEvidence]]] = None,
+    registry: Optional[CorrectionTargetRegistry] = None,
 ) -> List[GroundingViolation]:
     """Derive candidate violations from normalized semantic findings.
 
@@ -3014,7 +3063,7 @@ def _claim_findings_to_violations(
                     f"{finding.atomic_claim_id}: {finding.atomic_proposition}."
                     f"{evidence_note}"
                 ).strip(),
-                patch_target_id=_patch_target_id_for_finding(finding),
+                **_violation_identity_for_finding(finding, registry),
             )
         )
     for finding in claims:
@@ -3076,7 +3125,7 @@ def _claim_findings_to_violations(
                     f"{finding.claim_role} under {relationship_rule}; "
                     f"reviewer_rule={rule}."
                 ),
-                patch_target_id=_patch_target_id_for_finding(finding),
+                **_violation_identity_for_finding(finding, registry),
             ))
     return violations
 
@@ -3194,6 +3243,9 @@ async def _run_grounding_review(
     available_fields = derive_available_market_fields(request)
     review_units = _build_reviewable_claim_units(result)
     coverage_segments = _build_review_coverage_segments(review_units)
+    target_registry = build_correction_target_registry(
+        review_units, coverage_segments
+    )
     segment_aliases = _build_coverage_segment_aliases(coverage_segments)
     batches = _plan_grounding_review_batches(coverage_segments)
     logger.info(
@@ -3325,10 +3377,12 @@ async def _run_grounding_review(
     claim_violations = _claim_findings_to_violations(
         normalized_claims,
         _build_article_relationship_manifest(request),
+        target_registry,
     )
     evidence_contract_violations = _evidence_contract_contradictions_to_violations(
         evidence_contract_contradictions,
         normalized_claims,
+        target_registry,
     )
     violations = _merge_grounding_violations(
         deterministic,
