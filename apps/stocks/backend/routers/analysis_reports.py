@@ -10,18 +10,15 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config.database import get_async_session
 from backend.lib.timestamps import utc_isoformat
 from backend.models.report_schemas import (
     AnalysisReportDetail,
-    CreateReportResponse,
     ReportPaginationResponse,
 )
 from backend.services.report_service import (
-    create_report,
     delete_report,
     get_latest_for_ticker,
     get_report_by_id,
@@ -31,17 +28,6 @@ from backend.services.report_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analysis/reports", tags=["analysis reports"])
-
-
-class SaveReportRequest(BaseModel):
-    """Body for saving an analysis report."""
-    ticker: str
-    report_data: Dict[str, Any]
-    articles_count: int = 0
-    model_used: str = ""
-    prompt_version: str = "1.0"
-    prompt_hash: Optional[str] = None
-    current_price_at_analysis: Optional[float] = None
 
 
 def _parse_date(value: Optional[str], label: str) -> Optional[datetime]:
@@ -108,27 +94,6 @@ async def reports_get_by_id(
     if not row:
         raise HTTPException(status_code=404, detail="Report not found")
     return AnalysisReportDetail.model_validate(row)
-
-
-@router.post("/save", response_model=CreateReportResponse)
-async def reports_save(
-    request: SaveReportRequest = Body(...),
-    session: AsyncSession = Depends(get_async_session),
-):
-    """Save an analysis report to the database."""
-    report_id = await create_report(
-        session=session,
-        ticker=request.ticker,
-        report_data=request.report_data,
-        articles_count=request.articles_count,
-        model_used=request.model_used,
-        prompt_version=request.prompt_version,
-        prompt_hash=request.prompt_hash,
-        current_price_at_analysis=request.current_price_at_analysis,
-    )
-    await session.commit()
-    logger.info(f"[Reports] Saved report id={report_id} for {request.ticker.upper()}")
-    return CreateReportResponse(report_id=report_id, report=request.report_data)
 
 
 @router.delete("/{report_id}")
