@@ -13,6 +13,9 @@ from backend.main import app
 
 
 def test_health_liveness_is_lightweight(monkeypatch):
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    monkeypatch.delenv("RENDER_GIT_BRANCH", raising=False)
+
     class UnexpectedDatabaseAccess:
         def __call__(self):
             raise AssertionError("liveness must not access the database")
@@ -20,8 +23,60 @@ def test_health_liveness_is_lightweight(monkeypatch):
     monkeypatch.setattr("backend.main.async_session_factory", UnexpectedDatabaseAccess())
     response = TestClient(app).get("/health/live", headers={"X-Request-ID": "health-check-42"})
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    assert response.json() == {
+        "status": "healthy",
+        "git_commit": None,
+        "git_branch": None,
+    }
     assert response.headers["X-Request-ID"] == "health-check-42"
+
+
+def test_health_liveness_exposes_render_deployment_identity(monkeypatch):
+    expected_sha = "dae788a63e4f14b84a61c25f9cb4b27a43e2b70d"
+    monkeypatch.setenv("RENDER_GIT_COMMIT", expected_sha)
+    monkeypatch.setenv("RENDER_GIT_BRANCH", "main")
+
+    response = TestClient(app).get("/health/live")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "healthy",
+        "git_commit": expected_sha,
+        "git_branch": "main",
+    }
+
+
+def test_health_liveness_does_not_echo_unrelated_environment(monkeypatch):
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    monkeypatch.delenv("RENDER_GIT_BRANCH", raising=False)
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "representative-test-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:test-secret@db.example.test/app")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
+
+    response = TestClient(app).get("/health/live")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "status": "healthy",
+        "git_commit": None,
+        "git_branch": None,
+    }
+    serialized = response.text
+    assert "representative-test-secret" not in serialized
+    assert "test-secret" not in serialized
+    assert "test-api-key" not in serialized
+
+
+def test_health_liveness_openapi_declares_deployment_identity_contract():
+    operation = app.openapi()["paths"]["/health/live"]["get"]
+    response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert response_schema == {
+        "$ref": "#/components/schemas/HealthLiveResponse"
+    }
+    schema = app.openapi()["components"]["schemas"]["HealthLiveResponse"]
+    assert set(schema["properties"]) == {"status", "git_commit", "git_branch"}
 
 
 def test_public_readiness_only_reports_overall_and_database_state(monkeypatch):
