@@ -26,9 +26,7 @@ from backend.config.database import get_async_session
 from backend.lib.timestamps import utc_isoformat
 from backend.services.report_service import create_report
 from backend.services.ollama_service import (
-    CURRENT_PROMPT_VERSION,
-    generate_analysis,
-    get_effective_prompt_hash,
+    get_current_analysis_prompt_pipeline,
     get_ollama_config,
     check_ollama_connection,
     _get_timeout_for_model,
@@ -98,9 +96,10 @@ async def analysis_generate(
     If provider is specified, uses that provider for generation.
     Otherwise falls back to the globally configured AI_PROVIDER setting.
     """
+    pipeline = get_current_analysis_prompt_pipeline()
     try:
         result = await asyncio.wait_for(
-            generate_analysis(request, model=model, provider=provider),
+            pipeline.generate(request, model=model, provider=provider),
             timeout=ANALYSIS_TIMEOUT,
         )
         result.current_price_at_analysis = request.price_data.current_price
@@ -326,12 +325,13 @@ async def analysis_analyze_ticker(
 
     # 4. Generate analysis
     provider_name, model_name = resolve_provider_model(provider, model)
+    pipeline = get_current_analysis_prompt_pipeline()
 
     try:
         # Use dynamic timeout based on model size (15 min small, 20 min large)
         dyn_timeout = _get_timeout_for_model(model_name, provider_name)
         result = await asyncio.wait_for(
-            generate_analysis(analysis_request, model=model, provider=provider),
+            pipeline.generate(analysis_request, model=model, provider=provider),
             timeout=dyn_timeout,
         )
 
@@ -345,8 +345,8 @@ async def analysis_analyze_ticker(
             report_data=result.model_dump(),
             articles_count=len(news_requests),
             model_used=model_name,
-            prompt_version=CURRENT_PROMPT_VERSION,
-            prompt_hash=get_effective_prompt_hash(analysis_request),
+            prompt_version=pipeline.version,
+            prompt_hash=pipeline.prompt_hash(analysis_request),
             current_price_at_analysis=current_price if current_price else None,
         )
         await session.commit()

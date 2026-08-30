@@ -1,5 +1,6 @@
 """Focused single-user authentication and AI cost-control tests."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -158,7 +159,13 @@ async def test_ai_errors_map_to_http_statuses(monkeypatch):
     async def validation_failure(*args, **kwargs):
         raise AIValidationError("bad model")
 
-    monkeypatch.setattr("backend.routers.analysis.generate_analysis", validation_failure)
+    def select(generator):
+        monkeypatch.setattr(
+            "backend.routers.analysis.get_current_analysis_prompt_pipeline",
+            lambda: SimpleNamespace(generate=generator),
+        )
+
+    select(validation_failure)
     transport = httpx.ASGITransport(app=app)
     payload = _analysis_request().model_dump(mode="json")
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -168,7 +175,7 @@ async def test_ai_errors_map_to_http_statuses(monkeypatch):
     async def connection_failure(*args, **kwargs):
         raise AIConnectionError("provider unavailable")
 
-    monkeypatch.setattr("backend.routers.analysis.generate_analysis", connection_failure)
+    select(connection_failure)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/analysis/generate", json=payload)
     assert response.status_code == 503
@@ -179,10 +186,7 @@ async def test_ai_errors_map_to_http_statuses(monkeypatch):
             "an invalid structured response."
         )
 
-    monkeypatch.setattr(
-        "backend.routers.analysis.generate_analysis",
-        structured_output_failure,
-    )
+    select(structured_output_failure)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/analysis/generate", json=payload)
     assert response.status_code == 502
@@ -200,10 +204,7 @@ async def test_ai_errors_map_to_http_statuses(monkeypatch):
             details={"status_code": 500},
         )
 
-    monkeypatch.setattr(
-        "backend.routers.analysis.generate_analysis",
-        provider_http_failure,
-    )
+    select(provider_http_failure)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/analysis/generate", json=payload)
     assert response.status_code == 502
@@ -219,10 +220,7 @@ async def test_ai_errors_map_to_http_statuses(monkeypatch):
             details={"rejected_output": "must-not-reach-client"},
         )
 
-    monkeypatch.setattr(
-        "backend.routers.analysis.generate_analysis",
-        semantic_grounding_failure,
-    )
+    select(semantic_grounding_failure)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/analysis/generate", json=payload)
     assert response.status_code == 502

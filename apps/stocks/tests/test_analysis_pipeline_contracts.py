@@ -1215,7 +1215,16 @@ def _route_state(monkeypatch, generated):
     session = SimpleNamespace(execute=execute, commit=AsyncMock())
     generate = AsyncMock(side_effect=generated) if isinstance(generated, Exception) else AsyncMock(return_value=generated)
     persist = AsyncMock(return_value=77)
-    monkeypatch.setattr(analysis_router, "generate_analysis", generate)
+    pipeline = SimpleNamespace(
+        version="3.0",
+        generate=generate,
+        prompt_hash=lambda _request: "hash",
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "get_current_analysis_prompt_pipeline",
+        lambda: pipeline,
+    )
     monkeypatch.setattr(analysis_router, "create_report", persist)
     monkeypatch.setattr(
         analysis_router,
@@ -1235,7 +1244,6 @@ def _route_state(monkeypatch, generated):
         analysis_router, "resolve_provider_model", lambda *_: ("ollama", "fixture-model")
     )
     monkeypatch.setattr(analysis_router, "_get_timeout_for_model", lambda *_: 30)
-    monkeypatch.setattr(analysis_router, "get_effective_prompt_hash", lambda *_: "hash")
     return session, generate, persist
 
 
