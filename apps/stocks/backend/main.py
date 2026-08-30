@@ -10,13 +10,15 @@ Lifespan events handle startup/shutdown lifecycle for:
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Literal
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from backend.auth import verify_app_access_token
 from backend.config.settings import settings
@@ -68,6 +70,14 @@ _RATE_LIMIT_WINDOW = settings.RATE_LIMIT_WINDOW_S
 _RATE_LIMIT_MAX_REQS = settings.RATE_LIMIT_MAX_REQUESTS
 _rate_limit_store: dict[str, list[float]] = {}
 _rate_limit_lock = asyncio.Lock()
+
+
+class HealthLiveResponse(BaseModel):
+    """Lightweight process health plus optional deployment provenance."""
+
+    status: Literal["healthy"] = "healthy"
+    git_commit: str | None = None
+    git_branch: str | None = None
 
 
 @asynccontextmanager
@@ -315,10 +325,13 @@ def create_app() -> FastAPI:
         return response
 
     # ---------- Health Check Endpoint ----------
-    @app.get("/health/live", tags=["health"])
-    async def health_live():
+    @app.get("/health/live", tags=["health"], response_model=HealthLiveResponse)
+    async def health_live() -> HealthLiveResponse:
         """Process-only probe; intentionally performs no network I/O."""
-        return {"status": "healthy"}
+        return HealthLiveResponse(
+            git_commit=os.getenv("RENDER_GIT_COMMIT"),
+            git_branch=os.getenv("RENDER_GIT_BRANCH"),
+        )
 
     @app.get("/health", tags=["health"])
     @app.get("/health/ready", tags=["health"])
