@@ -37,7 +37,6 @@ from backend.models.news import NewsArticle
 from backend.services.finnhub_service import fetch_company_profile, fetch_quote
 from backend.services.article_scorer import rank_articles
 from backend.services.ai.ai_service import resolve_provider_model
-from backend.services.ollama_service import CURRENT_PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -684,7 +683,10 @@ class AIWorker:
             price_data = await self._fetch_price_data(ticker)
 
             # 4. Build Ollama request
-            from backend.services.ollama_service import generate_analysis, check_ollama_connection
+            from backend.services.ollama_service import (
+                check_ollama_connection,
+                get_current_analysis_prompt_pipeline,
+            )
 
             connected = await check_ollama_connection()
             if not connected:
@@ -712,7 +714,10 @@ class AIWorker:
 
             # 5. Resolve the configured provider's model before generation.
             _, effective_model = resolve_provider_model(model_name=model)
-            result = await generate_analysis(analysis_request, model=effective_model)
+            pipeline = get_current_analysis_prompt_pipeline()
+            result = await pipeline.generate(
+                analysis_request, model=effective_model
+            )
 
             # 6. Persist report to DB (filter by both asset_id AND ticker to prevent cross-ticker contamination)
             existing = await session.execute(
@@ -756,7 +761,7 @@ class AIWorker:
                 existing_report.confidence_score = result.confidence_score
                 existing_report.articles_count = len(articles)
                 existing_report.model_used = effective_model
-                existing_report.prompt_version = CURRENT_PROMPT_VERSION
+                existing_report.prompt_version = pipeline.version
                 existing_report.price_snapshot = price_data.current_price
                 logger.info("[AIWorker] Updated report for %s", ticker)
             else:
@@ -768,7 +773,7 @@ class AIWorker:
                     confidence_score=result.confidence_score,
                     articles_count=len(articles),
                     model_used=effective_model,
-                    prompt_version=CURRENT_PROMPT_VERSION,
+                    prompt_version=pipeline.version,
                     price_snapshot=price_data.current_price,
                 )
                 session.add(new_report)

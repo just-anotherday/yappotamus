@@ -17,7 +17,7 @@ from backend.models.analysis import ArticleReference, FinancialAnalysisResponse
 from backend.routers import analysis as analysis_router
 from backend.routers import analysis_reports as analysis_reports_router
 from backend.services import report_service
-from backend.services.ollama_service import CURRENT_PROMPT_VERSION
+from backend.services.ollama_service import PROMPT_V2_VERSION
 
 
 REMOVED_SAVE_PATH = "/api/analysis/reports/save"
@@ -331,7 +331,16 @@ def test_analyze_ticker_auth_and_backend_owned_persistence_are_preserved(monkeyp
     )
     generate = AsyncMock(return_value=accepted)
     persist = AsyncMock(return_value=77)
-    monkeypatch.setattr(analysis_router, "generate_analysis", generate)
+    pipeline = SimpleNamespace(
+        version=PROMPT_V2_VERSION,
+        generate=generate,
+        prompt_hash=lambda _request: "a" * 64,
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "get_current_analysis_prompt_pipeline",
+        lambda: pipeline,
+    )
     monkeypatch.setattr(analysis_router, "create_report", persist)
     monkeypatch.setattr(
         analysis_router,
@@ -407,6 +416,6 @@ def test_analyze_ticker_auth_and_backend_owned_persistence_are_preserved(monkeyp
     assert persisted["articles_count"] == 1
     assert len(persisted["report_data"]["articles_used"]) == 1
     assert persisted["model_used"] == "fixture-model"
-    assert persisted["prompt_version"] == CURRENT_PROMPT_VERSION
-    assert len(persisted["prompt_hash"]) == 64
+    assert persisted["prompt_version"] == PROMPT_V2_VERSION
+    assert persisted["prompt_hash"] == "a" * 64
     assert persisted["current_price_at_analysis"] == 123.45

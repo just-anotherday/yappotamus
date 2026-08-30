@@ -178,7 +178,10 @@ def test_prompt_v3_contract_and_deterministic_article_numbering():
     user_prompt = ollama_service._build_user_prompt(request)
     system_prompt = ollama_service.SYSTEM_PROMPT
 
-    assert ollama_service.CURRENT_PROMPT_VERSION == "3.0"
+    v3_pipeline = ollama_service.get_analysis_prompt_pipeline(
+        ollama_service.PROMPT_V3_VERSION
+    )
+    assert v3_pipeline.generator is ollama_service.generate_analysis
     assert user_prompt.index("### Article 1") < user_prompt.index("### Article 2")
     assert user_prompt.index("### Article 2") < user_prompt.index("### Article 3")
     assert "**Source:** Direct News" in user_prompt
@@ -300,7 +303,16 @@ def _route_test_client(monkeypatch, captured):
             }
         ),
     )
-    monkeypatch.setattr(analysis_router, "generate_analysis", generate)
+    pipeline = SimpleNamespace(
+        version=ollama_service.PROMPT_V3_VERSION,
+        generate=generate,
+        prompt_hash=lambda _request: "v3-hash",
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "get_current_analysis_prompt_pipeline",
+        lambda: pipeline,
+    )
     monkeypatch.setattr(analysis_router, "create_report", AsyncMock(return_value=123))
 
     app = FastAPI()
@@ -380,7 +392,12 @@ def test_prompt_v3_precision_rules_reject_unsupported_specificity():
         ollama_service._build_user_prompt(_generation_request()).split()
     )
 
-    assert ollama_service.CURRENT_PROMPT_VERSION == "3.0"
+    assert (
+        ollama_service.get_analysis_prompt_pipeline(
+            ollama_service.PROMPT_V3_VERSION
+        ).generator
+        is ollama_service.generate_analysis
+    )
     assert (
         "Never invent numeric thresholds, target growth rates, trigger percentages, "
         "valuation thresholds, price targets, timing thresholds, or decision rules"

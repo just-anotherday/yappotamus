@@ -1,6 +1,6 @@
 import { formatApiTimestamp } from './formatters';
 
-export const CURRENT_PROMPT_VERSION = '3.0';
+export const CURRENT_PROMPT_VERSION = '2.0';
 
 export function formatArticlesSupplied(count: number): string {
   return `Articles Supplied: ${count}`;
@@ -10,15 +10,21 @@ export function formatArticlesCited(count: number): string {
   return `Articles Cited: ${count}`;
 }
 
-// Prompt v2 is now a known historical version. Never classify other versions
-// as legacy based on age or a guessed default alone.
+// Hashed reports from both retained pipelines have an auditable prompt identity.
+const SUPPORTED_HASHED_PROMPT_VERSIONS = new Set<string>(['2.0', '3.0']);
+
+// Unhashed v2 records predate the current reproducible prompt contract.
 const CONFIRMED_LEGACY_PROMPT_VERSIONS = new Set<string>(['2.0']);
 
 export function getPromptBadge(
   promptVersion?: string | null,
   promptHash?: string | null,
 ): string {
-  if (promptVersion === CURRENT_PROMPT_VERSION && promptHash) {
+  if (
+    promptVersion
+    && promptHash
+    && SUPPORTED_HASHED_PROMPT_VERSIONS.has(promptVersion)
+  ) {
     return `Prompt v${promptVersion}`;
   }
   if (promptVersion && CONFIRMED_LEGACY_PROMPT_VERSIONS.has(promptVersion)) {

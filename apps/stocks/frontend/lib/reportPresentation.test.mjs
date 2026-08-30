@@ -10,8 +10,8 @@ import {
   getPromptBadge,
 } from './reportPresentation.ts';
 
-test('current financial-analysis prompt version is v3', () => {
-  assert.equal(CURRENT_PROMPT_VERSION, '3.0');
+test('current financial-analysis prompt version is v2', () => {
+  assert.equal(CURRENT_PROMPT_VERSION, '2.0');
 });
 
 test('article metadata distinguishes supplied inputs from trusted citations', () => {
@@ -20,16 +20,20 @@ test('article metadata distinguishes supplied inputs from trusted citations', ()
   assert.equal(formatArticlesCited(0), 'Articles Cited: 0');
 });
 
-test('current prompt requires both the current version and a deterministic hash', () => {
+test('current prompt is supported only when it has a deterministic hash', () => {
   assert.equal(
     getPromptBadge(CURRENT_PROMPT_VERSION, 'a'.repeat(64)),
     `Prompt v${CURRENT_PROMPT_VERSION}`,
   );
-  assert.equal(getPromptBadge(CURRENT_PROMPT_VERSION, null), 'Prompt version not recorded');
+  assert.equal(getPromptBadge(CURRENT_PROMPT_VERSION, null), 'Legacy prompt');
 });
 
-test('prompt v2 reports remain identifiable as known legacy reports', () => {
-  assert.equal(getPromptBadge('2.0', 'b'.repeat(64)), 'Legacy prompt');
+test('retained hashed v3 reports remain explicitly identifiable', () => {
+  assert.equal(getPromptBadge('3.0', 'b'.repeat(64)), 'Prompt v3.0');
+});
+
+test('unhashed historical v2 reports remain identifiable as legacy', () => {
+  assert.equal(getPromptBadge('2.0', null), 'Legacy prompt');
 });
 
 test('ambiguous historical versions are not guessed to be legacy', () => {

@@ -9,7 +9,7 @@ from backend.models.report_schemas import AnalysisReportDetail, ReportSummaryOut
 from backend.services import report_service
 from backend.services.ollama_service import (
     CURRENT_PROMPT_VERSION,
-    get_effective_prompt_hash,
+    get_current_analysis_prompt_pipeline,
 )
 
 
@@ -72,10 +72,12 @@ def test_effective_prompt_hash_is_deterministic_and_payload_sensitive():
         analysis_date="2026-07-21T20:14:00+00:00",
     )
 
-    first = get_effective_prompt_hash(request)
-    second = get_effective_prompt_hash(request)
-    changed = get_effective_prompt_hash(request.model_copy(update={"ticker": "NVDA"}))
+    pipeline = get_current_analysis_prompt_pipeline()
+    first = pipeline.prompt_hash(request)
+    second = pipeline.prompt_hash(request)
+    changed = pipeline.prompt_hash(request.model_copy(update={"ticker": "NVDA"}))
 
+    assert pipeline.version == CURRENT_PROMPT_VERSION == "2.0"
     assert len(first) == 64
     assert first == second
     assert first != changed

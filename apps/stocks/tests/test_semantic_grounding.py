@@ -1300,7 +1300,12 @@ def test_prompt_version_and_grounding_hash_contract_remain_v3():
     grounding_prompt = " ".join(
         ollama_service.GROUNDING_REVIEW_SYSTEM_PROMPT.split()
     )
-    assert ollama_service.CURRENT_PROMPT_VERSION == "3.0"
+    assert (
+        ollama_service.get_analysis_prompt_pipeline(
+            ollama_service.PROMPT_V3_VERSION
+        ).generator
+        is ollama_service.generate_analysis
+    )
     assert "unsupported_valuation_claim" in grounding_prompt
     assert "prospective_event_treated_as_completed" in grounding_prompt
     assert "could increase future debt exposure" in grounding_prompt
@@ -2019,14 +2024,19 @@ async def test_semantic_failure_never_persists_candidate(monkeypatch, failure_ki
             }
         ),
     )
-    monkeypatch.setattr(
-        analysis_router,
-        "generate_analysis",
-        AsyncMock(
+    failing_generation = AsyncMock(
             side_effect=AISemanticGroundingError(
                 "AI analysis could not be completed because semantic grounding review failed.",
                 details={"failure_kind": failure_kind},
             )
+        )
+    monkeypatch.setattr(
+        analysis_router,
+        "get_current_analysis_prompt_pipeline",
+        lambda: SimpleNamespace(
+            version=ollama_service.PROMPT_V3_VERSION,
+            generate=failing_generation,
+            prompt_hash=lambda _request: "v3-hash",
         ),
     )
     create_report = AsyncMock()
