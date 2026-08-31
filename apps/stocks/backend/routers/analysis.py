@@ -34,6 +34,10 @@ from backend.services.ollama_service import (
 )
 from backend.services.hybrid_data_service import get_hybrid_stock_price
 from backend.services.market_data_observability import current_correlation_id
+from backend.services.market_data_errors import (
+    MarketDataUnavailableError,
+    require_usable_analysis_snapshot,
+)
 
 from backend.config.settings import settings
 from backend.services.ai.ai_service import resolve_provider_model
@@ -283,6 +287,12 @@ async def analysis_analyze_ticker(
             raise HTTPException(status_code=500, detail=f"Failed to fetch news: {e}")
 
     if not articles:
+        logger.info(
+            "[Analysis] event=analysis_input_rejected correlation_id=%s ticker=%s "
+            "failure_kind=no_news_articles failure_reason=no_matching_articles",
+            current_correlation_id(),
+            ticker.upper(),
+        )
         raise HTTPException(
             status_code=404,
             detail=f"No news articles found for {ticker}",
@@ -298,11 +308,20 @@ async def analysis_analyze_ticker(
         logger.warning(f"[Analysis] Price fetch failed for {ticker}, using fallback: {e}")
         price_info = None
 
-    if not price_info:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Could not fetch market data for {ticker}",
+    try:
+        price_info = require_usable_analysis_snapshot(ticker, price_info)
+    except MarketDataUnavailableError as unavailable:
+        logger.warning(
+            "[Analysis] event=market_data_rejected correlation_id=%s ticker=%s "
+            "failure_kind=%s failure_reason=providers_exhausted",
+            current_correlation_id(),
+            ticker.upper(),
+            unavailable.failure_kind,
         )
+        raise HTTPException(
+            status_code=503,
+            detail=str(unavailable),
+        ) from unavailable
 
     # 3. Build the analysis request
     news_requests = [

@@ -346,13 +346,13 @@ def _assemble_price_fields(info: Dict[str, Any]) -> Dict[str, Any]:
     Uses post-market/after-hours prices when available so watchlist stays live after 4pm ET.
     Falls back to regular market prices during trading hours or for ETFs without after-hours data.
     """
-    # Prefer postMarketPrice (live after-hours), then currentPrice, then regularMarketPrice
-    post_market_price = info.get("postMarketPrice")
-    if post_market_price:
-        current_price = post_market_price
-    else:
-        # Prefer post-market price (live after-hours), fall back to regular market price
-        current_price = info.get("postMarketPrice") or info.get("currentPrice") or info.get("regularMarketPrice")
+    # Prefer a valid post-market quote while retaining its session provenance.
+    post_market_price = _positive_market_number(info.get("postMarketPrice"))
+    regular_market_price = (
+        _positive_market_number(info.get("regularMarketPrice"))
+        or _positive_market_number(info.get("currentPrice"))
+    )
+    current_price = post_market_price or regular_market_price
     
     previous_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
 
@@ -367,6 +367,12 @@ def _assemble_price_fields(info: Dict[str, Any]) -> Dict[str, Any]:
         "change": None,
         "change_percent": None,
         "volume": info.get("regularMarketVolume"),
+        "post_market_price": post_market_price,
+        "post_market_change": info.get("postMarketChange"),
+        "post_market_change_percent": info.get("postMarketChangePercent"),
+        "regular_close": regular_market_price,
+        "market_session": "after_hours" if post_market_price is not None else None,
+        "price_source": "post_market_price" if post_market_price is not None else None,
     }
 
 
