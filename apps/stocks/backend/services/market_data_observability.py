@@ -192,10 +192,17 @@ def log_collection_result(
     """Log one value-free final collection result for a symbol."""
 
     present, missing, zero_fields = summarize_normalized_fields(payload)
+    fresh_cache_used = cache_state == "fresh"
+    stale_cache_used = cache_state == "stale"
+    after_hours_snapshot_used = bool(
+        payload and payload.get("market_session") == "after_hours"
+    )
+    price_source = payload.get("price_source") if payload else None
     logger.info(
         "[MarketData] event=collection_result correlation_id=%s symbol=%s selected_provider=%s "
         "fallback_provider=%s success=%s duration_ms=%.1f cache_state=%s "
-        "stale_cache_used=%s failure_reason=%s normalized_fields_present=%s "
+        "fresh_cache_used=%s stale_cache_used=%s after_hours_snapshot_used=%s "
+        "post_market_price_used=%s regular_close_used=%s failure_reason=%s normalized_fields_present=%s "
         "normalized_fields_missing=%s normalized_zero_fields=%s",
         current_correlation_id(),
         ticker,
@@ -204,7 +211,11 @@ def log_collection_result(
         str(payload is not None).lower(),
         (time.monotonic() - started) * 1000,
         cache_state,
-        str(cache_state == "stale").lower(),
+        str(fresh_cache_used).lower(),
+        str(stale_cache_used).lower(),
+        str(after_hours_snapshot_used).lower(),
+        str(price_source == "post_market_price").lower(),
+        str(price_source == "regular_close").lower(),
         failure_reason or "none",
         ",".join(present) or "none",
         ",".join(missing) or "none",
