@@ -15,6 +15,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    StringConstraints,
     StrictInt,
     field_validator,
     model_validator,
@@ -29,6 +30,10 @@ def _coerce_to_str(v: Any) -> str:
 
 
 StrOrNum = Annotated[str, BeforeValidator(_coerce_to_str)]
+NonEmptyString = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+]
 
 
 # ==============================================================================
@@ -204,6 +209,98 @@ class FinancialAnalysisResponse(BaseModel):
         description="Current market price when the analysis was generated",
     )
     report_id: Optional[int] = Field(default=None, description="Saved report ID in database")
+
+
+class FinancialAnalysisV2LLMRisk(BaseModel):
+    """Provider-only Prompt v2 risk contract."""
+
+    risk: NonEmptyString
+    severity: Literal["Low", "Medium", "High"]
+
+
+class FinancialAnalysisV2LLMTechnicalResponse(BaseModel):
+    """Provider-only Prompt v2 technical section with safe unavailable levels."""
+
+    trend: NonEmptyString
+    support_levels: List[StrOrNum]
+    resistance_levels: List[StrOrNum]
+    breakout_level: StrOrNum = Field(min_length=1)
+    breakdown_level: StrOrNum = Field(min_length=1)
+
+    @field_validator("support_levels", "resistance_levels", mode="before")
+    @classmethod
+    def reject_malformed_level_lists(cls, value: Any) -> Any:
+        """Allow empty unavailable lists but reject malformed or fabricated shapes."""
+        if not isinstance(value, list):
+            raise ValueError("technical levels must be returned as an array")
+        for item in value:
+            if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+                raise ValueError("technical levels must be strings or finite numbers")
+            if isinstance(item, str) and not item.strip():
+                raise ValueError("technical levels must not contain empty strings")
+            if isinstance(item, float) and not math.isfinite(item):
+                raise ValueError("technical levels must contain finite numbers")
+        return value
+
+    @field_validator("breakout_level", "breakdown_level", mode="before")
+    @classmethod
+    def normalize_or_reject_malformed_scalar_levels(cls, value: Any) -> Any:
+        """Represent unavailable levels explicitly without inventing numeric values."""
+        if value is None:
+            return "N/A"
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValueError("technical level must be a string or finite number")
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("technical level must not be empty")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("technical level must be finite")
+        return value
+
+
+class FinancialAnalysisV2LLMOutlookResponse(BaseModel):
+    """Provider-only complete historical Prompt v2 outlook contract."""
+
+    short_term: NonEmptyString
+    medium_term: NonEmptyString
+    long_term: NonEmptyString
+
+
+class FinancialAnalysisV2LLMResponse(BaseModel):
+    """Strict provider-generation contract for a complete Prompt v2 report."""
+
+    asset: NonEmptyString
+    overall_sentiment: Literal[
+        "Very Bullish", "Bullish", "Neutral", "Bearish", "Very Bearish"
+    ]
+    confidence_score: int = Field(ge=0, le=100)
+    investment_rating: Literal["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
+    executive_summary: NonEmptyString
+    news_summary: List[NonEmptyString] = Field(min_length=1)
+    key_catalysts: List[NonEmptyString] = Field(min_length=1)
+    key_risks: List[FinancialAnalysisV2LLMRisk] = Field(min_length=1)
+    bull_case: List[NonEmptyString] = Field(min_length=1)
+    bear_case: List[NonEmptyString] = Field(min_length=1)
+    market_reaction_analysis: NonEmptyString
+    technical_analysis: FinancialAnalysisV2LLMTechnicalResponse
+    outlook: FinancialAnalysisV2LLMOutlookResponse
+    actionable_insights: List[NonEmptyString] = Field(min_length=1)
+    portfolio_fit: NonEmptyString
+    article_indices_used: List[int] = Field(
+        exclude=True,
+        description="One-based indexes of input articles materially used by the analysis",
+    )
+
+    @field_validator("article_indices_used", mode="before")
+    @classmethod
+    def ignore_malformed_article_indices(cls, value: Any) -> List[int]:
+        """Preserve only genuine integers; range and duplicate checks stay backend-owned."""
+        if not isinstance(value, list):
+            return []
+        return [
+            item
+            for item in value
+            if isinstance(item, int) and not isinstance(item, bool)
+        ]
 
 
 class FinancialAnalysisLLMResponse(FinancialAnalysisResponse):
