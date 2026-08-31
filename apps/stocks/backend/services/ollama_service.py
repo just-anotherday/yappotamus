@@ -31,6 +31,7 @@ from backend.models.analysis import (
     FinancialAnalysisLLMResponse,
     FinancialAnalysisRequest,
     FinancialAnalysisResponse,
+    FinancialAnalysisV2LLMResponse,
     GroundingClaimFinding,
     GroundingEnforcementResult,
     GroundingReviewResult,
@@ -148,6 +149,9 @@ RULES:
 8. Use one-based input article indexes in article_indices_used for articles materially used.
    Do not output articles_used or reproduce article URLs as public citations; the backend owns
    all returned citation titles, URLs, and dates.
+9. Always include technical_analysis. When technical levels are not supplied, use empty support
+   and resistance arrays, use "N/A" for breakout and breakdown levels, and explain the evidence
+   limitation in trend. Never reinterpret 52-week highs or lows as support or resistance.
 
 JSON Schema:
 {
@@ -668,34 +672,9 @@ GROUNDING_RULE_CORRECTION_GUIDANCE = {
 # Prompt v2 builder and output contract
 # ---------------------------------------------------------------------------
 def _build_v2_response_schema() -> Dict[str, Any]:
-    """Return the v2 primary-output schema without backend-owned metadata."""
+    """Return the strict provider-only Prompt v2 generation schema."""
 
-    schema = copy.deepcopy(FinancialAnalysisResponse.model_json_schema())
-    schema["title"] = "FinancialAnalysisV2LLMResponse"
-    properties = schema.setdefault("properties", {})
-    for backend_owned_field in (
-        "articles_used",
-        "current_price_at_analysis",
-        "report_id",
-    ):
-        properties.pop(backend_owned_field, None)
-    properties["article_indices_used"] = {
-        "description": (
-            "One-based indexes of supplied articles materially used by the analysis"
-        ),
-        "items": {"type": "integer"},
-        "title": "Article Indices Used",
-        "type": "array",
-    }
-    schema["required"] = [
-        field
-        for field in schema.get("required", [])
-        if field not in {"articles_used", "current_price_at_analysis", "report_id"}
-    ]
-    definitions = schema.get("$defs")
-    if isinstance(definitions, dict):
-        definitions.pop("ArticleReference", None)
-    return schema
+    return copy.deepcopy(FinancialAnalysisV2LLMResponse.model_json_schema())
 
 
 _V2_RESPONSE_SCHEMA = _build_v2_response_schema()
@@ -4088,11 +4067,12 @@ async def generate_analysis_v2(
                 continue
 
             # Provider output never owns public provenance or backend metadata.
-            raw_indices = parsed.pop("article_indices_used", None)
             parsed.pop("articles_used", None)
             parsed.pop("current_price_at_analysis", None)
             parsed.pop("report_id", None)
-            parsed["asset"] = request.ticker
+
+            provider_result = FinancialAnalysisV2LLMResponse(**parsed)
+            raw_indices = provider_result.article_indices_used
 
             sanitized_indices = _sanitize_article_indices(
                 raw_indices, len(request.news_articles)
@@ -4103,11 +4083,15 @@ async def generate_analysis_v2(
             trusted_articles = _resolve_articles_used(
                 sanitized_indices, request.news_articles
             )
-            parsed["articles_used"] = trusted_articles
-            parsed["current_price_at_analysis"] = request.price_data.current_price
-            parsed["report_id"] = None
+            response_data = provider_result.model_dump()
+            response_data["asset"] = request.ticker
+            response_data["articles_used"] = trusted_articles
+            response_data["current_price_at_analysis"] = (
+                request.price_data.current_price
+            )
+            response_data["report_id"] = None
 
-            result = FinancialAnalysisResponse(**parsed)
+            result = FinancialAnalysisResponse(**response_data)
             logger.info(
                 "[AI][Citations] prompt_version=%s raw_indices_present=%s "
                 "mapped_count=%d supplied_count=%d trusted_fallback=%s",

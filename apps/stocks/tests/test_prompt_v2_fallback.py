@@ -3,21 +3,45 @@
 import hashlib
 import json
 from dataclasses import FrozenInstanceError
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from backend.models.analysis import (
     ArticleReference,
     FinancialAnalysisRequest,
     FinancialAnalysisResponse,
+    FinancialAnalysisV2LLMResponse,
     NewsArticleRequest,
     PriceDataRequest,
 )
+from backend.models.report_schemas import AnalysisReportDetail
 from backend.routers import analysis as analysis_router
 from backend.services import ollama_service
-from backend.services.ai.exceptions import AIValidationError
+from backend.services.ai.exceptions import AIStructuredOutputError
+
+
+V2_PROVIDER_REQUIRED_FIELDS = {
+    "asset",
+    "overall_sentiment",
+    "confidence_score",
+    "investment_rating",
+    "executive_summary",
+    "news_summary",
+    "key_catalysts",
+    "key_risks",
+    "bull_case",
+    "bear_case",
+    "market_reaction_analysis",
+    "technical_analysis",
+    "outlook",
+    "actionable_insights",
+    "portfolio_fit",
+    "article_indices_used",
+}
 
 
 def _request() -> FinancialAnalysisRequest:
@@ -177,6 +201,149 @@ def test_v2_prompt_renders_missing_optional_market_fields_without_fabrication():
     assert "50-Day MA:" not in prompt
     assert "200-Day MA:" not in prompt
     assert "None" not in prompt
+    assert "Never reinterpret 52-week highs or lows as support or resistance" in (
+        ollama_service.PROMPT_V2_SYSTEM_PROMPT
+    )
+
+
+def test_v2_provider_schema_requires_the_complete_nonempty_historical_body():
+    schema = FinancialAnalysisV2LLMResponse.model_json_schema()
+
+    assert set(schema["required"]) == V2_PROVIDER_REQUIRED_FIELDS
+    assert schema == ollama_service._build_v2_response_schema()
+    assert set(schema["properties"]) == V2_PROVIDER_REQUIRED_FIELDS
+    assert "articles_used" not in schema["properties"]
+    assert "current_price_at_analysis" not in schema["properties"]
+    assert "report_id" not in schema["properties"]
+
+    for field in (
+        "news_summary",
+        "key_catalysts",
+        "key_risks",
+        "bull_case",
+        "bear_case",
+        "actionable_insights",
+    ):
+        assert schema["properties"][field]["minItems"] == 1
+    for field in (
+        "asset",
+        "executive_summary",
+        "market_reaction_analysis",
+        "portfolio_fit",
+    ):
+        assert schema["properties"][field]["minLength"] == 1
+    risk_schema = schema["$defs"]["FinancialAnalysisV2LLMRisk"]
+    assert risk_schema["properties"]["risk"]["minLength"] == 1
+    assert risk_schema["properties"]["severity"]["enum"] == [
+        "Low",
+        "Medium",
+        "High",
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "asset": "SPCX",
+            "overall_sentiment": "Neutral",
+            "confidence_score": 50,
+        },
+        {
+            "asset": "SPCX",
+            "overall_sentiment": "Neutral",
+            "confidence_score": 50,
+            "investment_rating": "Hold",
+            "executive_summary": "",
+            "news_summary": [],
+            "key_catalysts": [],
+            "key_risks": [],
+            "bull_case": [],
+            "bear_case": [],
+            "market_reaction_analysis": "",
+            "technical_analysis": {
+                "trend": "",
+                "support_levels": [],
+                "resistance_levels": [],
+                "breakout_level": "",
+                "breakdown_level": "",
+            },
+            "outlook": {
+                "short_term": "",
+                "medium_term": "",
+                "long_term": "",
+            },
+            "actionable_insights": [],
+            "portfolio_fit": "",
+            "article_indices_used": [],
+        },
+    ],
+    ids=["record-100-missing-body", "all-body-sections-empty"],
+)
+def test_v2_provider_contract_rejects_hollow_report_payloads(payload):
+    with pytest.raises(ValidationError):
+        FinancialAnalysisV2LLMResponse.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_v2_generation_fails_closed_for_record_100_shape(monkeypatch):
+    payload = {
+        "asset": "SPCX",
+        "overall_sentiment": "Neutral",
+        "confidence_score": 50,
+    }
+    client = SimpleNamespace(generate=AsyncMock(return_value=json.dumps(payload)))
+
+    async def validate_provider_model(_provider_id, _model_name):
+        return "ollama", "fixture-model", client
+
+    monkeypatch.setattr(
+        "backend.services.ai.ai_service.validate_provider_model",
+        validate_provider_model,
+    )
+
+    with pytest.raises(AIStructuredOutputError) as exc_info:
+        await ollama_service.generate_analysis_v2(
+            _request(), provider="ollama", model="fixture-model"
+    )
+
+    assert exc_info.value.details["failure_kind"] == "schema_validation"
+    assert (
+        client.generate.await_count
+        == ollama_service.STRUCTURED_GENERATION_MAX_ATTEMPTS
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_v2_provider_fixture_converts_with_populated_trusted_output(
+    monkeypatch,
+):
+    payload = _provider_payload(article_indices=[2, 2, True, 0, -1, 1, 3, "1"])
+
+    provider_result = FinancialAnalysisV2LLMResponse.model_validate(payload)
+    _, _, result = await _run_v2(monkeypatch, payload)
+
+    assert provider_result.executive_summary
+    assert result.executive_summary
+    assert result.news_summary
+    assert result.key_catalysts
+    assert result.key_risks
+    assert result.bull_case
+    assert result.bear_case
+    assert result.market_reaction_analysis
+    assert result.technical_analysis
+    assert result.technical_analysis.trend == "Insufficient supplied technical data."
+    assert result.technical_analysis.support_levels == []
+    assert result.technical_analysis.resistance_levels == []
+    assert result.technical_analysis.breakout_level == "N/A"
+    assert result.technical_analysis.breakdown_level == "N/A"
+    assert result.outlook
+    assert result.actionable_insights
+    assert result.portfolio_fit
+    assert [article.title for article in result.articles_used] == [
+        "Trusted second article",
+        "Trusted first article",
+    ]
 
 
 @pytest.mark.asyncio
@@ -239,10 +406,39 @@ def test_v2_hash_covers_exact_v2_prompt_and_schema_but_no_v3_review_material():
     assert ollama_service.SEMANTIC_CORRECTION_INSTRUCTION not in decoded
     assert "patch_target_id" not in decoded
     schema = json.loads(pipeline.structured_output_contract)
+    assert set(schema["required"]) == V2_PROVIDER_REQUIRED_FIELDS
+    assert schema == FinancialAnalysisV2LLMResponse.model_json_schema()
     assert "article_indices_used" in schema["properties"]
     assert "articles_used" not in schema["properties"]
     assert "current_price_at_analysis" not in schema["properties"]
     assert "report_id" not in schema["properties"]
+    assert pipeline.prompt_hash(request) != (
+        "a4ff3e634bc474104241432dfdc8ef008a0e3c31b26f83d0cdd20b516b3c9de9"
+    )
+
+
+def test_sparse_historical_public_report_remains_backward_compatible():
+    historical_payload = {
+        "asset": "LEGACY",
+        "overall_sentiment": "Neutral",
+        "confidence_score": 50,
+    }
+
+    public_report = FinancialAnalysisResponse.model_validate(historical_payload)
+    api_report = AnalysisReportDetail(
+        id=1,
+        ticker="LEGACY",
+        report_data=historical_payload,
+        articles_count=0,
+        model_used="historical-model",
+        prompt_version="2.0",
+        created_at=datetime(2025, 1, 1),
+    )
+
+    assert public_report.executive_summary is None
+    assert public_report.news_summary == []
+    assert public_report.technical_analysis is None
+    assert api_report.report_data == historical_payload
 
 
 def _route_state(monkeypatch, generated):
@@ -347,12 +543,16 @@ async def test_successful_v2_route_persists_once_with_coupled_version_and_hash(
 
 
 @pytest.mark.asyncio
-async def test_failed_v2_route_never_persists_or_commits(monkeypatch):
+async def test_incomplete_structured_v2_route_never_persists_or_commits(monkeypatch):
+    failure = AIStructuredOutputError(
+        "incomplete provider output",
+        details={"failure_kind": "schema_validation", "prompt_version": "2.0"},
+    )
     session, _pipeline, generate, persist = _route_state(
-        monkeypatch, AIValidationError("deterministic generation failure")
+        monkeypatch, failure
     )
 
-    with pytest.raises(AIValidationError, match="deterministic generation failure"):
+    with pytest.raises(AIStructuredOutputError, match="incomplete provider output"):
         await _call_route(session)
 
     generate.assert_awaited_once()

@@ -6,7 +6,12 @@ import logging
 import httpx
 import pytest
 
-from backend.models.analysis import CorrectionPatchSet, FinancialAnalysisLLMResponse, GroundingReviewWireResponse
+from backend.models.analysis import (
+    CorrectionPatchSet,
+    FinancialAnalysisLLMResponse,
+    FinancialAnalysisV2LLMResponse,
+    GroundingReviewWireResponse,
+)
 from backend.services import ollama_service
 from backend.services.ai.exceptions import (
     AIConnectionError,
@@ -295,6 +300,50 @@ async def test_openai_forwards_generic_json_schema_response_format(
             "schema": FinancialAnalysisLLMResponse.model_json_schema(),
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_openai_and_ollama_receive_the_same_complete_v2_schema(monkeypatch):
+    ollama_captured = []
+    openai_captured = []
+
+    class _CapturingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            openai_captured.append({"url": url, "payload": json, "headers": headers})
+            return _FakeOpenAIResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.ollama_provider.httpx.AsyncClient",
+        lambda **kwargs: _CapturingAsyncClient(ollama_captured, **kwargs),
+    )
+    schema = FinancialAnalysisV2LLMResponse.model_json_schema()
+
+    await OllamaProvider().generate(
+        system_prompt="v2 system",
+        user_prompt="v2 user",
+        model="compatible-model",
+        response_schema=schema,
+    )
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _CapturingOpenAIClient([], **kwargs),
+    )
+    await OpenAIProvider().generate(
+        system_prompt="v2 system",
+        user_prompt="v2 user",
+        model="gpt-4o-mini",
+        response_schema=schema,
+        max_attempts=1,
+    )
+
+    ollama_schema = ollama_captured[0]["payload"]["format"]
+    openai_schema = openai_captured[0]["payload"]["response_format"][
+        "json_schema"
+    ]["schema"]
+    assert ollama_schema == openai_schema == schema
+    assert set(schema["required"]) == set(schema["properties"])
 
 
 @pytest.mark.asyncio
