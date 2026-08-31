@@ -15,6 +15,12 @@ import {
   formatReportDateTime,
   getPromptBadge,
 } from '@/lib/reportPresentation';
+import {
+  PROMPT_VERSION_OPTIONS,
+  PROMPT_VERSION_SELECTOR_ENABLED,
+  promptVersionRequestFields,
+  type PromptVersion,
+} from '@/lib/promptVersionSelector';
 
 export default function ReportsPage() {
   const router = useRouter();
@@ -41,6 +47,7 @@ export default function ReportsPage() {
   const [providers, setProviders] = useState<any[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<string>('ollama');
   const [selectedModel, setSelectedModel] = useState<string>('');
+  const [selectedPromptVersion, setSelectedPromptVersion] = useState<PromptVersion>('2.0');
   const [selectedTicker, setSelectedTicker] = useState<string>('');
   const [watchlistTickers, setWatchlistTickers] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
@@ -234,6 +241,10 @@ export default function ReportsPage() {
             days_back: daysBack,
             model: selectedModel,
             provider: selectedProvider,
+            ...promptVersionRequestFields(
+              PROMPT_VERSION_SELECTOR_ENABLED,
+              selectedPromptVersion,
+            ),
             article_ids: selectedArticleIds.length > 0 ? selectedArticleIds : undefined,
           }),
       });
@@ -415,6 +426,33 @@ export default function ReportsPage() {
             })()}
           </select>
         </div>
+
+        {PROMPT_VERSION_SELECTOR_ENABLED && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
+            <label htmlFor="prompt-version-select" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}
+              className="dark:text-gray-300">
+              Prompt Version:
+            </label>
+            <select
+              id="prompt-version-select"
+              value={selectedPromptVersion}
+              onChange={(event) => setSelectedPromptVersion(event.target.value as PromptVersion)}
+              disabled={generating}
+              style={{
+                padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid #d1d5db',
+                background: '#fff', fontSize: '0.875rem', fontWeight: 500, color: '#374151',
+                minWidth: 220,
+                opacity: generating ? 0.5 : 1,
+                cursor: generating ? 'not-allowed' : 'pointer',
+              }}
+              className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
+            >
+              {PROMPT_VERSION_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Step 3: Days Back Slider */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>

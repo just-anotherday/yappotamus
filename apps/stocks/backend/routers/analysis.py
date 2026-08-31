@@ -8,7 +8,7 @@ using news articles and market price data via Ollama.
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,7 @@ from backend.config.database import get_async_session
 from backend.lib.timestamps import utc_isoformat
 from backend.services.report_service import create_report
 from backend.services.ollama_service import (
+    get_analysis_prompt_pipeline,
     get_current_analysis_prompt_pipeline,
     get_ollama_config,
     check_ollama_connection,
@@ -48,6 +49,24 @@ ANALYSIS_TIMEOUT = settings.ANALYSIS_TIMEOUT_S
 # Keeps prompt size (and cost) bounded regardless of how many articles the
 # picker surfaces for browsing.
 MAX_ARTICLES_PER_ANALYSIS = 50
+
+
+def _resolve_analysis_prompt_pipeline(
+    requested_version: Optional[Literal["2.0", "3.0"]],
+):
+    """Resolve one request to an immutable execution/provenance descriptor."""
+    default_pipeline = get_current_analysis_prompt_pipeline()
+    if requested_version is None or requested_version == default_pipeline.version:
+        return default_pipeline
+    if not settings.ALLOW_PROMPT_VERSION_OVERRIDE:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Prompt version {requested_version} is not available; "
+                f"the server default is {default_pipeline.version}"
+            ),
+        )
+    return get_analysis_prompt_pipeline(requested_version)
 
 
 def _order_articles_by_requested_ids(articles, requested_ids: List[int]):
@@ -186,6 +205,10 @@ async def analysis_analyze_ticker(
     days_back: int = Body(3, ge=1, le=14, description="Only consider articles from the last N days (default 3, max 14)"),
     model: Optional[str] = Body(None, embed=True, description="Override default model"),
     provider: Optional[str] = Body(None, embed=True, description="AI provider to use (ollama, openai)"),
+    prompt_version: Annotated[
+        Optional[Literal["2.0", "3.0"]],
+        Body(embed=True, description="Development-only prompt pipeline override"),
+    ] = None,
     article_ids: Optional[List[int]] = Body(None, embed=True, description=f"Optional list of specific article IDs to analyze (max {MAX_ARTICLES_PER_ANALYSIS}). If not provided, auto-selects most recent articles."),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -199,6 +222,10 @@ async def analysis_analyze_ticker(
     Otherwise it auto-selects the most recent articles.
     """
     from sqlalchemy import select
+
+    # Resolve and authorize the pipeline before any database, provider, or
+    # persistence work. The frontend visibility flag is never trusted here.
+    pipeline = _resolve_analysis_prompt_pipeline(prompt_version)
 
     # 1. Fetch news articles for this ticker
     if article_ids is not None and len(article_ids) > 0:
@@ -325,8 +352,6 @@ async def analysis_analyze_ticker(
 
     # 4. Generate analysis
     provider_name, model_name = resolve_provider_model(provider, model)
-    pipeline = get_current_analysis_prompt_pipeline()
-
     try:
         # Use dynamic timeout based on model size (15 min small, 20 min large)
         dyn_timeout = _get_timeout_for_model(model_name, provider_name)

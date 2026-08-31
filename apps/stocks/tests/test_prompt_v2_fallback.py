@@ -99,7 +99,7 @@ def _provider_payload(*, article_indices=...) -> dict:
     return payload
 
 
-async def _run_v2(monkeypatch, payload: dict):
+async def _run_v2(monkeypatch, payload: dict, *, requested_version=None):
     client = SimpleNamespace(generate=AsyncMock(return_value=json.dumps(payload)))
 
     async def validate_provider_model(provider_id, model_name):
@@ -111,7 +111,11 @@ async def _run_v2(monkeypatch, payload: dict):
         "backend.services.ai.ai_service.validate_provider_model",
         validate_provider_model,
     )
-    pipeline = ollama_service.get_current_analysis_prompt_pipeline()
+    pipeline = (
+        ollama_service.get_current_analysis_prompt_pipeline()
+        if requested_version is None
+        else analysis_router._resolve_analysis_prompt_pipeline(requested_version)
+    )
     result = await pipeline.generate(
         _request(), provider="ollama", model="fixture-model"
     )
@@ -137,9 +141,10 @@ def test_active_registry_is_immutable_and_selects_v2_while_retaining_v3():
 
 
 @pytest.mark.asyncio
-async def test_default_v2_uses_only_primary_generation_and_bypasses_all_v3_stages(
+async def test_explicit_local_v2_uses_only_primary_generation_and_bypasses_all_v3_stages(
     monkeypatch,
 ):
+    monkeypatch.setenv("ALLOW_PROMPT_VERSION_OVERRIDE", "true")
     review = AsyncMock(side_effect=AssertionError("v3 reviewer invoked"))
     correction = AsyncMock(side_effect=AssertionError("v3 correction invoked"))
     registry = MagicMock(side_effect=AssertionError("v3 target registry invoked"))
@@ -148,7 +153,9 @@ async def test_default_v2_uses_only_primary_generation_and_bypasses_all_v3_stage
     monkeypatch.setattr(ollama_service, "build_correction_target_registry", registry)
 
     pipeline, client, result = await _run_v2(
-        monkeypatch, _provider_payload(article_indices=[1])
+        monkeypatch,
+        _provider_payload(article_indices=[1]),
+        requested_version="2.0",
     )
 
     assert pipeline.version == "2.0"

@@ -150,6 +150,13 @@ class Settings:
         return (os.getenv("AI_PROVIDER") or "ollama").strip().lower()
 
     @property
+    def ALLOW_PROMPT_VERSION_OVERRIDE(self) -> bool:
+        """Allow trusted request-scoped prompt selection for local development."""
+        return os.getenv("ALLOW_PROMPT_VERSION_OVERRIDE", "false").strip().lower() in {
+            "1", "true", "yes"
+        }
+
+    @property
     def INTELLIGENCE_ENABLED(self) -> bool:
         return os.getenv("INTELLIGENCE_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 
