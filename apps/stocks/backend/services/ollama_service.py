@@ -28,6 +28,7 @@ from backend.models.analysis import (
     CorrectionPatchSet,
     CorrectionPatchTarget,
     CorrectionTargetRegistry,
+    FinancialAnalysisLLMOutlookResponse,
     FinancialAnalysisLLMResponse,
     FinancialAnalysisRequest,
     FinancialAnalysisResponse,
@@ -1307,6 +1308,11 @@ _CORRECTION_PATCH_PROTECTED_FIELDS = (
     "investment_rating",
     "article_indices_used",
 )
+_OUTLOOK_PARENT_SOURCE_PATHS = frozenset({
+    "outlook.short_term",
+    "outlook.medium_term",
+    "outlook.long_term",
+})
 
 
 @dataclass(frozen=True)
@@ -1391,10 +1397,29 @@ def _replacement_length_limit(target: CorrectionPatchTarget) -> int:
     )
 
 
+def _is_outlook_leading_target(target: CorrectionPatchTarget) -> bool:
+    """Return whether an exact target owns an outlook field's required prefix."""
+
+    return target.source_path in _OUTLOOK_PARENT_SOURCE_PATHS and (
+        target.source_start == 0
+        or target.patch_target_id == f"{target.source_path}.segment_0"
+    )
+
+
 def _validate_patch_replacement(
     patch: CorrectionPatch,
     target: CorrectionPatchTarget,
 ) -> None:
+    if (
+        patch.operation == "DELETE"
+        and _is_outlook_leading_target(target)
+    ):
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="outlook_leading_target_delete_forbidden",
+            target_id=patch.target_id,
+            parent_path=target.source_path,
+        )
     if patch.operation != "REPLACE":
         return
     replacement = patch.replacement
@@ -1571,6 +1596,22 @@ def _patch_repair_instruction(target_rules: List[str]) -> str:
     )
 
 
+def _outlook_parent_invariant_instruction(
+    target: CorrectionPatchTarget,
+) -> Optional[str]:
+    """Describe the backend-owned parent constraint for an outlook target."""
+
+    if target.source_path not in _OUTLOOK_PARENT_SOURCE_PATHS:
+        return None
+    instruction = (
+        "After all patches, this outlook field must start with Bullish, Neutral, or Bearish "
+        "and retain a substantive explanation."
+    )
+    if _is_outlook_leading_target(target):
+        instruction += " This leading target must use REPLACE; DELETE is forbidden."
+    return instruction
+
+
 def build_patch_correction_prompt(
     required_target_ids: List[str],
     registry: CorrectionTargetRegistry,
@@ -1605,7 +1646,7 @@ def build_patch_correction_prompt(
         })
         used_article_indices.update(article_indices)
         target_rules = rules_by_target.get(target_id, [])
-        targets_payload.append({
+        target_payload = {
             "target_id": target_id,
             "section": target.section,
             "original_proposition": target.original_target_text,
@@ -1614,7 +1655,11 @@ def build_patch_correction_prompt(
             "read_only_previous_context": target.previous_context,
             "read_only_next_context": target.next_context,
             "trusted_article_indices_available": article_indices,
-        })
+        }
+        parent_invariant = _outlook_parent_invariant_instruction(target)
+        if parent_invariant is not None:
+            target_payload["parent_field_invariant"] = parent_invariant
+        targets_payload.append(target_payload)
 
     article_manifest = [
         {
@@ -1872,15 +1917,13 @@ def _delete_correction_text_span(source: str, start: int, end: int) -> str:
     return left + right
 
 
-def merge_correction_patch_set(
+def _build_correction_candidate_payload(
     primary: FinancialAnalysisLLMResponse,
+    parsed: CorrectionPatchSet,
     registry: CorrectionTargetRegistry,
-    required_target_ids: List[str],
-    patch_set: Any,
-) -> CorrectionPatchMergeResult:
-    """Apply a fully validated patch set atomically to a copy of ``primary``."""
+) -> Dict[str, Any]:
+    """Apply trusted offsets to a disposable payload for invariant preflight."""
 
-    parsed = validate_correction_patch_set(patch_set, registry, required_target_ids)
     targets = {target.patch_target_id: target for target in registry.targets}
     payload = primary.model_dump(mode="python")
     payload["article_indices_used"] = list(primary.article_indices_used)
@@ -1904,7 +1947,10 @@ def merge_correction_patch_set(
             )
             delete_index = nested_index if nested_index is not None else index
             if delete_index is None:
-                _raise_correction_patch_error("correction_patch_merge_failure", reason="invalid_list_delete")
+                _raise_correction_patch_error(
+                    "correction_patch_merge_failure",
+                    reason="invalid_list_delete",
+                )
             container_deletes.append((field, nested, delete_index))
         else:
             patches_by_path.setdefault(target.source_path, []).append((patch, target))
@@ -1936,14 +1982,59 @@ def merge_correction_patch_set(
         _set_correction_source_value(payload, source_path, source)
 
     for field, nested, index in sorted(
-        container_deletes, key=lambda item: (item[0], item[1] or "", item[2]), reverse=True
+        container_deletes,
+        key=lambda item: (item[0], item[1] or "", item[2]),
+        reverse=True,
     ):
         value = payload.get(field)
         if nested is not None and isinstance(value, dict):
             value = value.get(nested)
         if not isinstance(value, list) or not (0 <= index < len(value)):
-            _raise_correction_patch_error("correction_patch_merge_failure", reason="list_delete_invalid")
+            _raise_correction_patch_error(
+                "correction_patch_merge_failure",
+                reason="list_delete_invalid",
+            )
         del value[index]
+    return payload
+
+
+def _preflight_outlook_parent_invariants(
+    payload: Dict[str, Any],
+    parsed: CorrectionPatchSet,
+    registry: CorrectionTargetRegistry,
+) -> None:
+    """Validate affected outlook parents with their authoritative model contract."""
+
+    targets = {target.patch_target_id: target for target in registry.targets}
+    affected_paths = sorted({
+        targets[patch.target_id].source_path
+        for patch in parsed.patches
+        if targets[patch.target_id].source_path in _OUTLOOK_PARENT_SOURCE_PATHS
+    })
+    if not affected_paths:
+        return
+    try:
+        FinancialAnalysisLLMOutlookResponse.model_validate(payload.get("outlook"))
+    except ValidationError as exc:
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="outlook_parent_invariant_violation",
+            affected_parent_paths=affected_paths,
+            validation_errors=_summarize_validation_errors(exc),
+        )
+
+
+def merge_correction_patch_set(
+    primary: FinancialAnalysisLLMResponse,
+    registry: CorrectionTargetRegistry,
+    required_target_ids: List[str],
+    patch_set: Any,
+) -> CorrectionPatchMergeResult:
+    """Apply a fully validated patch set atomically to a copy of ``primary``."""
+
+    parsed = validate_correction_patch_set(patch_set, registry, required_target_ids)
+    payload = _build_correction_candidate_payload(primary, parsed, registry)
+    _preflight_outlook_parent_invariants(payload, parsed, registry)
 
     try:
         merged = FinancialAnalysisLLMResponse(**payload)

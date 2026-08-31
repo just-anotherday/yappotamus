@@ -1992,6 +1992,7 @@ def test_grounding_delta_reports_resolved_remaining_and_new_without_claim_text(c
         "semantic_review_schema_validation",
         "semantic_review_metadata_validation",
         "semantic_grounding_rejected",
+        "correction_patch_schema_invalid",
     ],
 )
 async def test_semantic_failure_never_persists_candidate(monkeypatch, failure_kind):
@@ -3806,6 +3807,28 @@ def _phase_b_report_and_registry(payload=None):
     return report, registry
 
 
+def _outlook_multisegment_report_and_registry():
+    payload = _report(corrected=True)
+    payload["actionable_insights"].append(
+        "Review position sizing as the evidence changes."
+    )
+    payload["outlook"] = {
+        "short_term": (
+            "Neutral — short-term evidence remains mixed. "
+            "A near-term catalyst could alter the balance."
+        ),
+        "medium_term": (
+            "Bullish — medium-term execution could support the thesis. "
+            "Financing conditions remain relevant."
+        ),
+        "long_term": (
+            "Neutral — long-term evidence remains limited. "
+            "Durable execution could improve the outlook."
+        ),
+    }
+    return _phase_b_report_and_registry(payload)
+
+
 def _phase_b_patch(target_id, operation="REPLACE", replacement="Supported replacement.", indices=None):
     return {
         "target_id": target_id,
@@ -4085,6 +4108,168 @@ def test_phase_b_request_local_registry_rejects_stale_offsets_without_text_match
     ).report.bull_case[0] == "Supported replacement."
 
 
+@pytest.mark.parametrize("horizon", ["short_term", "medium_term", "long_term"])
+def test_outlook_leading_delete_is_rejected_before_candidate_merge(horizon):
+    report, registry = _outlook_multisegment_report_and_registry()
+    target_id = f"outlook.{horizon}.segment_0"
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.validate_correction_patch_set(
+            {"patches": [
+                _phase_b_patch(target_id, operation="DELETE", replacement=None)
+            ]},
+            registry,
+            [target_id],
+        )
+
+    assert exc_info.value.details == {
+        "failure_kind": "correction_patch_schema_invalid",
+        "reason": "outlook_leading_target_delete_forbidden",
+        "target_id": target_id,
+        "parent_path": f"outlook.{horizon}",
+    }
+    assert getattr(report.outlook, horizon).startswith(
+        ("Bullish", "Neutral", "Bearish")
+    )
+
+
+@pytest.mark.parametrize("horizon", ["short_term", "medium_term", "long_term"])
+def test_outlook_invalid_leading_replace_fails_real_parent_contract_atomically(horizon):
+    report, registry = _outlook_multisegment_report_and_registry()
+    target_id = f"outlook.{horizon}.segment_0"
+    original = report.model_dump(mode="python")
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.merge_correction_patch_set(
+            report,
+            registry,
+            [target_id],
+            {"patches": [_phase_b_patch(
+                target_id,
+                replacement="Evidence remains mixed.",
+            )]},
+        )
+
+    assert exc_info.value.details["failure_kind"] == "correction_patch_schema_invalid"
+    assert exc_info.value.details["reason"] == "outlook_parent_invariant_violation"
+    assert exc_info.value.details["affected_parent_paths"] == [f"outlook.{horizon}"]
+    assert report.model_dump(mode="python") == original
+
+
+@pytest.mark.parametrize("horizon", ["short_term", "medium_term", "long_term"])
+def test_outlook_valid_leading_replace_passes_parent_preflight_and_merge(horizon):
+    report, registry = _outlook_multisegment_report_and_registry()
+    target_id = f"outlook.{horizon}.segment_0"
+    replacement = "Bullish — supplied evidence supports a cautious positive view."
+
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+    )
+
+    assert getattr(merged.report.outlook, horizon).startswith(replacement)
+    assert merged.coverage_segments
+
+
+@pytest.mark.parametrize("horizon", ["short_term", "medium_term", "long_term"])
+def test_outlook_nonleading_patch_preserves_valid_parent(horizon):
+    report, registry = _outlook_multisegment_report_and_registry()
+    target_id = f"outlook.{horizon}.segment_1"
+
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(
+            target_id,
+            replacement="A revised catalyst may alter the balance.",
+        )]},
+    ).report
+
+    assert getattr(merged.outlook, horizon).startswith(
+        ("Bullish", "Neutral", "Bearish")
+    )
+    assert getattr(merged.outlook, horizon).endswith(
+        "A revised catalyst may alter the balance."
+    )
+
+
+def test_twenty_patch_set_with_nineteen_valid_patches_is_rejected_atomically():
+    report, registry = _outlook_multisegment_report_and_registry()
+    leading_target_id = "outlook.short_term.segment_0"
+    outlook_targets = [
+        target for target in registry.targets
+        if target.source_path in ollama_service._OUTLOOK_PARENT_SOURCE_PATHS
+    ]
+    other_targets = [
+        target for target in registry.targets
+        if target.source_path not in ollama_service._OUTLOOK_PARENT_SOURCE_PATHS
+    ]
+    selected_targets = outlook_targets + other_targets[:20 - len(outlook_targets)]
+    required = [target.patch_target_id for target in selected_targets]
+    patches = [
+        _phase_b_patch(
+            target.patch_target_id,
+            replacement=(
+                "Evidence remains mixed."
+                if target.patch_target_id == leading_target_id
+                else target.original_target_text
+            ),
+        )
+        for target in selected_targets
+    ]
+    patch_set = {"patches": patches}
+    original = report.model_dump(mode="python")
+
+    assert len(required) == 20
+    assert len(outlook_targets) >= 6
+    assert sum(
+        patch["replacement"] == "Evidence remains mixed." for patch in patches
+    ) == 1
+    assert len(
+        ollama_service.validate_correction_patch_set(patch_set, registry, required).patches
+    ) == 20
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.merge_correction_patch_set(
+            report, registry, required, patch_set
+        )
+
+    assert exc_info.value.details["failure_kind"] == "correction_patch_schema_invalid"
+    assert exc_info.value.details["reason"] == "outlook_parent_invariant_violation"
+    assert report.model_dump(mode="python") == original
+
+
+def test_valid_correction_still_executes_full_post_merge_model_validation(monkeypatch):
+    report, registry = _outlook_multisegment_report_and_registry()
+    target_id = "outlook.short_term.segment_1"
+    model_contract = ollama_service.FinancialAnalysisLLMResponse
+    validated_payloads = []
+
+    def validate_full_report(**payload):
+        validated_payloads.append(payload)
+        return model_contract(**payload)
+
+    monkeypatch.setattr(
+        ollama_service,
+        "FinancialAnalysisLLMResponse",
+        validate_full_report,
+    )
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(
+            target_id,
+            replacement="A supported catalyst may alter the balance.",
+        )]},
+    )
+
+    assert len(validated_payloads) == 1
+    assert isinstance(merged.report, model_contract)
+
+
 def _phase_c_violation(target_id, rule="unsupported_company_specific_claim", section="executive_summary"):
     return GroundingViolation(
         rule=rule,
@@ -4153,6 +4338,31 @@ def test_phase_c_patch_prompt_isolates_targets_context_and_relevant_articles():
     assert "UNRELATED_BULL_CASE_PROSE_MUST_NOT_APPEAR" not in prompt
     assert "source_path" not in prompt
     assert "atomic_ordinal" not in prompt
+
+
+def test_phase_c_outlook_prompt_carries_backend_parent_invariant_per_target():
+    _, registry = _outlook_multisegment_report_and_registry()
+    leading_id = "outlook.short_term.segment_0"
+    nonleading_id = "outlook.short_term.segment_1"
+    prompt = ollama_service.build_patch_correction_prompt(
+        [leading_id, nonleading_id],
+        registry,
+        [
+            _phase_c_violation(leading_id, section="outlook"),
+            _phase_c_violation(nonleading_id, section="outlook"),
+        ],
+        _request(),
+    )
+    payload = json.loads(prompt.split("Correction request (JSON):\n", 1)[1])
+    targets = {target["target_id"]: target for target in payload["targets"]}
+
+    for target in targets.values():
+        assert "must start with Bullish, Neutral, or Bearish" in (
+            target["parent_field_invariant"]
+        )
+        assert "substantive explanation" in target["parent_field_invariant"]
+    assert "DELETE is forbidden" in targets[leading_id]["parent_field_invariant"]
+    assert "DELETE is forbidden" not in targets[nonleading_id]["parent_field_invariant"]
 
 
 def test_phase_c_prompt_preserves_missing_ma_and_historical_range_guidance():
@@ -4359,6 +4569,81 @@ async def test_phase_d_incomplete_patch_set_has_no_final_review_or_fallback(monk
     assert exc_info.value.details["failure_kind"] == (
         "correction_patch_incomplete_target_set"
     )
+    assert len(client.calls) == 3
+    assert sum(
+        call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
+        for call in client.calls
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_d_current_outlook_failure_stops_before_final_review(monkeypatch):
+    report, registry = _outlook_multisegment_report_and_registry()
+    units = ollama_service._build_reviewable_claim_units(report)
+    segments = ollama_service._build_review_coverage_segments(units)
+    aliases = ollama_service._build_coverage_segment_aliases(segments)
+    outlook_targets = [
+        target for target in registry.targets
+        if target.source_path in ollama_service._OUTLOOK_PARENT_SOURCE_PATHS
+    ]
+    other_targets = [
+        target for target in registry.targets
+        if target.source_path not in ollama_service._OUTLOOK_PARENT_SOURCE_PATHS
+    ]
+    selected_targets = outlook_targets + other_targets[:20 - len(outlook_targets)]
+    required = {target.patch_target_id for target in selected_targets}
+    leading_target_ids = {
+        "outlook.short_term.segment_0",
+        "outlook.medium_term.segment_0",
+        "outlook.long_term.segment_0",
+    }
+    units_by_id = {unit.review_unit_id: unit for unit in units}
+    findings = []
+    for alias, segment in aliases.items():
+        proposition = units_by_id[segment.review_unit_id].candidate_text[
+            segment.source_start:segment.source_end
+        ]
+        invalid = segment.coverage_segment_id in required
+        findings.append({
+            "s": alias,
+            "r": "F",
+            "p": proposition[:120],
+            "c": "UE" if invalid else "DS",
+            "a": [] if invalid else [2],
+            "m": [],
+            "g": "UC" if invalid else "AS",
+        })
+    patches = [
+        _phase_b_patch(
+            target.patch_target_id,
+            replacement=(
+                "Evidence remains mixed."
+                if target.patch_target_id in leading_target_ids
+                else target.original_target_text
+            ),
+        )
+        for target in selected_targets
+    ]
+    primary_payload = report.model_dump(mode="json")
+    primary_payload["article_indices_used"] = [2]
+    client = _SequencedClient([
+        primary_payload,
+        {"f": findings},
+        {"patches": patches},
+    ])
+    await _install_client(monkeypatch, "ollama", client)
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        await ollama_service.generate_analysis(
+            _request(), provider="ollama", model="test-model"
+        )
+
+    assert len(required) == 20
+    assert exc_info.value.details["failure_kind"] == "correction_patch_schema_invalid"
+    assert exc_info.value.details["reason"] == "outlook_parent_invariant_violation"
+    assert {
+        error["location"] for error in exc_info.value.details["validation_errors"]
+    } == {"short_term", "medium_term", "long_term"}
     assert len(client.calls) == 3
     assert sum(
         call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
