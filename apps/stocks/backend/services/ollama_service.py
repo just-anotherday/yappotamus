@@ -1325,6 +1325,285 @@ class CorrectionPatchMergeResult:
     target_registry: CorrectionTargetRegistry
 
 
+_PROPOSITION_REVIEW_CONTRACT_VERSION = "prompt-v3-semantic-review-v1"
+
+
+@dataclass(frozen=True)
+class PropositionReviewIdentity:
+    """Batch-independent identity for one backend-owned coverage proposition."""
+
+    fingerprint: str
+    coverage_segment_id: str
+    review_unit_id: str
+    section: str
+    normalized_text: str
+    evaluation_contract: str
+    evidence_fingerprint: str
+    structured_support_fingerprint: str
+    backend_derived_market_fields: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PropositionReviewLedgerEntry:
+    """Immutable initial verdict and evidence record for one proposition."""
+
+    identity: PropositionReviewIdentity
+    claims: Tuple[NormalizedGroundingClaimFinding, ...]
+    violations: Tuple[GroundingViolation, ...]
+    applicable_rules: Tuple[str, ...]
+    passed: bool
+
+
+@dataclass(frozen=True)
+class InitialPropositionReviewLedger:
+    """Request-local initial-review ledger; never persisted or exposed."""
+
+    entries_by_fingerprint: Mapping[str, PropositionReviewLedgerEntry]
+    entries_by_segment_id: Mapping[str, PropositionReviewLedgerEntry]
+
+
+@dataclass(frozen=True)
+class FinalPropositionReviewPlan:
+    """Deterministic reconciliation of final propositions against the ledger."""
+
+    final_identities_by_segment_id: Mapping[str, PropositionReviewIdentity]
+    carried_entries: Tuple[PropositionReviewLedgerEntry, ...]
+    review_segments: Tuple[ReviewCoverageSegment, ...]
+    changed_segment_ids: Tuple[str, ...]
+    new_segment_ids: Tuple[str, ...]
+
+
+def _normalize_review_proposition_text(text: str) -> str:
+    """Normalize only representation-level differences safe for identity.
+
+    Case, numeric formatting, commas, colons, semicolons, question marks, and
+    exclamation marks remain material. A terminal full stop is the one allowed
+    punctuation exception because it cannot change an otherwise complete
+    declarative proposition's financial meaning.
+    """
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized[:-1].rstrip() if normalized.endswith(".") else normalized
+
+
+def _canonical_fingerprint(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _trusted_review_evidence_fingerprint(
+    request: FinancialAnalysisRequest,
+    selected_indices: List[int],
+) -> str:
+    """Fingerprint exactly the trusted evidence manifest visible to review."""
+
+    return _canonical_fingerprint({
+        "selected_article_indices": list(selected_indices),
+        "articles": [article.model_dump(mode="json") for article in request.news_articles],
+        "input_context": derive_available_input_context(request),
+    })
+
+
+def _structured_review_input_fingerprint(
+    request: FinancialAnalysisRequest,
+    backend_derived_market_fields: Tuple[str, ...],
+) -> str:
+    return _canonical_fingerprint({
+        "available_market_data": build_available_market_data(request),
+        "backend_derived_market_fields": list(backend_derived_market_fields),
+    })
+
+
+def _build_proposition_review_identities(
+    request: FinancialAnalysisRequest,
+    result: FinancialAnalysisLLMResponse,
+    selected_indices: List[int],
+    coverage_segments: Optional[List[ReviewCoverageSegment]] = None,
+) -> Tuple[List[ReviewableClaimUnit], List[ReviewCoverageSegment], Dict[str, PropositionReviewIdentity]]:
+    """Build backend-owned identities without using reviewer-generated prose."""
+
+    review_units = _build_reviewable_claim_units(result)
+    segments = (
+        coverage_segments
+        if coverage_segments is not None
+        else _build_review_coverage_segments(review_units)
+    )
+    units_by_id = {unit.review_unit_id: unit for unit in review_units}
+    evidence_fingerprint = _trusted_review_evidence_fingerprint(
+        request, selected_indices
+    )
+    evaluation_contract = _canonical_fingerprint({
+        "version": _PROPOSITION_REVIEW_CONTRACT_VERSION,
+        "review_prompt": GROUNDING_REVIEW_SYSTEM_PROMPT,
+    })
+    identities: Dict[str, PropositionReviewIdentity] = {}
+    for segment in segments:
+        unit = units_by_id[segment.review_unit_id]
+        proposition = unit.candidate_text[segment.source_start:segment.source_end]
+        normalized_text = _normalize_review_proposition_text(proposition)
+        derived_fields = tuple(_derive_structured_market_support(proposition, request))
+        structured_fingerprint = _structured_review_input_fingerprint(
+            request, derived_fields
+        )
+        material = {
+            "coverage_segment_id": segment.coverage_segment_id,
+            "review_unit_id": segment.review_unit_id,
+            "section": unit.section,
+            "normalized_text": normalized_text,
+            "evaluation_contract": evaluation_contract,
+            "evidence_fingerprint": evidence_fingerprint,
+            "structured_support_fingerprint": structured_fingerprint,
+        }
+        identity = PropositionReviewIdentity(
+            fingerprint=_canonical_fingerprint(material),
+            coverage_segment_id=segment.coverage_segment_id,
+            review_unit_id=segment.review_unit_id,
+            section=unit.section,
+            normalized_text=normalized_text,
+            evaluation_contract=evaluation_contract,
+            evidence_fingerprint=evidence_fingerprint,
+            structured_support_fingerprint=structured_fingerprint,
+            backend_derived_market_fields=derived_fields,
+        )
+        if identity.fingerprint in identities:
+            raise RuntimeError("proposition_review_identity_collision")
+        identities[identity.fingerprint] = identity
+    return review_units, segments, identities
+
+
+def _build_initial_proposition_review_ledger(
+    request: FinancialAnalysisRequest,
+    result: FinancialAnalysisLLMResponse,
+    selected_indices: List[int],
+    review: GroundingEnforcementResult,
+) -> InitialPropositionReviewLedger:
+    """Freeze every initial proposition's exact review inputs and verdict."""
+
+    _, segments, identities = _build_proposition_review_identities(
+        request, result, selected_indices
+    )
+    identity_by_segment = {
+        identity.coverage_segment_id: identity for identity in identities.values()
+    }
+    claims_by_segment: Dict[str, List[NormalizedGroundingClaimFinding]] = {}
+    for claim in review.claims:
+        claims_by_segment.setdefault(claim.coverage_segment_id, []).append(claim)
+    violations_by_segment: Dict[str, List[GroundingViolation]] = {}
+    for violation in review.violations:
+        if violation.coverage_segment_id is None:
+            continue
+        violations_by_segment.setdefault(violation.coverage_segment_id, []).append(
+            violation
+        )
+
+    entries_by_fingerprint: Dict[str, PropositionReviewLedgerEntry] = {}
+    entries_by_segment_id: Dict[str, PropositionReviewLedgerEntry] = {}
+    for segment in segments:
+        identity = identity_by_segment[segment.coverage_segment_id]
+        claims = tuple(
+            claim.model_copy(deep=True)
+            for claim in claims_by_segment.get(segment.coverage_segment_id, [])
+        )
+        violations = tuple(
+            violation.model_copy(deep=True)
+            for violation in violations_by_segment.get(segment.coverage_segment_id, [])
+        )
+        rules = tuple(_order_preserving_dedupe(
+            [claim.rule for claim in claims]
+            + [violation.rule for violation in violations]
+        ))
+        entry = PropositionReviewLedgerEntry(
+            identity=identity,
+            claims=claims,
+            violations=violations,
+            applicable_rules=rules,
+            passed=not violations,
+        )
+        entries_by_fingerprint[identity.fingerprint] = entry
+        entries_by_segment_id[identity.coverage_segment_id] = entry
+
+    # A global violation is deliberately unreconcilable and must never be
+    # silently carried as a proposition verdict.
+    if any(violation.coverage_segment_id is None for violation in review.violations):
+        raise RuntimeError("global_initial_violation_cannot_enter_proposition_ledger")
+    return InitialPropositionReviewLedger(
+        entries_by_fingerprint=MappingProxyType(entries_by_fingerprint),
+        entries_by_segment_id=MappingProxyType(entries_by_segment_id),
+    )
+
+
+def _plan_final_proposition_review(
+    request: FinancialAnalysisRequest,
+    result: FinancialAnalysisLLMResponse,
+    selected_indices: List[int],
+    initial_ledger: InitialPropositionReviewLedger,
+    touched_target_ids: List[str],
+) -> FinalPropositionReviewPlan:
+    """Carry exact identities and select only changed/new units for review."""
+
+    _, final_segments, identities = _build_proposition_review_identities(
+        request, result, selected_indices
+    )
+    identity_by_segment = {
+        identity.coverage_segment_id: identity for identity in identities.values()
+    }
+    touched = set(touched_target_ids)
+    carried: List[PropositionReviewLedgerEntry] = []
+    review_segments: List[ReviewCoverageSegment] = []
+    changed: List[str] = []
+    new: List[str] = []
+    for segment in final_segments:
+        identity = identity_by_segment[segment.coverage_segment_id]
+        entry = initial_ledger.entries_by_fingerprint.get(identity.fingerprint)
+        if entry is not None and segment.coverage_segment_id not in touched:
+            carried.append(entry)
+            continue
+        review_segments.append(segment)
+        if segment.coverage_segment_id in initial_ledger.entries_by_segment_id:
+            changed.append(segment.coverage_segment_id)
+        else:
+            new.append(segment.coverage_segment_id)
+    return FinalPropositionReviewPlan(
+        final_identities_by_segment_id=MappingProxyType(identity_by_segment),
+        carried_entries=tuple(carried),
+        review_segments=tuple(review_segments),
+        changed_segment_ids=tuple(changed),
+        new_segment_ids=tuple(new),
+    )
+
+
+def _assemble_reconciled_final_review(
+    plan: FinalPropositionReviewPlan,
+    reviewed: Optional[GroundingEnforcementResult],
+) -> GroundingEnforcementResult:
+    carried_claims = [
+        claim.model_copy(deep=True)
+        for entry in plan.carried_entries
+        for claim in entry.claims
+    ]
+    carried_violations = [
+        violation.model_copy(deep=True)
+        for entry in plan.carried_entries
+        for violation in entry.violations
+    ]
+    reviewed_claims = [] if reviewed is None else list(reviewed.claims)
+    reviewed_violations = [] if reviewed is None else list(reviewed.violations)
+    violations = _merge_grounding_violations(
+        carried_violations, reviewed_violations
+    )
+    return GroundingEnforcementResult(
+        valid=not violations,
+        claims=carried_claims + reviewed_claims,
+        violations=violations,
+    )
+
+
 def _raise_correction_patch_error(failure_kind: str, **details: Any) -> None:
     if failure_kind not in CORRECTION_PATCH_FAILURE_KINDS:
         raise RuntimeError("unknown correction patch failure kind")
@@ -1425,6 +1704,19 @@ def _validate_patch_replacement(
     replacement = patch.replacement
     if replacement is None:
         _raise_correction_patch_error("correction_patch_schema_invalid")
+    if _normalize_review_proposition_text(replacement) == _normalize_review_proposition_text(
+        target.original_target_text
+    ):
+        logger.warning(
+            "[AI][PatchCorrection] no_op_patch_rejections=1 target_id=%s",
+            patch.target_id,
+        )
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="replacement_no_op",
+            target_id=patch.target_id,
+            no_op_patch_rejections=1,
+        )
     if replacement != replacement.strip():
         _raise_correction_patch_error(
             "correction_patch_schema_invalid",
@@ -2875,6 +3167,47 @@ def _derive_structured_market_support(
     )
     if any(term in text for term in forbidden):
         return []
+    subject = (
+        rf"(?:the\s+)?(?:current|stock|share)\s+price"
+        rf"(?:\s+of\s+\$?[\d,.]+)?|(?:the\s+)?price|"
+        rf"(?:the\s+)?(?:stock|shares)|"
+        rf"{re.escape(request.ticker.lower())}"
+    )
+    descriptive_verb = r"(?:(?:is|are)\s+(?:currently\s+)?(?:trading\s+)?|trades?\s+)"
+    optional_current_value = r"(?:at\s+\$?[\d,.]+\s*,?\s*)?"
+    below_high = bool(re.search(
+        rf"(?:{subject})\s+{descriptive_verb}{optional_current_value}(?:well\s+)?below\s+"
+        r"(?:its\s+|the\s+)?52(?:-|\s)?week\s+high\b",
+        text,
+    ))
+    above_low = bool(re.search(
+        rf"(?:{subject})\s+{descriptive_verb}{optional_current_value}(?:well\s+)?above\s+"
+        r"(?:its\s+|the\s+)?52(?:-|\s)?week\s+low\b",
+        text,
+    ))
+    if below_high and not above_low:
+        above_low = bool(re.search(
+            r"\band\s+(?:well\s+)?above\s+(?:its\s+|the\s+)?"
+            r"52(?:-|\s)?week\s+low\b",
+            text,
+        ))
+    comparison_fields: List[str] = []
+    if (
+        below_high
+        and price.current_price is not None
+        and price.fifty_two_week_high is not None
+        and price.current_price < price.fifty_two_week_high
+    ):
+        comparison_fields.extend(["current_price", "fifty_two_week_high"])
+    if (
+        above_low
+        and price.current_price is not None
+        and price.fifty_two_week_low is not None
+        and price.current_price > price.fifty_two_week_low
+    ):
+        comparison_fields.extend(["current_price", "fifty_two_week_low"])
+    if comparison_fields:
+        return _order_preserving_dedupe(comparison_fields)
     has_range = (
         price.fifty_two_week_low is not None
         and price.fifty_two_week_high is not None
@@ -2980,8 +3313,14 @@ def _validate_reviewer_finding_metadata(
         indices = claim.supporting_article_indices
         market_fields = claim.supporting_market_data_fields
         input_context = claim.supporting_input_context
+        source_proposition = claim.atomic_proposition
+        if segment is not None:
+            source = units_by_id[segment.review_unit_id]
+            source_proposition = source.candidate_text[
+                segment.source_start:segment.source_end
+            ]
         claim.backend_derived_market_fields = _derive_structured_market_support(
-            claim.atomic_proposition, request
+            source_proposition, request
         )
         unavailable_context = next((value for value in input_context if value not in available_input_context), None)
         if unavailable_context is not None:
@@ -3043,7 +3382,7 @@ def _validate_reviewer_finding_metadata(
                     "supporting_article_indices",
                 )
         elif claim.classification == "supported_by_structured_market_data":
-            if not market_fields:
+            if not market_fields and not claim.backend_derived_market_fields:
                 record_evidence_contract(
                     "structured_support_fields_required",
                     finding_ordinal,
@@ -3051,7 +3390,7 @@ def _validate_reviewer_finding_metadata(
                     "supporting_market_data_fields",
                 )
         elif claim.classification == "supported_interpretation":
-            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context:
+            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context and not claim.backend_derived_market_fields:
                 record_evidence_contract(
                     "interpretation_support_required",
                     finding_ordinal,
@@ -3059,7 +3398,7 @@ def _validate_reviewer_finding_metadata(
                     "supporting_article_indices|supporting_market_data_fields",
                 )
         elif claim.classification == "conditional_supported":
-            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context:
+            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context and not claim.backend_derived_market_fields:
                 record_evidence_contract(
                     "conditional_support_required",
                     finding_ordinal,
@@ -3336,7 +3675,11 @@ def _claim_findings_to_violations(
         rule = finding.rule
         selected = bool(finding.supporting_selected_indices)
         compatible_technical = bool(
-            set(finding.supporting_market_data_fields) & _TECHNICAL_COMPATIBLE_FIELDS
+            (
+                set(finding.supporting_market_data_fields)
+                | set(finding.backend_derived_market_fields)
+            )
+            & _TECHNICAL_COMPATIBLE_FIELDS
         )
         has_event_price_link = (
             selected
@@ -3474,11 +3817,38 @@ def _violation_ids(violations: List[GroundingViolation]) -> List[str]:
 def _log_grounding_delta(
     initial: List[GroundingViolation],
     final: List[GroundingViolation],
+    plan: Optional[FinalPropositionReviewPlan] = None,
 ) -> None:
-    """Log semantic convergence using only normalized finding hashes."""
+    """Log semantic convergence using backend lineage when it is available."""
 
     initial_ids = set(_violation_ids(initial))
     final_ids = set(_violation_ids(final))
+    if plan is not None:
+        carried_violations = [
+            violation
+            for entry in plan.carried_entries
+            for violation in entry.violations
+        ]
+        remaining_ids = set(_violation_ids(carried_violations))
+        new_segment_ids = set(plan.new_segment_ids)
+        new_ids = set(_violation_ids([
+            violation for violation in final
+            if violation.coverage_segment_id in new_segment_ids
+        ]))
+        logger.info(
+            "[AI][GroundingDelta] resolved_count=%d remaining_count=%d new_count=%d "
+            "genuinely_new_count=%d changed_and_re_reviewed=%d "
+            "resolved_ids=%s remaining_ids=%s new_ids=%s",
+            len(initial_ids - remaining_ids),
+            len(remaining_ids),
+            len(new_ids),
+            len(new_ids),
+            len(plan.changed_segment_ids),
+            sorted(initial_ids - remaining_ids),
+            sorted(remaining_ids),
+            sorted(new_ids),
+        )
+        return
     logger.info(
         "[AI][GroundingDelta] resolved_count=%d remaining_count=%d new_count=%d "
         "resolved_ids=%s remaining_ids=%s new_ids=%s",
@@ -3491,6 +3861,34 @@ def _log_grounding_delta(
     )
 
 
+def _log_final_review_reconciliation(
+    initial_ledger: InitialPropositionReviewLedger,
+    plan: FinalPropositionReviewPlan,
+    final_review: GroundingEnforcementResult,
+) -> None:
+    carried_passes = sum(entry.passed for entry in plan.carried_entries)
+    carried_blockers = sum(not entry.passed for entry in plan.carried_entries)
+    new_segment_ids = set(plan.new_segment_ids)
+    genuinely_new_findings = sum(
+        violation.coverage_segment_id in new_segment_ids
+        for violation in final_review.violations
+    )
+    logger.info(
+        "[AI][GroundingReconciliation] initial_review_units=%d "
+        "changed_review_units=%d new_review_units=%d carried_forward_units=%d "
+        "final_review_units=%d carried_forward_passes=%d "
+        "carried_forward_blockers=%d final_genuine_new_findings=%d",
+        len(initial_ledger.entries_by_fingerprint),
+        len(plan.changed_segment_ids),
+        len(plan.new_segment_ids),
+        len(plan.carried_entries),
+        len(plan.review_segments),
+        carried_passes,
+        carried_blockers,
+        genuinely_new_findings,
+    )
+
+
 async def _run_grounding_review(
     ai: Any,
     request: FinancialAnalysisRequest,
@@ -3498,6 +3896,7 @@ async def _run_grounding_review(
     selected_indices: List[int],
     active_model: str,
     stage: str = "initial_review",
+    review_segments: Optional[List[ReviewCoverageSegment]] = None,
 ) -> GroundingEnforcementResult:
     """Run one strict same-provider semantic review and merge structural findings."""
 
@@ -3506,9 +3905,25 @@ async def _run_grounding_review(
     )
     available_fields = derive_available_market_fields(request)
     review_units = _build_reviewable_claim_units(result)
-    coverage_segments = _build_review_coverage_segments(review_units)
+    all_coverage_segments = _build_review_coverage_segments(review_units)
+    coverage_segments = (
+        list(review_segments)
+        if review_segments is not None
+        else all_coverage_segments
+    )
+    if not coverage_segments:
+        raise ValueError("grounding review requires at least one coverage segment")
+    allowed_segment_ids = {
+        segment.coverage_segment_id for segment in coverage_segments
+    }
+    if review_segments is not None:
+        deterministic = [
+            violation for violation in deterministic
+            if violation.coverage_segment_id in allowed_segment_ids
+            or violation.coverage_segment_id is None
+        ]
     target_registry = build_correction_target_registry(
-        review_units, coverage_segments
+        review_units, all_coverage_segments
     )
     segment_aliases = _build_coverage_segment_aliases(coverage_segments)
     batches = _plan_grounding_review_batches(coverage_segments)
@@ -3606,8 +4021,15 @@ async def _run_grounding_review(
                 decoded_claims, coverage_segments
             )
         normalized_reviewer_claims = _normalize_reviewer_metadata(decoded_claims)
+        reviewed_unit_ids = {
+            segment.review_unit_id for segment in coverage_segments
+        }
+        validation_units = [
+            unit for unit in review_units
+            if unit.review_unit_id in reviewed_unit_ids
+        ]
         evidence_contract_contradictions = _validate_reviewer_finding_metadata(
-            normalized_reviewer_claims, request, review_units, coverage_segments
+            normalized_reviewer_claims, request, validation_units, coverage_segments
         )
     except ReviewerMetadataError as exc:
         logger.warning(
@@ -4501,6 +4923,12 @@ async def generate_analysis(
             required_target_ids = derive_required_patch_targets(
                 grounding_review.violations
             )
+            initial_review_ledger = _build_initial_proposition_review_ledger(
+                request,
+                llm_result,
+                sanitized_indices,
+                grounding_review,
+            )
             try:
                 patch_set = await generate_correction_patch_set(
                     ai,
@@ -4548,14 +4976,28 @@ async def generate_analysis(
                     time.perf_counter() - analysis_started,
                 )
                 raise
+            final_review_plan = _plan_final_proposition_review(
+                request,
+                llm_result,
+                sanitized_indices,
+                initial_review_ledger,
+                [patch.target_id for patch in patch_set.patches],
+            )
             try:
-                final_review = await _run_grounding_review(
-                    ai,
-                    request,
-                    llm_result,
-                    sanitized_indices,
-                    active_model,
-                    stage="final_review",
+                reviewed_changes = None
+                if final_review_plan.review_segments:
+                    reviewed_changes = await _run_grounding_review(
+                        ai,
+                        request,
+                        llm_result,
+                        sanitized_indices,
+                        active_model,
+                        stage="final_review",
+                        review_segments=list(final_review_plan.review_segments),
+                    )
+                final_review = _assemble_reconciled_final_review(
+                    final_review_plan,
+                    reviewed_changes,
                 )
             except AISemanticGroundingError:
                 logger.warning(
@@ -4566,6 +5008,12 @@ async def generate_analysis(
             _log_grounding_delta(
                 grounding_review.violations,
                 final_review.violations,
+                final_review_plan,
+            )
+            _log_final_review_reconciliation(
+                initial_review_ledger,
+                final_review_plan,
+                final_review,
             )
             _log_patch_correction_trace(
                 target_registry,

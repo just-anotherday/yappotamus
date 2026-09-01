@@ -926,7 +926,12 @@ async def test_three_live_failures_get_one_correction_and_citations_are_remapped
 @pytest.mark.asyncio
 async def test_second_semantic_failure_is_rejected_after_exactly_one_correction(monkeypatch):
     client = _SequencedClient(
-        [_report(), _invalid_review(), _report(), _invalid_review()]
+        [
+            _report(),
+            _invalid_review(),
+            _report(corrected=True, completed=True),
+            _invalid_review(),
+        ]
     )
     await _install_client(monkeypatch, "ollama", client)
 
@@ -983,7 +988,12 @@ async def test_genuine_final_event_or_valuation_violation_remains_blocking(
     monkeypatch, final_review, expected_rule
 ):
     client = _SequencedClient(
-        [_report(), _invalid_review(), _report(completed=True), final_review]
+        [
+            _report(),
+            _invalid_review(),
+            _report(corrected=True, completed=True),
+            final_review,
+        ]
     )
     await _install_client(monkeypatch, "ollama", client)
 
@@ -1833,6 +1843,16 @@ async def test_report_84_correction_revalidates_and_remaps_the_corrected_selecte
     client = _SequencedClient([initial, invalid, corrected, _valid_review(final_claim)])
     await _install_client(monkeypatch, "ollama", client)
 
+    if retain_resistance:
+        with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+            with pytest.raises(AISemanticGroundingError) as exc_info:
+                await ollama_service.generate_analysis(
+                    request, provider="ollama", model="test-model"
+                )
+        assert exc_info.value.details["reason"] == "replacement_no_op"
+        assert len(client.calls) == 3
+        return
+
     with caplog.at_level("INFO", logger="backend.services.ollama_service"):
         result = await ollama_service.generate_analysis(
             request, provider="ollama", model="test-model"
@@ -2424,7 +2444,7 @@ async def test_authorized_section_still_fail_closed_on_bad_correction(monkeypatc
     bad_corrected["technical_analysis"] = {
         "trend": "The 52-week high is clear resistance at $584.73.",
         "support_levels": [],
-        "resistance_levels": ["$584.73"],
+        "resistance_levels": ["$580.00 remains an unverified resistance level"],
         "breakout_level": "N/A",
         "breakdown_level": "N/A",
     }
@@ -4215,7 +4235,7 @@ def test_twenty_patch_set_with_nineteen_valid_patches_is_rejected_atomically():
             replacement=(
                 "Evidence remains mixed."
                 if target.patch_target_id == leading_target_id
-                else target.original_target_text
+                else "Supported evidence remains mixed."
             ),
         )
         for target in selected_targets
@@ -4619,7 +4639,7 @@ async def test_phase_d_current_outlook_failure_stops_before_final_review(monkeyp
             replacement=(
                 "Evidence remains mixed."
                 if target.patch_target_id in leading_target_ids
-                else target.original_target_text
+                else "Supported evidence remains mixed."
             ),
         )
         for target in selected_targets
@@ -4649,3 +4669,400 @@ async def test_phase_d_current_outlook_failure_stops_before_final_review(monkeyp
         call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
         for call in client.calls
     ) == 1
+
+
+def _synthetic_review_for_report(request, report, *, blocking_segment_ids=()):
+    units = ollama_service._build_reviewable_claim_units(report)
+    units_by_id = {unit.review_unit_id: unit for unit in units}
+    segments = ollama_service._build_review_coverage_segments(units)
+    blockers = set(blocking_segment_ids)
+    per_unit = {}
+    claims = []
+    violations = []
+    for segment in segments:
+        unit = units_by_id[segment.review_unit_id]
+        ordinal = per_unit.get(segment.review_unit_id, 0)
+        per_unit[segment.review_unit_id] = ordinal + 1
+        proposition = unit.candidate_text[segment.source_start:segment.source_end]
+        blocking = segment.coverage_segment_id in blockers
+        claim = NormalizedGroundingClaimFinding(
+            review_unit_id=segment.review_unit_id,
+            coverage_segment_id=segment.coverage_segment_id,
+            atomic_ordinal=ordinal,
+            claim_role="fact",
+            atomic_proposition=proposition,
+            classification=(
+                "unsupported_by_any_evidence" if blocking else "directly_supported"
+            ),
+            supporting_article_indices=[] if blocking else [1],
+            supporting_market_data_fields=[],
+            supporting_input_context=[],
+            backend_derived_input_context=[],
+            backend_derived_market_fields=[],
+            rule=(
+                "unsupported_company_specific_claim"
+                if blocking else "selected_article_support"
+            ),
+            section=unit.section,
+            atomic_claim_id=f"{segment.review_unit_id}.atomic_{ordinal}",
+            supporting_selected_indices=[] if blocking else [1],
+            supporting_unselected_indices=[],
+        )
+        claims.append(claim)
+        if blocking:
+            violations.append(GroundingViolation(
+                rule="unsupported_company_specific_claim",
+                section=unit.section,
+                issue=f"{claim.atomic_claim_id}: {proposition}.",
+                coverage_segment_id=segment.coverage_segment_id,
+                atomic_proposition=proposition,
+                patch_target_id=segment.coverage_segment_id,
+            ))
+    return ollama_service.GroundingEnforcementResult(
+        valid=not violations,
+        claims=claims,
+        violations=violations,
+    )
+
+
+def _report_with_market_segments(*segments):
+    payload = _report(corrected=True)
+    payload["market_reaction_analysis"] = " ".join(segments)
+    return FinancialAnalysisLLMResponse(**payload)
+
+
+def test_unchanged_same_parent_proposition_is_carried_not_re_reviewed():
+    request = _request()
+    initial = _report_with_market_segments(
+        "The current price is stable.",
+        "This unsupported target needs repair.",
+    )
+    review = _synthetic_review_for_report(
+        request, initial,
+        blocking_segment_ids={"market_reaction_analysis.segment_1"},
+    )
+    ledger = ollama_service._build_initial_proposition_review_ledger(
+        request, initial, [1], review
+    )
+    corrected = _report_with_market_segments(
+        "The current price is stable.",
+        "Selected evidence supports the revised target.",
+    )
+
+    plan = ollama_service._plan_final_proposition_review(
+        request,
+        corrected,
+        [1],
+        ledger,
+        ["market_reaction_analysis.segment_1"],
+    )
+
+    assert "market_reaction_analysis.segment_0" in {
+        entry.identity.coverage_segment_id for entry in plan.carried_entries
+    }
+    assert plan.changed_segment_ids == ("market_reaction_analysis.segment_1",)
+    assert [item.coverage_segment_id for item in plan.review_segments] == [
+        "market_reaction_analysis.segment_1"
+    ]
+
+
+def test_changed_and_new_propositions_receive_fresh_review_and_can_block():
+    request = _request()
+    initial = _report_with_market_segments("The current price is stable.")
+    review = _synthetic_review_for_report(request, initial)
+    ledger = ollama_service._build_initial_proposition_review_ledger(
+        request, initial, [1], review
+    )
+    corrected = _report_with_market_segments(
+        "The current price changed materially.",
+        "A new unsupported proposition appears.",
+    )
+    plan = ollama_service._plan_final_proposition_review(
+        request,
+        corrected,
+        [1],
+        ledger,
+        ["market_reaction_analysis.segment_0"],
+    )
+    assert plan.changed_segment_ids == ("market_reaction_analysis.segment_0",)
+    assert plan.new_segment_ids == ("market_reaction_analysis.segment_1",)
+    fresh = _synthetic_review_for_report(
+        request,
+        corrected,
+        blocking_segment_ids={"market_reaction_analysis.segment_1"},
+    )
+    fresh = fresh.model_copy(update={
+        "claims": [
+            claim for claim in fresh.claims
+            if claim.coverage_segment_id in {
+                item.coverage_segment_id for item in plan.review_segments
+            }
+        ],
+        "violations": [
+            violation for violation in fresh.violations
+            if violation.coverage_segment_id == "market_reaction_analysis.segment_1"
+        ],
+        "valid": False,
+    })
+    reconciled = ollama_service._assemble_reconciled_final_review(plan, fresh)
+    assert not reconciled.valid
+    assert reconciled.violations[0].coverage_segment_id == (
+        "market_reaction_analysis.segment_1"
+    )
+
+
+def test_evidence_change_forces_fresh_review_even_when_text_is_identical():
+    request = _request()
+    report = FinancialAnalysisLLMResponse(**_report(corrected=True))
+    review = _synthetic_review_for_report(request, report)
+    ledger = ollama_service._build_initial_proposition_review_ledger(
+        request, report, [1], review
+    )
+
+    plan = ollama_service._plan_final_proposition_review(
+        request, report, [2], ledger, []
+    )
+
+    assert not plan.carried_entries
+    assert len(plan.changed_segment_ids) == len(plan.review_segments)
+    assert not plan.new_segment_ids
+
+
+def test_batch_rebalance_does_not_change_surviving_proposition_identity():
+    request = _request()
+    payload = _report(corrected=True)
+    payload["executive_summary"] = "One fact."
+    probe = FinancialAnalysisLLMResponse(**payload)
+    non_summary_count = len(
+        ollama_service._build_review_coverage_segments(
+            ollama_service._build_reviewable_claim_units(probe)
+        )
+    ) - 1
+    summary_count = 60 - non_summary_count
+    payload["executive_summary"] = " ".join(
+        f"Fact {index}." for index in range(summary_count)
+    )
+    initial = FinancialAnalysisLLMResponse(**payload)
+    initial_segments = ollama_service._build_review_coverage_segments(
+        ollama_service._build_reviewable_claim_units(initial)
+    )
+    assert [len(batch) for batch in ollama_service._plan_grounding_review_batches(initial_segments)] == [30, 30]
+    ledger = ollama_service._build_initial_proposition_review_ledger(
+        request,
+        initial,
+        [1],
+        _synthetic_review_for_report(request, initial),
+    )
+
+    payload["executive_summary"] = " ".join(
+        f"Fact {index}." for index in range(summary_count - 7)
+    )
+    corrected = FinancialAnalysisLLMResponse(**payload)
+    final_segments = ollama_service._build_review_coverage_segments(
+        ollama_service._build_reviewable_claim_units(corrected)
+    )
+    assert [len(batch) for batch in ollama_service._plan_grounding_review_batches(final_segments)] == [27, 26]
+    plan = ollama_service._plan_final_proposition_review(
+        request, corrected, [1], ledger, []
+    )
+    assert len(plan.carried_entries) == 53
+    assert not plan.review_segments
+    assert not plan.new_segment_ids
+
+
+def test_captured_19_to_11_shape_has_zero_false_new_findings(caplog):
+    request = _request()
+    payload = _report(corrected=True)
+    payload["executive_summary"] = "One fact."
+    probe = FinancialAnalysisLLMResponse(**payload)
+    non_summary_count = len(
+        ollama_service._build_review_coverage_segments(
+            ollama_service._build_reviewable_claim_units(probe)
+        )
+    ) - 1
+    summary_count = 60 - non_summary_count
+    original_sentences = [f"Fact {index}." for index in range(summary_count)]
+    payload["executive_summary"] = " ".join(original_sentences)
+    initial = FinancialAnalysisLLMResponse(**payload)
+    executive_ids = [
+        segment.coverage_segment_id
+        for segment in ollama_service._build_review_coverage_segments(
+            ollama_service._build_reviewable_claim_units(initial)
+        )
+        if segment.review_unit_id == "executive_summary"
+    ]
+    target_ids = executive_ids[-14:]
+    review = _synthetic_review_for_report(
+        request, initial, blocking_segment_ids=target_ids
+    )
+    extra = [
+        review.violations[index].model_copy(update={
+            "rule": "unsupported_valuation_claim",
+            "issue": f"executive_summary.atomic_extra_{index}: second blocker.",
+        })
+        for index in range(5)
+    ]
+    review = review.model_copy(update={
+        "violations": review.violations + extra,
+        "valid": False,
+    })
+    assert len(review.violations) == 19
+    ledger = ollama_service._build_initial_proposition_review_ledger(
+        request, initial, [1], review
+    )
+
+    corrected_sentences = list(original_sentences[:-7])
+    for index in range(summary_count - 14, summary_count - 7):
+        corrected_sentences[index] = f"Repaired fact {index}."
+    payload["executive_summary"] = " ".join(corrected_sentences)
+    corrected = FinancialAnalysisLLMResponse(**payload)
+    plan = ollama_service._plan_final_proposition_review(
+        request, corrected, [1], ledger, target_ids
+    )
+    drift_candidates = executive_ids[:9]
+    carried_ids = {
+        entry.identity.coverage_segment_id for entry in plan.carried_entries
+    }
+    assert set(drift_candidates) <= carried_ids
+    assert len(plan.changed_segment_ids) == 7
+    assert len(plan.new_segment_ids) == 0
+    assert len(plan.review_segments) == 7
+
+    changed_blockers = set(plan.changed_segment_ids[:2])
+    fresh = _synthetic_review_for_report(
+        request, corrected, blocking_segment_ids=changed_blockers
+    )
+    reviewed_ids = {segment.coverage_segment_id for segment in plan.review_segments}
+    fresh = fresh.model_copy(update={
+        "claims": [
+            claim for claim in fresh.claims
+            if claim.coverage_segment_id in reviewed_ids
+        ],
+        "violations": [
+            violation for violation in fresh.violations
+            if violation.coverage_segment_id in changed_blockers
+        ],
+        "valid": False,
+    })
+    final = ollama_service._assemble_reconciled_final_review(plan, fresh)
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        ollama_service._log_grounding_delta(
+            review.violations, final.violations, plan
+        )
+    assert len(final.violations) == 2
+    assert "new_count=0" in caplog.text
+    assert "genuinely_new_count=0" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "The current price is stable.",
+        "  The   current price is stable  ",
+        "The current price is stable",
+    ],
+)
+def test_required_no_op_replace_is_rejected_before_merge(replacement):
+    report = _report_with_market_segments("The current price is stable.")
+    registry = ollama_service.build_correction_target_registry(
+        ollama_service._build_reviewable_claim_units(report)
+    )
+    target_id = "market_reaction_analysis.segment_0"
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+            registry,
+            [target_id],
+        )
+    assert exc_info.value.details["reason"] == "replacement_no_op"
+    assert exc_info.value.details["no_op_patch_rejections"] == 1
+
+
+def test_genuine_replace_is_accepted_and_marked_changed():
+    request = _request()
+    report = _report_with_market_segments("The current price is stable.")
+    review = _synthetic_review_for_report(
+        request,
+        report,
+        blocking_segment_ids={"market_reaction_analysis.segment_0"},
+    )
+    ledger = ollama_service._build_initial_proposition_review_ledger(
+        request, report, [1], review
+    )
+    registry = ollama_service.build_correction_target_registry(
+        ollama_service._build_reviewable_claim_units(report)
+    )
+    target_id = "market_reaction_analysis.segment_0"
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(
+            target_id,
+            replacement="Selected evidence supports a stable current price.",
+        )]},
+    )
+    plan = ollama_service._plan_final_proposition_review(
+        request, merged.report, [1], ledger, [target_id]
+    )
+    assert plan.changed_segment_ids == (target_id,)
+    assert [segment.coverage_segment_id for segment in plan.review_segments] == [target_id]
+
+
+@pytest.mark.parametrize(
+    "proposition",
+    [
+        "Price is below the 52-week high",
+        "Price is below the 52-week high.",
+        "The current price is below the 52-week high",
+        "The current price is below the 52-week high.",
+    ],
+)
+def test_structured_support_is_terminal_period_insensitive(proposition):
+    request = _request()
+    assert ollama_service._derive_structured_market_support(
+        proposition, request
+    ) == ["current_price", "fifty_two_week_high"]
+
+
+def test_structured_support_verifies_compound_current_price_range_comparison():
+    assert ollama_service._derive_structured_market_support(
+        "AMD is trading at $469.17, below its 52-week high and above its 52-week low.",
+        _request(),
+    ) == ["current_price", "fifty_two_week_high", "fifty_two_week_low"]
+
+
+def test_backend_verified_structured_support_overrides_reviewer_label_only():
+    request = _request()
+    report = _technical_trend_result(
+        "The current price is below the 52-week high."
+    )
+    units = ollama_service._build_reviewable_claim_units(report)
+    segments = ollama_service._build_review_coverage_segments(units)
+    target = next(
+        segment for segment in segments
+        if segment.coverage_segment_id == "technical_analysis.trend.segment_0"
+    )
+    claim = GroundingClaimFinding(
+        review_unit_id=target.review_unit_id,
+        coverage_segment_id=target.coverage_segment_id,
+        atomic_ordinal=0,
+        claim_role="fact",
+        atomic_proposition="The current price is below the 52-week high",
+        classification="unsupported_by_any_evidence",
+        supporting_article_indices=[],
+        supporting_market_data_fields=[],
+        rule="unsupported_company_specific_claim",
+    )
+    contradictions = ollama_service._validate_reviewer_finding_metadata(
+        [claim], request, [next(unit for unit in units if unit.review_unit_id == target.review_unit_id)], [target]
+    )
+    normalized = ollama_service._normalize_claim_findings([claim], [1], units)
+    assert contradictions == []
+    assert normalized[0].backend_derived_market_fields == [
+        "current_price", "fifty_two_week_high"
+    ]
+    assert ollama_service._claim_findings_to_violations(normalized) == []
+
+    causal = "The current price is below the 52-week high, proving bullish momentum."
+    assert ollama_service._derive_structured_market_support(causal, request) == []
