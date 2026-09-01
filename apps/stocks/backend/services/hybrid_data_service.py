@@ -57,7 +57,10 @@ _refresh_retry_after: Dict[str, float] = {}
 _coordination_loop: asyncio.AbstractEventLoop | None = None
 _yfinance_gate: asyncio.Lock | None = None
 _singleflight_lock: asyncio.Lock | None = None
+_hybrid_singleflight_lock: asyncio.Lock | None = None
 _yfinance_flights: Dict[str, asyncio.Task[Optional[Dict[str, Any]]]] = {}
+_hybrid_flights: Dict[str, asyncio.Task[Optional[Dict[str, Any]]]] = {}
+_hybrid_flight_waiters: Dict[str, int] = {}
 _background_tasks: Set[asyncio.Task[Any]] = set()
 _refresh_tasks_by_symbol: Dict[str, asyncio.Task[Any]] = {}
 
@@ -84,14 +87,29 @@ def _raise_programmer_error(exception: BaseException) -> None:
 def _coordination_locks() -> tuple[asyncio.Lock, asyncio.Lock]:
     """Create loop-local coordination primitives (pytest uses multiple loops)."""
     global _coordination_loop, _yfinance_gate, _singleflight_lock
+    global _hybrid_singleflight_lock
     loop = asyncio.get_running_loop()
     if _coordination_loop is not loop:
         _coordination_loop = loop
         _yfinance_gate = asyncio.Lock()
         _singleflight_lock = asyncio.Lock()
+        _hybrid_singleflight_lock = asyncio.Lock()
         _yfinance_flights.clear()
-    assert _yfinance_gate is not None and _singleflight_lock is not None
+        _hybrid_flights.clear()
+        _hybrid_flight_waiters.clear()
+    assert (
+        _yfinance_gate is not None
+        and _singleflight_lock is not None
+        and _hybrid_singleflight_lock is not None
+    )
     return _yfinance_gate, _singleflight_lock
+
+
+def _hybrid_flight_lock() -> asyncio.Lock:
+    """Return the loop-local lock protecting full hybrid refresh flights."""
+    _coordination_locks()
+    assert _hybrid_singleflight_lock is not None
+    return _hybrid_singleflight_lock
 
 
 def _track_background_task(task: asyncio.Task[Any]) -> None:
@@ -781,6 +799,100 @@ async def _refresh_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+async def _run_hybrid_refresh_flight(ticker: str) -> Optional[Dict[str, Any]]:
+    """Join or create the one process-wide provider refresh for a symbol."""
+    ticker_upper = ticker.strip().upper()
+    lock = _hybrid_flight_lock()
+
+    async with lock:
+        task = _hybrid_flights.get(ticker_upper)
+        if task is None or task.done():
+            async def _run_shared_refresh() -> Optional[Dict[str, Any]]:
+                started = time.monotonic()
+                try:
+                    result = await _refresh_hybrid_stock_price(ticker_upper)
+                    waiters = _hybrid_flight_waiters.get(ticker_upper, 0)
+                    if result is None:
+                        logger.warning(
+                            "[Hybrid] event=singleflight_failed ticker=%s waiters=%d "
+                            "correlation_id=%s failure_reason=providers_exhausted "
+                            "duration_ms=%d",
+                            ticker_upper,
+                            waiters,
+                            current_correlation_id(),
+                            int((time.monotonic() - started) * 1000),
+                        )
+                    else:
+                        logger.info(
+                            "[Hybrid] event=singleflight_completed ticker=%s waiters=%d "
+                            "correlation_id=%s duration_ms=%d",
+                            ticker_upper,
+                            waiters,
+                            current_correlation_id(),
+                            int((time.monotonic() - started) * 1000),
+                        )
+                    return result
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "[Hybrid] event=singleflight_failed ticker=%s waiters=%d "
+                        "correlation_id=%s failure_reason=cancelled duration_ms=%d",
+                        ticker_upper,
+                        _hybrid_flight_waiters.get(ticker_upper, 0),
+                        current_correlation_id(),
+                        int((time.monotonic() - started) * 1000),
+                    )
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "[Hybrid] event=singleflight_failed ticker=%s waiters=%d "
+                        "correlation_id=%s failure_reason=%s duration_ms=%d",
+                        ticker_upper,
+                        _hybrid_flight_waiters.get(ticker_upper, 0),
+                        current_correlation_id(),
+                        type(exc).__name__,
+                        int((time.monotonic() - started) * 1000),
+                    )
+                    raise
+                finally:
+                    cleanup_lock = _hybrid_flight_lock()
+                    async with cleanup_lock:
+                        current = asyncio.current_task()
+                        if _hybrid_flights.get(ticker_upper) is current:
+                            _hybrid_flights.pop(ticker_upper, None)
+                            _hybrid_flight_waiters.pop(ticker_upper, None)
+
+            task = asyncio.create_task(
+                _run_shared_refresh(), name=f"hybrid-provider-{ticker_upper}"
+            )
+            _hybrid_flights[ticker_upper] = task
+            _hybrid_flight_waiters[ticker_upper] = 1
+            _track_background_task(task)
+            logger.info(
+                "[Hybrid] event=singleflight_created ticker=%s waiters=1 correlation_id=%s",
+                ticker_upper,
+                current_correlation_id(),
+            )
+        else:
+            waiters = _hybrid_flight_waiters.get(ticker_upper, 0) + 1
+            _hybrid_flight_waiters[ticker_upper] = waiters
+            logger.info(
+                "[Hybrid] event=singleflight_joined ticker=%s waiters=%d correlation_id=%s",
+                ticker_upper,
+                waiters,
+                current_correlation_id(),
+            )
+
+    try:
+        return await asyncio.shield(task)
+    finally:
+        lock = _hybrid_flight_lock()
+        async with lock:
+            if _hybrid_flights.get(ticker_upper) is task:
+                _hybrid_flight_waiters[ticker_upper] = max(
+                    0, _hybrid_flight_waiters.get(ticker_upper, 1) - 1
+                )
+
+
 def _schedule_symbol_refresh(ticker: str) -> None:
     ticker_upper = ticker.strip().upper()
     existing = _refresh_tasks_by_symbol.get(ticker_upper)
@@ -790,7 +902,7 @@ def _schedule_symbol_refresh(ticker: str) -> None:
         return
 
     refresh_task = asyncio.create_task(
-        _refresh_hybrid_stock_price(ticker_upper),
+        _run_hybrid_refresh_flight(ticker_upper),
         name=f"fundamentals-provider-{ticker_upper}",
     )
     _refresh_tasks_by_symbol[ticker_upper] = refresh_task
@@ -835,6 +947,26 @@ def _schedule_symbol_refresh(ticker: str) -> None:
 async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
     """Serve fresh/stale data immediately and refresh stale fundamentals off-path."""
     ticker_upper = ticker.strip().upper()
+    cached = _cache_get(ticker_upper)
+    if cached is not None:
+        started = time.monotonic()
+        default_source = "yf" if ticker_upper in KNOWN_NON_STOCK_SYMBOLS else "fh"
+        normalized = normalize_market_data_payload(
+            ticker_upper,
+            cached,
+            default_source=str(cached.get("data_source") or default_source),
+        )
+        log_collection_result(
+            ticker=ticker_upper,
+            selected_provider=str(normalized.get("data_source") or default_source),
+            fallback_provider=None,
+            started=started,
+            payload=normalized,
+            cache_state="fresh",
+            failure_reason=None,
+        )
+        return normalized
+
     stale = _cache_get_stale(ticker_upper)
     if stale is not None and _is_cacheable_financial_data(stale):
         started = time.monotonic()
@@ -859,7 +991,7 @@ async def get_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             failure_reason=None,
         )
         return normalized
-    return await _refresh_hybrid_stock_price(ticker_upper)
+    return await _run_hybrid_refresh_flight(ticker_upper)
 
 
 async def _fetch_one(ticker: str) -> Tuple[str, Optional[Dict[str, Any]]]:
