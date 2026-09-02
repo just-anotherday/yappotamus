@@ -3560,6 +3560,166 @@ def _semantic_trace_phase(stage: str) -> str:
     return "final" if stage == "final_review" else "initial"
 
 
+_GROUNDING_REVIEW_ALIAS_RE = re.compile(r"^s(\d+)$")
+
+
+def _grounding_review_alias_sort_key(alias: str) -> Tuple[int, int, str]:
+    """Order compact segment aliases numerically, with unknown forms last."""
+
+    match = _GROUNDING_REVIEW_ALIAS_RE.fullmatch(alias)
+    if match is None:
+        return (1, 0, alias)
+    return (0, int(match.group(1)), alias)
+
+
+def _ordered_grounding_review_aliases(aliases: List[str]) -> List[str]:
+    """Return deterministic numeric ordering without removing duplicates."""
+
+    return sorted(aliases, key=_grounding_review_alias_sort_key)
+
+
+def _grounding_review_batch_identity(
+    stage: str,
+    batch_index: int,
+    batch_count: int,
+) -> Dict[str, Any]:
+    """Return the bounded correlation and batch identity shared by coverage events."""
+
+    return {
+        "correlation_id": current_correlation_id(),
+        "review_phase": _semantic_trace_phase(stage),
+        "batch_index": batch_index,
+        "batch_count": batch_count,
+    }
+
+
+def _build_grounding_review_batch_manifest_record(
+    stage: str,
+    batch_index: int,
+    batch_count: int,
+    batch_aliases: Dict[str, ReviewCoverageSegment],
+) -> Dict[str, Any]:
+    """Build a safe pre-call manifest without report or evidence content."""
+
+    allowed_aliases = _ordered_grounding_review_aliases(list(batch_aliases))
+    record = _grounding_review_batch_identity(stage, batch_index, batch_count)
+    record.update({
+        "segment_count": len(batch_aliases),
+        "allowed_aliases": allowed_aliases,
+        "first_alias": allowed_aliases[0] if allowed_aliases else None,
+        "last_alias": allowed_aliases[-1] if allowed_aliases else None,
+        "alias_mapping": [
+            {
+                "alias": alias,
+                "backend_segment_id": batch_aliases[alias].coverage_segment_id,
+                "review_unit_id": batch_aliases[alias].review_unit_id,
+            }
+            for alias in allowed_aliases
+        ],
+    })
+    return record
+
+
+def _build_grounding_review_coverage_record(
+    stage: str,
+    batch_index: int,
+    batch_count: int,
+    reviewed: GroundingReviewWireResponse,
+    batch_aliases: Dict[str, ReviewCoverageSegment],
+) -> Dict[str, Any]:
+    """Summarize reviewer coverage without freeform provider content."""
+
+    expected_aliases = _ordered_grounding_review_aliases(list(batch_aliases))
+    returned_aliases = _ordered_grounding_review_aliases(
+        [finding.s for finding in reviewed.f]
+    )
+    occurrence_counts: Dict[str, int] = {}
+    for alias in returned_aliases:
+        occurrence_counts[alias] = occurrence_counts.get(alias, 0) + 1
+    represented_unique_aliases = _ordered_grounding_review_aliases(
+        list(occurrence_counts)
+    )
+    duplicate_aliases = [
+        alias for alias in represented_unique_aliases
+        if occurrence_counts[alias] > 1
+    ]
+    missing_aliases = [
+        alias for alias in expected_aliases
+        if alias not in occurrence_counts
+    ]
+    record = _grounding_review_batch_identity(stage, batch_index, batch_count)
+    record.update({
+        "expected_aliases": expected_aliases,
+        "returned_aliases": returned_aliases,
+        "represented_unique_aliases": represented_unique_aliases,
+        "duplicate_aliases": duplicate_aliases,
+        "missing_aliases": missing_aliases,
+        "alias_occurrence_counts": {
+            alias: occurrence_counts[alias]
+            for alias in represented_unique_aliases
+        },
+        "expected_count": len(expected_aliases),
+        "returned_finding_count": len(reviewed.f),
+        "represented_unique_count": len(represented_unique_aliases),
+        "sanitized_findings": [
+            {
+                "finding_ordinal": finding_ordinal,
+                "s": finding.s,
+                "r": finding.r,
+                "c": finding.c,
+                "a": list(finding.a),
+                "m": list(finding.m),
+                "i": list(finding.i),
+                "g": finding.g,
+            }
+            for finding_ordinal, finding in enumerate(reviewed.f, 1)
+        ],
+    })
+    return record
+
+
+def _log_grounding_review_batch_manifest(record: Dict[str, Any]) -> None:
+    logger.info(
+        "[AI][GroundingReviewBatchManifest] %s",
+        json.dumps(record, sort_keys=True),
+    )
+
+
+def _log_grounding_review_coverage(record: Dict[str, Any]) -> None:
+    logger.info(
+        "[AI][GroundingReviewCoverage] %s",
+        json.dumps(record, sort_keys=True),
+    )
+
+
+def _log_grounding_review_missing_coverage(record: Dict[str, Any]) -> None:
+    logger.warning(
+        "[AI][GroundingReviewMissingCoverage] %s",
+        json.dumps(record, sort_keys=True),
+    )
+
+
+def _log_grounding_review_unknown_alias(
+    record: Dict[str, Any],
+    invalid_alias: Optional[str],
+) -> None:
+    diagnostic = {
+        key: record[key]
+        for key in (
+            "correlation_id", "review_phase", "batch_index", "batch_count",
+            "expected_aliases",
+        )
+    }
+    diagnostic.update({
+        "invalid_alias": invalid_alias,
+        "allowed_aliases": record["expected_aliases"],
+    })
+    logger.warning(
+        "[AI][GroundingReviewUnknownAlias] %s",
+        json.dumps(diagnostic, sort_keys=True),
+    )
+
+
 def _backend_rules_by_atomic_claim_id(
     violations: List[GroundingViolation],
 ) -> Dict[str, List[str]]:
@@ -3943,6 +4103,11 @@ async def _run_grounding_review(
                 item.coverage_segment_id for item in batch_segments
             }
         }
+        _log_grounding_review_batch_manifest(
+            _build_grounding_review_batch_manifest_record(
+                stage, batch_index, len(batches), batch_aliases
+            )
+        )
         reviewer_max_tokens = _grounding_review_max_tokens(len(batch_segments))
         request_local_schema = build_request_local_review_schema(
             available_fields,
@@ -3991,12 +4156,25 @@ async def _run_grounding_review(
                 "AI analysis could not be completed because semantic grounding review failed.",
                 details={"failure_kind": failure_kind, "validation_error_count": exc.error_count()},
             ) from exc
+        coverage_record = _build_grounding_review_coverage_record(
+            stage, batch_index, len(batches), reviewed, batch_aliases
+        )
         try:
             batch_claims = _decode_grounding_review_wire_response(
                 reviewed, batch_aliases, available_fields, derive_available_input_context(request)
             )
+            _log_grounding_review_coverage(coverage_record)
             _validate_grounding_review_batch_coverage(batch_claims, batch_segments)
         except ReviewerMetadataError as exc:
+            if exc.code == "missing_coverage_segment":
+                _log_grounding_review_missing_coverage(coverage_record)
+            elif exc.code == "unknown_coverage_segment_alias":
+                invalid_alias = (
+                    reviewed.f[exc.finding_ordinal - 1].s
+                    if 0 < exc.finding_ordinal <= len(reviewed.f)
+                    else None
+                )
+                _log_grounding_review_unknown_alias(coverage_record, invalid_alias)
             logger.warning(
                 "[AI][GroundingReview] reviewer_metadata_invalid stage=%s batch_index=%d "
                 "metadata_error_code=%s finding_ordinal=%d field=%s "

@@ -2898,6 +2898,216 @@ def _batch_segments(count, unit_id="batch_unit"):
     ]
 
 
+def _coverage_aliases(start, count):
+    return {
+        f"s{start + index}": segment
+        for index, segment in enumerate(_batch_segments(count))
+    }
+
+
+def _coverage_wire(returned_aliases, proposition="PRIVATE REPORT PROPOSITION"):
+    return GroundingReviewWireResponse(f=[
+        {
+            "s": alias,
+            "r": "F",
+            "p": proposition,
+            "c": "UE",
+            "a": [1],
+            "m": [],
+            "g": "UC",
+        }
+        for alias in returned_aliases
+    ])
+
+
+def _decode_and_validate_coverage(wire, aliases):
+    claims = ollama_service._decode_grounding_review_wire_response(wire, aliases, [])
+    ollama_service._validate_grounding_review_batch_coverage(
+        claims, list(aliases.values())
+    )
+
+
+def test_coverage_instrumentation_identifies_one_exact_missing_alias(caplog):
+    aliases = _coverage_aliases(23, 3)
+    wire = _coverage_wire(["s23", "s25"])
+    record = ollama_service._build_grounding_review_coverage_record(
+        "initial_review", 2, 2, wire, aliases
+    )
+
+    with pytest.raises(ollama_service.ReviewerMetadataError) as exc_info:
+        _decode_and_validate_coverage(wire, aliases)
+    with caplog.at_level("WARNING", logger="backend.services.ollama_service"):
+        ollama_service._log_grounding_review_missing_coverage(record)
+
+    assert exc_info.value.code == "missing_coverage_segment"
+    event = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewMissingCoverage]"
+    )[0]
+    assert event["expected_aliases"] == ["s23", "s24", "s25"]
+    assert event["returned_aliases"] == ["s23", "s25"]
+    assert event["missing_aliases"] == ["s24"]
+    assert event["duplicate_aliases"] == []
+    assert event["returned_finding_count"] == 2
+    assert event["represented_unique_count"] == 2
+
+
+def test_coverage_instrumentation_identifies_multiple_missing_aliases():
+    aliases = _coverage_aliases(23, 4)
+    wire = _coverage_wire(["s23", "s26"])
+    record = ollama_service._build_grounding_review_coverage_record(
+        "initial_review", 2, 2, wire, aliases
+    )
+
+    with pytest.raises(ollama_service.ReviewerMetadataError) as exc_info:
+        _decode_and_validate_coverage(wire, aliases)
+
+    assert exc_info.value.code == "missing_coverage_segment"
+    assert record["missing_aliases"] == ["s24", "s25"]
+
+
+def test_coverage_instrumentation_reports_duplicate_and_missing_alias():
+    aliases = _coverage_aliases(23, 3)
+    wire = _coverage_wire(["s23", "s23", "s25"])
+    record = ollama_service._build_grounding_review_coverage_record(
+        "initial_review", 2, 2, wire, aliases
+    )
+
+    with pytest.raises(ollama_service.ReviewerMetadataError) as exc_info:
+        _decode_and_validate_coverage(wire, aliases)
+
+    assert exc_info.value.code == "missing_coverage_segment"
+    assert record["missing_aliases"] == ["s24"]
+    assert record["duplicate_aliases"] == ["s23"]
+    assert record["alias_occurrence_counts"] == {"s23": 2, "s25": 1}
+    assert record["returned_finding_count"] == 3
+    assert record["represented_unique_count"] == 2
+
+
+def test_coverage_instrumentation_reports_complete_coverage():
+    aliases = _coverage_aliases(23, 3)
+    wire = _coverage_wire(["s23", "s24", "s25"])
+    record = ollama_service._build_grounding_review_coverage_record(
+        "initial_review", 2, 2, wire, aliases
+    )
+
+    _decode_and_validate_coverage(wire, aliases)
+
+    assert record["missing_aliases"] == []
+    assert record["duplicate_aliases"] == []
+    assert record["represented_unique_aliases"] == ["s23", "s24", "s25"]
+
+
+def test_multiple_findings_for_one_alias_remain_valid_and_diagnostic():
+    aliases = _coverage_aliases(23, 2)
+    wire = _coverage_wire(["s23", "s23", "s24"])
+    record = ollama_service._build_grounding_review_coverage_record(
+        "initial_review", 2, 2, wire, aliases
+    )
+
+    _decode_and_validate_coverage(wire, aliases)
+
+    assert record["missing_aliases"] == []
+    assert record["duplicate_aliases"] == ["s23"]
+    assert record["returned_finding_count"] == 3
+    assert record["represented_unique_count"] == 2
+
+
+def test_coverage_alias_order_is_numeric_not_lexical():
+    assert ollama_service._ordered_grounding_review_aliases(
+        ["s11", "s8", "s10", "s9"]
+    ) == ["s8", "s9", "s10", "s11"]
+
+
+def test_batch_manifest_contains_only_safe_backend_identity(monkeypatch):
+    monkeypatch.setattr(
+        ollama_service, "current_correlation_id", lambda: "coverage-correlation"
+    )
+    aliases = _coverage_aliases(23, 3)
+
+    record = ollama_service._build_grounding_review_batch_manifest_record(
+        "initial_review", 2, 2, aliases
+    )
+
+    assert record["correlation_id"] == "coverage-correlation"
+    assert record["review_phase"] == "initial"
+    assert record["batch_index"] == 2
+    assert record["batch_count"] == 2
+    assert record["segment_count"] == 3
+    assert record["allowed_aliases"] == ["s23", "s24", "s25"]
+    assert record["first_alias"] == "s23"
+    assert record["last_alias"] == "s25"
+    assert record["alias_mapping"] == [
+        {
+            "alias": alias,
+            "backend_segment_id": segment.coverage_segment_id,
+            "review_unit_id": segment.review_unit_id,
+        }
+        for alias, segment in aliases.items()
+    ]
+    assert "segment_text" not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    "stage,expected_phase", [("initial_review", "initial"), ("final_review", "final")]
+)
+def test_coverage_events_include_explicit_review_phase_and_batch_identity(
+    monkeypatch, caplog, stage, expected_phase
+):
+    monkeypatch.setattr(
+        ollama_service, "current_correlation_id", lambda: "coverage-correlation"
+    )
+    aliases = _coverage_aliases(23, 2)
+    manifest = ollama_service._build_grounding_review_batch_manifest_record(
+        stage, 2, 3, aliases
+    )
+    coverage = ollama_service._build_grounding_review_coverage_record(
+        stage, 2, 3, _coverage_wire(["s23", "s24"]), aliases
+    )
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        ollama_service._log_grounding_review_batch_manifest(manifest)
+        ollama_service._log_grounding_review_coverage(coverage)
+
+    manifest_event = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewBatchManifest]"
+    )[0]
+    coverage_event = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewCoverage]"
+    )[0]
+    for event in (manifest_event, coverage_event):
+        assert event["correlation_id"] == "coverage-correlation"
+        assert event["review_phase"] == expected_phase
+        assert event["batch_index"] == 2
+        assert event["batch_count"] == 3
+
+
+def test_coverage_diagnostics_exclude_freeform_and_request_content(caplog):
+    aliases = _coverage_aliases(23, 2)
+    wire = _coverage_wire(
+        ["s23", "s24"],
+        proposition="SECRET proposition https://trusted.example/private",
+    )
+    record = ollama_service._build_grounding_review_coverage_record(
+        "initial_review", 2, 2, wire, aliases
+    )
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        ollama_service._log_grounding_review_coverage(record)
+
+    rendered = next(
+        item.getMessage() for item in caplog.records
+        if "[AI][GroundingReviewCoverage]" in item.getMessage()
+    )
+    assert "SECRET proposition" not in rendered
+    assert "trusted.example" not in rendered
+    assert "system_prompt" not in rendered
+    assert "user_prompt" not in rendered
+    assert "report_under_review" not in rendered
+    assert set(record["sanitized_findings"][0]) == {
+        "finding_ordinal", "s", "r", "c", "a", "m", "i", "g"
+    }
+
+
 def test_grounding_review_batch_planner_is_balanced_complete_and_ordered():
     assert ollama_service._grounding_review_batch_segment_capacity() == 32
     assert ollama_service._plan_grounding_review_batches([]) == []
@@ -2936,6 +3146,186 @@ class _BatchCoverageClient:
              "c": "SM", "a": [], "m": ["CP"], "g": "MD"}
             for segment in segments
         ]})
+
+
+class _CoverageSelectionClient:
+    def __init__(self, returned_aliases=None):
+        self.calls = []
+        self.returned_aliases = returned_aliases
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        payload = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
+        segments = payload["review_coverage_segments"]
+        by_alias = {segment["s"]: segment for segment in segments}
+        aliases = (
+            list(by_alias)
+            if self.returned_aliases is None
+            else self.returned_aliases
+        )
+        return json.dumps({"f": [
+            {
+                "s": alias,
+                "r": "F",
+                "p": by_alias.get(alias, segments[0])["segment_text"],
+                "c": "SM",
+                "a": [],
+                "m": ["CP"],
+                "g": "MD",
+            }
+            for alias in aliases
+        ]})
+
+
+def _patch_review_units(monkeypatch, count):
+    units = [
+        ReviewableClaimUnit(
+            review_unit_id=f"unit_{index}",
+            section="news_summary",
+            candidate_text=f"Claim {index}.",
+        )
+        for index in range(count)
+    ]
+    monkeypatch.setattr(
+        ollama_service, "_build_reviewable_claim_units", lambda _result: units
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_logs_exact_missing_coverage_before_failing_closed(
+    monkeypatch, caplog
+):
+    _patch_review_units(monkeypatch, 3)
+    client = _CoverageSelectionClient(["s0", "s2"])
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        with pytest.raises(AISemanticGroundingError) as exc_info:
+            await ollama_service._run_grounding_review(
+                client,
+                _request(),
+                FinancialAnalysisLLMResponse(**_report(corrected=True)),
+                [1],
+                "test-model",
+            )
+
+    assert exc_info.value.details["failure_kind"] == "semantic_review_metadata_validation"
+    assert exc_info.value.details["metadata_error_code"] == "missing_coverage_segment"
+    coverage = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewCoverage]"
+    )[0]
+    missing = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewMissingCoverage]"
+    )[0]
+    assert coverage["missing_aliases"] == ["s1"]
+    assert missing["expected_aliases"] == ["s0", "s1", "s2"]
+    assert missing["returned_aliases"] == ["s0", "s2"]
+    assert missing["missing_aliases"] == ["s1"]
+    assert missing["duplicate_aliases"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_preserves_distinct_unknown_alias_diagnostics(monkeypatch, caplog):
+    _patch_review_units(monkeypatch, 3)
+    client = _CoverageSelectionClient(["s0", "s99"])
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        with pytest.raises(AISemanticGroundingError) as exc_info:
+            await ollama_service._run_grounding_review(
+                client,
+                _request(),
+                FinancialAnalysisLLMResponse(**_report(corrected=True)),
+                [1],
+                "test-model",
+            )
+
+    assert exc_info.value.details["metadata_error_code"] == "unknown_coverage_segment_alias"
+    unknown = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewUnknownAlias]"
+    )[0]
+    assert unknown["invalid_alias"] == "s99"
+    assert unknown["allowed_aliases"] == ["s0", "s1", "s2"]
+    assert unknown["review_phase"] == "initial"
+    assert unknown["batch_index"] == 1
+    assert not _semantic_trace_records(
+        caplog, "[AI][GroundingReviewMissingCoverage]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_second_batch_instrumentation_preserves_s23_through_s45(
+    monkeypatch, caplog
+):
+    _patch_review_units(monkeypatch, 46)
+    client = _CoverageSelectionClient()
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        await ollama_service._run_grounding_review(
+            client,
+            _request(),
+            FinancialAnalysisLLMResponse(**_report(corrected=True)),
+            [1],
+            "test-model",
+        )
+
+    manifests = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewBatchManifest]"
+    )
+    coverage = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewCoverage]"
+    )
+    assert len(manifests) == len(coverage) == 2
+    assert manifests[1]["batch_index"] == coverage[1]["batch_index"] == 2
+    assert manifests[1]["allowed_aliases"] == [f"s{index}" for index in range(23, 46)]
+    assert coverage[1]["expected_aliases"] == [f"s{index}" for index in range(23, 46)]
+    assert coverage[1]["returned_aliases"] == [f"s{index}" for index in range(23, 46)]
+
+
+@pytest.mark.asyncio
+async def test_empty_findings_remain_an_earlier_schema_failure(monkeypatch, caplog):
+    _patch_review_units(monkeypatch, 3)
+    client = _CoverageSelectionClient([])
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        with pytest.raises(AISemanticGroundingError) as exc_info:
+            await ollama_service._run_grounding_review(
+                client,
+                _request(),
+                FinancialAnalysisLLMResponse(**_report(corrected=True)),
+                [1],
+                "test-model",
+            )
+
+    assert exc_info.value.details["failure_kind"] == "semantic_review_schema_validation"
+    assert _semantic_trace_records(
+        caplog, "[AI][GroundingReviewBatchManifest]"
+    )
+    assert not _semantic_trace_records(caplog, "[AI][GroundingReviewCoverage]")
+
+
+@pytest.mark.asyncio
+async def test_run_emits_equivalent_final_review_coverage_events(monkeypatch, caplog):
+    _patch_review_units(monkeypatch, 3)
+    client = _CoverageSelectionClient()
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        await ollama_service._run_grounding_review(
+            client,
+            _request(),
+            FinancialAnalysisLLMResponse(**_report(corrected=True)),
+            [1],
+            "test-model",
+            stage="final_review",
+        )
+
+    manifest = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewBatchManifest]"
+    )[0]
+    coverage = _semantic_trace_records(
+        caplog, "[AI][GroundingReviewCoverage]"
+    )[0]
+    assert manifest["review_phase"] == coverage["review_phase"] == "final"
+    assert manifest["batch_index"] == coverage["batch_index"] == 1
+    assert manifest["batch_count"] == coverage["batch_count"] == 1
 
 
 @pytest.mark.asyncio
