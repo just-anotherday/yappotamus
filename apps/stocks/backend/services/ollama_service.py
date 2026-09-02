@@ -414,8 +414,10 @@ GROUNDING_REVIEW_SYSTEM_PROMPT = """You are a strict claim-level semantic-ground
 structured financial analysis. Use only the supplied structured market data and indexed evidence
 manifest. Return only JSON matching the provided grounding-review schema. Do not reveal reasoning.
 
-Wire response: f is findings; each finding uses s=segment alias, r=role, p=proposition,
-c=classification, a=article indexes, m=market codes, i=input-context codes, g=rule. Roles: F=fact, I=interpretation,
+Wire response: f is an object keyed by the supplied segment aliases. Include EVERY supplied alias
+exactly as a key, give every key a non-empty array of one or more findings, omit no alias, and invent
+no keys. Each finding uses r=role, p=proposition, c=classification, a=article indexes, m=market
+codes, i=input-context codes, g=rule. Roles: F=fact, I=interpretation,
 P=investment implication. Classifications: DS=direct support, SM=structured market support,
 SI=supported interpretation, CS=conditional support, UE=no evidence, SC=scope mismatch,
 ES=event-status mismatch, UM=unsupported mechanism, TM=technical-role mismatch. Use only the
@@ -430,7 +432,7 @@ evidence. Evidence for a first proposition never automatically supports a downst
 Do not omit a supplied review unit, collapse units across sections, or create a multiple_sections
 finding. Wire key p must identify only the proposition evaluated, be 120 characters or fewer, and
 contain no explanation, rationale, quotation, or repeated source paragraph. For EACH supplied
-coverage segment, return at least one finding referencing its compact s alias. A segment may require multiple findings; never let a fact's
+coverage segment, return at least one finding under its compact alias key. A segment may require multiple findings; never let a fact's
 support automatically cover an interpretation or investment implication in the same segment.
 The complete evidence manifest contains both selected and unselected supplied articles. Selected
 articles are the report's actual citation set. Unselected articles are visible only so you can detect
@@ -2433,7 +2435,7 @@ def build_request_local_review_schema(
     coverage_segment_aliases: Optional[List[str]] = None,
     coverage_segment_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Return the compact, request-local provider schema without semantic allOfs."""
+    """Return a keyed schema requiring every backend-issued batch alias."""
     schema = copy.deepcopy(GroundingReviewWireResponse.model_json_schema())
     defs = schema.get("$defs")
     if not isinstance(defs, dict):
@@ -2447,14 +2449,35 @@ def build_request_local_review_schema(
     market_fields_prop = props.get("m")
     if not isinstance(market_fields_prop, dict):
         raise ValueError("GroundingReviewWireFinding schema is missing m")
-    segment_prop = props.get("s")
-    if not isinstance(segment_prop, dict):
-        raise ValueError("GroundingReviewWireFinding schema is missing s")
     aliases = coverage_segment_aliases
     if aliases is None:
         aliases = coverage_segment_ids
     if aliases is not None:
-        segment_prop["enum"] = list(aliases)
+        aliases = list(aliases)
+        if not aliases:
+            raise ValueError("grounding review schema requires at least one alias")
+        if len(aliases) != len(set(aliases)):
+            raise ValueError("coverage segment aliases must be unique")
+        root_props = schema.get("properties")
+        if not isinstance(root_props, dict):
+            raise ValueError("GroundingReviewWireResponse schema is missing properties")
+        findings_prop = root_props.get("f")
+        if not isinstance(findings_prop, dict):
+            raise ValueError("GroundingReviewWireResponse schema is missing f")
+        findings_prop.clear()
+        findings_prop.update({
+            "type": "object",
+            "properties": {
+                alias: {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/GroundingReviewWireFinding"},
+                    "minItems": 1,
+                }
+                for alias in aliases
+            },
+            "required": aliases,
+            "additionalProperties": False,
+        })
 
     if not available_market_fields:
         if "items" in market_fields_prop:
@@ -2481,6 +2504,26 @@ def _build_coverage_segment_aliases(
     return aliases
 
 
+def _validate_grounding_review_wire_alias_contract(
+    wire: GroundingReviewWireResponse,
+    segment_aliases: Dict[str, ReviewCoverageSegment],
+) -> None:
+    """Enforce the request-local required-key contract after typed parsing."""
+
+    expected = set(segment_aliases)
+    returned = set(wire.f)
+    unknown = _ordered_grounding_review_aliases(list(returned - expected))
+    if unknown:
+        raise ReviewerMetadataError(
+            "unknown_coverage_segment_alias", 0, "f", enum_value=unknown[0]
+        )
+    missing = expected - returned
+    if missing:
+        raise ReviewerMetadataError(
+            "missing_coverage_segment", 0, "f"
+        )
+
+
 def _decode_grounding_review_wire_response(
     wire: GroundingReviewWireResponse,
     segment_aliases: Dict[str, ReviewCoverageSegment],
@@ -2495,22 +2538,32 @@ def _decode_grounding_review_wire_response(
     """
     available = set(available_market_fields)
     available_context = set(available_input_context or [])
-    decoded_by_unit: Dict[str, List[Tuple[int, ReviewCoverageSegment, GroundingReviewWireFinding]]] = {}
-    for finding_ordinal, item in enumerate(wire.f, 1):
-        segment = segment_aliases.get(item.s)
-        if segment is None:
-            raise ReviewerMetadataError("unknown_coverage_segment_alias", finding_ordinal, "s")
-        market_fields = [WIRE_MARKET_TO_INTERNAL[code] for code in item.m]
-        input_context = [WIRE_INPUT_CONTEXT_TO_INTERNAL[code] for code in item.i]
-        unavailable_context = next((code for code in input_context if code not in available_context), None)
-        if unavailable_context is not None:
-            raise ReviewerMetadataError("input_context_not_supplied", finding_ordinal, "i", enum_value=unavailable_context)
-        unavailable = next((field for field in market_fields if field not in available), None)
-        if unavailable is not None:
-            raise ReviewerMetadataError("market_field_not_supplied", finding_ordinal, "m", enum_value=unavailable)
-        decoded_by_unit.setdefault(segment.review_unit_id, []).append(
-            (finding_ordinal, segment, item)
+    unknown_alias = next(
+        (alias for alias in wire.f if alias not in segment_aliases),
+        None,
+    )
+    if unknown_alias is not None:
+        raise ReviewerMetadataError(
+            "unknown_coverage_segment_alias", 0, "f", enum_value=unknown_alias
         )
+
+    decoded_by_unit: Dict[str, List[Tuple[int, ReviewCoverageSegment, GroundingReviewWireFinding]]] = {}
+    finding_ordinal = 0
+    for alias, items in wire.f.items():
+        segment = segment_aliases[alias]
+        for item in items:
+            finding_ordinal += 1
+            market_fields = [WIRE_MARKET_TO_INTERNAL[code] for code in item.m]
+            input_context = [WIRE_INPUT_CONTEXT_TO_INTERNAL[code] for code in item.i]
+            unavailable_context = next((code for code in input_context if code not in available_context), None)
+            if unavailable_context is not None:
+                raise ReviewerMetadataError("input_context_not_supplied", finding_ordinal, "i", enum_value=unavailable_context)
+            unavailable = next((field for field in market_fields if field not in available), None)
+            if unavailable is not None:
+                raise ReviewerMetadataError("market_field_not_supplied", finding_ordinal, "m", enum_value=unavailable)
+            decoded_by_unit.setdefault(segment.review_unit_id, []).append(
+                (finding_ordinal, segment, item)
+            )
 
     decoded: List[GroundingClaimFinding] = []
     for review_unit_id, findings in decoded_by_unit.items():
@@ -3560,7 +3613,15 @@ def _semantic_trace_phase(stage: str) -> str:
     return "final" if stage == "final_review" else "initial"
 
 
-_GROUNDING_REVIEW_ALIAS_RE = re.compile(r"^s(\d+)$")
+_GROUNDING_REVIEW_ALIAS_RE = re.compile(r"^s([0-9]+)$")
+
+
+def _grounding_review_alias_has_safe_shape(alias: Any) -> bool:
+    return (
+        isinstance(alias, str)
+        and len(alias) <= 16
+        and _GROUNDING_REVIEW_ALIAS_RE.fullmatch(alias) is not None
+    )
 
 
 def _grounding_review_alias_sort_key(alias: str) -> Tuple[int, int, str]:
@@ -3627,17 +3688,25 @@ def _build_grounding_review_coverage_record(
     reviewed: GroundingReviewWireResponse,
     batch_aliases: Dict[str, ReviewCoverageSegment],
 ) -> Dict[str, Any]:
-    """Summarize reviewer coverage without freeform provider content."""
+    """Summarize reviewer coverage without freeform provider content.
+
+    ``duplicate_aliases`` retains its diagnostic meaning of multiple findings
+    for one alias, not duplicate JSON object keys.
+    """
 
     expected_aliases = _ordered_grounding_review_aliases(list(batch_aliases))
-    returned_aliases = _ordered_grounding_review_aliases(
-        [finding.s for finding in reviewed.f]
-    )
-    occurrence_counts: Dict[str, int] = {}
-    for alias in returned_aliases:
-        occurrence_counts[alias] = occurrence_counts.get(alias, 0) + 1
+    returned_alias_keys = _ordered_grounding_review_aliases(list(reviewed.f))
+    occurrence_counts = {
+        alias: len(reviewed.f[alias])
+        for alias in returned_alias_keys
+    }
+    returned_aliases = [
+        alias
+        for alias in returned_alias_keys
+        for _ in reviewed.f[alias]
+    ]
     represented_unique_aliases = _ordered_grounding_review_aliases(
-        list(occurrence_counts)
+        [alias for alias, count in occurrence_counts.items() if count]
     )
     duplicate_aliases = [
         alias for alias in represented_unique_aliases
@@ -3659,12 +3728,12 @@ def _build_grounding_review_coverage_record(
             for alias in represented_unique_aliases
         },
         "expected_count": len(expected_aliases),
-        "returned_finding_count": len(reviewed.f),
+        "returned_finding_count": sum(occurrence_counts.values()),
         "represented_unique_count": len(represented_unique_aliases),
         "sanitized_findings": [
             {
                 "finding_ordinal": finding_ordinal,
-                "s": finding.s,
+                "s": alias,
                 "r": finding.r,
                 "c": finding.c,
                 "a": list(finding.a),
@@ -3672,7 +3741,14 @@ def _build_grounding_review_coverage_record(
                 "i": list(finding.i),
                 "g": finding.g,
             }
-            for finding_ordinal, finding in enumerate(reviewed.f, 1)
+            for finding_ordinal, (alias, finding) in enumerate(
+                (
+                    (alias, finding)
+                    for alias, findings in reviewed.f.items()
+                    for finding in findings
+                ),
+                1,
+            )
         ],
     })
     return record
@@ -3711,7 +3787,11 @@ def _log_grounding_review_unknown_alias(
         )
     }
     diagnostic.update({
-        "invalid_alias": invalid_alias,
+        "invalid_alias": (
+            invalid_alias
+            if _grounding_review_alias_has_safe_shape(invalid_alias)
+            else "<invalid_alias>"
+        ),
         "allowed_aliases": record["expected_aliases"],
     })
     logger.warning(
@@ -4085,7 +4165,12 @@ async def _run_grounding_review(
     target_registry = build_correction_target_registry(
         review_units, all_coverage_segments
     )
-    segment_aliases = _build_coverage_segment_aliases(coverage_segments)
+    all_segment_aliases = _build_coverage_segment_aliases(all_coverage_segments)
+    segment_aliases = {
+        alias: segment
+        for alias, segment in all_segment_aliases.items()
+        if segment.coverage_segment_id in allowed_segment_ids
+    }
     batches = _plan_grounding_review_batches(coverage_segments)
     logger.info(
         "[AI][GroundingReview] review_phase=%s total_review_units=%d "
@@ -4138,6 +4223,30 @@ async def _run_grounding_review(
                 "AI analysis could not be completed because semantic grounding review failed.",
                 details={"failure_kind": "semantic_review_invalid_json"},
             )
+        keyed_findings = parsed_review.get("f")
+        if isinstance(keyed_findings, dict):
+            invalid_key_count = sum(
+                not _grounding_review_alias_has_safe_shape(alias)
+                for alias in keyed_findings
+            )
+            if invalid_key_count:
+                # A Pydantic dictionary-key error location includes the raw key.
+                # Reject unsafe names before that location can enter telemetry.
+                logger.warning(
+                    "[AI][GroundingReview] request_local_schema_validation_failed "
+                    "stage=%s batch_index=%d schema_error_code=invalid_alias_key_format "
+                    "invalid_alias_key_count=%d",
+                    stage,
+                    batch_index,
+                    invalid_key_count,
+                )
+                raise AISemanticGroundingError(
+                    "AI analysis could not be completed because semantic grounding review failed.",
+                    details={
+                        "failure_kind": "semantic_review_schema_validation",
+                        "schema_error_code": "invalid_alias_key_format",
+                    },
+                )
         try:
             reviewed = GroundingReviewWireResponse(**parsed_review)
         except ValidationError as exc:
@@ -4160,6 +4269,33 @@ async def _run_grounding_review(
             stage, batch_index, len(batches), reviewed, batch_aliases
         )
         try:
+            _validate_grounding_review_wire_alias_contract(
+                reviewed, batch_aliases
+            )
+        except ReviewerMetadataError as exc:
+            if exc.code == "missing_coverage_segment":
+                _log_grounding_review_missing_coverage(coverage_record)
+                schema_error_code = "missing_required_alias"
+            else:
+                _log_grounding_review_unknown_alias(
+                    coverage_record, exc.enum_value
+                )
+                schema_error_code = "unknown_alias_property"
+            logger.warning(
+                "[AI][GroundingReview] request_local_schema_validation_failed "
+                "stage=%s batch_index=%d schema_error_code=%s",
+                stage,
+                batch_index,
+                schema_error_code,
+            )
+            raise AISemanticGroundingError(
+                "AI analysis could not be completed because semantic grounding review failed.",
+                details={
+                    "failure_kind": "semantic_review_schema_validation",
+                    "schema_error_code": schema_error_code,
+                },
+            ) from exc
+        try:
             batch_claims = _decode_grounding_review_wire_response(
                 reviewed, batch_aliases, available_fields, derive_available_input_context(request)
             )
@@ -4169,12 +4305,9 @@ async def _run_grounding_review(
             if exc.code == "missing_coverage_segment":
                 _log_grounding_review_missing_coverage(coverage_record)
             elif exc.code == "unknown_coverage_segment_alias":
-                invalid_alias = (
-                    reviewed.f[exc.finding_ordinal - 1].s
-                    if 0 < exc.finding_ordinal <= len(reviewed.f)
-                    else None
+                _log_grounding_review_unknown_alias(
+                    coverage_record, exc.enum_value
                 )
-                _log_grounding_review_unknown_alias(coverage_record, invalid_alias)
             logger.warning(
                 "[AI][GroundingReview] reviewer_metadata_invalid stage=%s batch_index=%d "
                 "metadata_error_code=%s finding_ordinal=%d field=%s "

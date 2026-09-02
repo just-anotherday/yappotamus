@@ -249,7 +249,7 @@ class _SequencedClient:
             by_section = {}
             for segment in segments:
                 by_section.setdefault(segment["section"], []).append(segment)
-            findings = []
+            findings = {}
             role_codes = {value: key for key, value in ollama_service.WIRE_ROLE_TO_INTERNAL.items()}
             class_codes = {value: key for key, value in ollama_service.WIRE_CLASSIFICATION_TO_INTERNAL.items()}
             rule_codes = {value: key for key, value in ollama_service.WIRE_RULE_TO_INTERNAL.items()}
@@ -264,7 +264,6 @@ class _SequencedClient:
                     proposition = item.get("atomic_proposition", proposition)
                 segment = (by_section.get(section) or [segments[0]])[0]
                 wire_finding = {
-                    "s": segment["s"],
                     "r": role_codes.get(item.get("claim_role", "fact"), "F"),
                     "p": proposition or item.get("atomic_proposition", segment["segment_text"]),
                     "c": class_codes[item["classification"]],
@@ -273,11 +272,10 @@ class _SequencedClient:
                 }
                 if "rule" in item:
                     wire_finding["g"] = rule_codes[item["rule"]]
-                findings.append(wire_finding)
-            represented_segments = {finding["s"] for finding in findings}
+                findings.setdefault(segment["s"], []).append(wire_finding)
             for segment in segments:
-                if segment["s"] not in represented_segments:
-                    findings.append({"s": segment["s"], "r": "F", "p": segment["segment_text"][:120], "c": "SM", "a": [], "m": ["CP"], "g": "MD"})
+                if segment["s"] not in findings:
+                    findings[segment["s"]] = [{"r": "F", "p": segment["segment_text"][:120], "c": "SM", "a": [], "m": ["CP"], "g": "MD"}]
             response = {"f": findings}
         return json.dumps(response)
 
@@ -894,7 +892,7 @@ async def test_three_live_failures_get_one_correction_and_citations_are_remapped
     assert sum(
         set(call["response_schema"].get("$defs", {}).get(
             "GroundingReviewWireFinding", {}
-            ).get("properties", {})) == {"s", "r", "p", "c", "a", "m", "i", "g"}
+            ).get("properties", {})) == {"r", "p", "c", "a", "m", "i", "g"}
         for call in client.calls
     ) == 2
     correction_prompt = client.calls[2]["user_prompt"]
@@ -1027,7 +1025,7 @@ async def test_reviewer_schema_failure_is_diagnostic_fail_closed_and_not_retried
     }
     assert len(client.calls) == 2
     assert "schema_validation_failed" in caplog.text
-    assert "f.0.g" in caplog.text
+    assert "f.s2.0.g" in caplog.text
     assert "AMD is preparing an investment-grade bond sale" not in caplog.text
     assert "stage=initial_review" in caplog.text
     assert "outcome=semantic_review_error" in caplog.text
@@ -1343,11 +1341,11 @@ def _review_payload(
     class_codes = {value: key for key, value in ollama_service.WIRE_CLASSIFICATION_TO_INTERNAL.items()}
     market_codes = {value: key for key, value in ollama_service.WIRE_MARKET_TO_INTERNAL.items()}
     return {
-        "f": [{
-            "s": "s0", "r": "F", "p": "AMD claim",
+        "f": {"s0": [{
+            "r": "F", "p": "AMD claim",
             "c": class_codes[classification], "a": article_indices or [],
             "m": [market_codes[field] for field in market_fields or []], "g": "AS",
-        }]
+        }]}
     }
 
 
@@ -2906,18 +2904,17 @@ def _coverage_aliases(start, count):
 
 
 def _coverage_wire(returned_aliases, proposition="PRIVATE REPORT PROPOSITION"):
-    return GroundingReviewWireResponse(f=[
-        {
-            "s": alias,
+    findings = {}
+    for alias in returned_aliases:
+        findings.setdefault(alias, []).append({
             "r": "F",
             "p": proposition,
             "c": "UE",
             "a": [1],
             "m": [],
             "g": "UC",
-        }
-        for alias in returned_aliases
-    ])
+        })
+    return GroundingReviewWireResponse(f=findings)
 
 
 def _decode_and_validate_coverage(wire, aliases):
@@ -3108,6 +3105,52 @@ def test_coverage_diagnostics_exclude_freeform_and_request_content(caplog):
     }
 
 
+def test_keyed_coverage_preserves_provider_finding_ordinals_but_sorts_alias_lists():
+    aliases = _coverage_aliases(23, 2)
+    wire = _coverage_wire(["s24", "s23", "s23"])
+    record = ollama_service._build_grounding_review_coverage_record(
+        "initial_review", 1, 1, wire, aliases
+    )
+
+    assert record["returned_aliases"] == ["s23", "s23", "s24"]
+    assert [
+        (item["finding_ordinal"], item["s"])
+        for item in record["sanitized_findings"]
+    ] == [(1, "s24"), (2, "s23"), (3, "s23")]
+
+
+@pytest.mark.asyncio
+async def test_malformed_key_schema_diagnostics_do_not_log_freeform_key_content(
+    monkeypatch, caplog
+):
+    _patch_review_units(monkeypatch, 3)
+    secret_key = "https://private.example/SECRET_REPORT_CONTENT"
+    body = _coverage_wire(["s0"]).model_dump(mode="json")["f"]["s0"]
+    payload = {"f": {secret_key: body}}
+    client = _RawResponseClient(json.dumps(payload))
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        with pytest.raises(AISemanticGroundingError) as exc_info:
+            await ollama_service._run_grounding_review(
+                client,
+                _request(),
+                FinancialAnalysisLLMResponse(**_report(corrected=True)),
+                [1],
+                "test-model",
+            )
+
+    assert exc_info.value.details == {
+        "failure_kind": "semantic_review_schema_validation",
+        "schema_error_code": "invalid_alias_key_format",
+    }
+    assert "invalid_alias_key_count=1" in caplog.text
+    assert secret_key not in caplog.text
+    assert "SECRET_REPORT_CONTENT" not in caplog.text
+    assert "PRIVATE REPORT PROPOSITION" not in caplog.text
+    with pytest.raises(ValidationError):
+        GroundingReviewWireResponse(**payload)
+
+
 def test_grounding_review_batch_planner_is_balanced_complete_and_ordered():
     assert ollama_service._grounding_review_batch_segment_capacity() == 32
     assert ollama_service._plan_grounding_review_batches([]) == []
@@ -3141,11 +3184,11 @@ class _BatchCoverageClient:
         segments = payload["review_coverage_segments"]
         if self.omit_last and len(self.calls) == 2:
             segments = segments[:-1]
-        return json.dumps({"f": [
-            {"s": segment["s"], "r": "F", "p": segment["segment_text"],
-             "c": "SM", "a": [], "m": ["CP"], "g": "MD"}
+        return json.dumps({"f": {
+            segment["s"]: [{"r": "F", "p": segment["segment_text"],
+             "c": "SM", "a": [], "m": ["CP"], "g": "MD"}]
             for segment in segments
-        ]})
+        }})
 
 
 class _CoverageSelectionClient:
@@ -3163,18 +3206,17 @@ class _CoverageSelectionClient:
             if self.returned_aliases is None
             else self.returned_aliases
         )
-        return json.dumps({"f": [
-            {
-                "s": alias,
+        findings = {}
+        for alias in aliases:
+            findings.setdefault(alias, []).append({
                 "r": "F",
                 "p": by_alias.get(alias, segments[0])["segment_text"],
                 "c": "SM",
                 "a": [],
                 "m": ["CP"],
                 "g": "MD",
-            }
-            for alias in aliases
-        ]})
+            })
+        return json.dumps({"f": findings})
 
 
 def _patch_review_units(monkeypatch, count):
@@ -3189,6 +3231,7 @@ def _patch_review_units(monkeypatch, count):
     monkeypatch.setattr(
         ollama_service, "_build_reviewable_claim_units", lambda _result: units
     )
+    return units
 
 
 @pytest.mark.asyncio
@@ -3208,15 +3251,14 @@ async def test_run_logs_exact_missing_coverage_before_failing_closed(
                 "test-model",
             )
 
-    assert exc_info.value.details["failure_kind"] == "semantic_review_metadata_validation"
-    assert exc_info.value.details["metadata_error_code"] == "missing_coverage_segment"
-    coverage = _semantic_trace_records(
-        caplog, "[AI][GroundingReviewCoverage]"
-    )[0]
+    assert exc_info.value.details == {
+        "failure_kind": "semantic_review_schema_validation",
+        "schema_error_code": "missing_required_alias",
+    }
     missing = _semantic_trace_records(
         caplog, "[AI][GroundingReviewMissingCoverage]"
     )[0]
-    assert coverage["missing_aliases"] == ["s1"]
+    assert not _semantic_trace_records(caplog, "[AI][GroundingReviewCoverage]")
     assert missing["expected_aliases"] == ["s0", "s1", "s2"]
     assert missing["returned_aliases"] == ["s0", "s2"]
     assert missing["missing_aliases"] == ["s1"]
@@ -3238,7 +3280,10 @@ async def test_run_preserves_distinct_unknown_alias_diagnostics(monkeypatch, cap
                 "test-model",
             )
 
-    assert exc_info.value.details["metadata_error_code"] == "unknown_coverage_segment_alias"
+    assert exc_info.value.details == {
+        "failure_kind": "semantic_review_schema_validation",
+        "schema_error_code": "unknown_alias_property",
+    }
     unknown = _semantic_trace_records(
         caplog, "[AI][GroundingReviewUnknownAlias]"
     )[0]
@@ -3278,6 +3323,10 @@ async def test_full_second_batch_instrumentation_preserves_s23_through_s45(
     assert manifests[1]["allowed_aliases"] == [f"s{index}" for index in range(23, 46)]
     assert coverage[1]["expected_aliases"] == [f"s{index}" for index in range(23, 46)]
     assert coverage[1]["returned_aliases"] == [f"s{index}" for index in range(23, 46)]
+    for call, manifest in zip(client.calls, manifests):
+        keyed = call["response_schema"]["properties"]["f"]
+        assert keyed["required"] == manifest["allowed_aliases"]
+        assert keyed["additionalProperties"] is False
 
 
 @pytest.mark.asyncio
@@ -3326,6 +3375,75 @@ async def test_run_emits_equivalent_final_review_coverage_events(monkeypatch, ca
     assert manifest["review_phase"] == coverage["review_phase"] == "final"
     assert manifest["batch_index"] == coverage["batch_index"] == 1
     assert manifest["batch_count"] == coverage["batch_count"] == 1
+    keyed = client.calls[0]["response_schema"]["properties"]["f"]
+    assert keyed["required"] == manifest["allowed_aliases"]
+    assert keyed["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_final_review_schema_requires_only_the_exact_global_alias_subset(
+    monkeypatch, caplog
+):
+    units = _patch_review_units(monkeypatch, 46)
+    segments = ollama_service._build_review_coverage_segments(units)
+    selected = [segments[index] for index in (4, 17, 31)]
+    client = _CoverageSelectionClient()
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        await ollama_service._run_grounding_review(
+            client,
+            _request(),
+            FinancialAnalysisLLMResponse(**_report(corrected=True)),
+            [1],
+            "test-model",
+            stage="final_review",
+            review_segments=selected,
+        )
+
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    keyed = call["response_schema"]["properties"]["f"]
+    assert keyed["required"] == ["s4", "s17", "s31"]
+    assert list(keyed["properties"]) == ["s4", "s17", "s31"]
+    prompt = json.loads(call["user_prompt"].split("\n", 1)[1])
+    assert [item["s"] for item in prompt["review_coverage_segments"]] == ["s4", "s17", "s31"]
+    coverage = _semantic_trace_records(caplog, "[AI][GroundingReviewCoverage]")[0]
+    assert coverage["expected_aliases"] == ["s4", "s17", "s31"]
+    assert coverage["missing_aliases"] == []
+
+
+@pytest.mark.asyncio
+async def test_old_23_segment_omission_is_now_a_schema_failure_without_retry(
+    monkeypatch, caplog
+):
+    _patch_review_units(monkeypatch, 46)
+    client = _BatchCoverageClient(omit_last=True)
+
+    with caplog.at_level("INFO", logger="backend.services.ollama_service"):
+        with pytest.raises(AISemanticGroundingError) as exc_info:
+            await ollama_service._run_grounding_review(
+                client,
+                _request(),
+                FinancialAnalysisLLMResponse(**_report(corrected=True)),
+                [1],
+                "test-model",
+            )
+
+    assert exc_info.value.details == {
+        "failure_kind": "semantic_review_schema_validation",
+        "schema_error_code": "missing_required_alias",
+    }
+    assert len(client.calls) == 2
+    assert "reviewer_metadata_invalid" not in caplog.text
+    missing = _semantic_trace_records(caplog, "[AI][GroundingReviewMissingCoverage]")[0]
+    assert missing["expected_count"] == 23
+    assert missing["expected_aliases"] == [f"s{index}" for index in range(23, 46)]
+    assert missing["missing_aliases"] == ["s45"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            _coverage_wire([f"s{index}" for index in range(23, 45)]).model_dump(mode="json"),
+            client.calls[1]["response_schema"],
+        )
 
 
 @pytest.mark.asyncio
@@ -3449,8 +3567,8 @@ def test_compact_wire_decodes_aliases_to_readable_findings_and_is_bijective():
     aliases = ollama_service._build_coverage_segment_aliases([segment])
     assert list(aliases) == ["s0"]
     wire = GroundingReviewWireResponse(**{
-        "f": [{"s": "s0", "r": "I", "p": "Article-backed technical interpretation.",
-               "c": "SI", "a": [1], "m": [], "g": "TR"}]
+        "f": {"s0": [{"r": "I", "p": "Article-backed technical interpretation.",
+               "c": "SI", "a": [1], "m": [], "g": "TR"}]}
     })
     decoded = ollama_service._decode_grounding_review_wire_response(
         wire, aliases, ["current_price"]
@@ -3485,14 +3603,16 @@ def test_compact_wire_derives_ordinals_by_segment_then_provider_order():
         ReviewCoverageSegment(review_unit_id=unit_b.review_unit_id, coverage_segment_id="b.1", segment_ordinal=1, source_start=1, source_end=2),
     ]
     aliases = ollama_service._build_coverage_segment_aliases(segments)
-    wire = GroundingReviewWireResponse(f=[
-        {"s": "s0", "r": "F", "p": "A", "c": "UE", "a": [], "m": [], "g": "UC"},
-        {"s": "s1", "r": "F", "p": "B", "c": "UE", "a": [], "m": [], "g": "UC"},
-        {"s": "s0", "r": "F", "p": "C", "c": "UE", "a": [], "m": [], "g": "UC"},
-        {"s": "s2", "r": "F", "p": "D", "c": "UE", "a": [], "m": [], "g": "UC"},
-        {"s": "s3", "r": "F", "p": "E", "c": "UE", "a": [], "m": [], "g": "UC"},
-        {"s": "s4", "r": "F", "p": "F", "c": "UE", "a": [], "m": [], "g": "UC"},
-    ])
+    wire = GroundingReviewWireResponse(f={
+        "s0": [
+            {"r": "F", "p": "A", "c": "UE", "a": [], "m": [], "g": "UC"},
+            {"r": "F", "p": "C", "c": "UE", "a": [], "m": [], "g": "UC"},
+        ],
+        "s1": [{"r": "F", "p": "B", "c": "UE", "a": [], "m": [], "g": "UC"}],
+        "s2": [{"r": "F", "p": "D", "c": "UE", "a": [], "m": [], "g": "UC"}],
+        "s3": [{"r": "F", "p": "E", "c": "UE", "a": [], "m": [], "g": "UC"}],
+        "s4": [{"r": "F", "p": "F", "c": "UE", "a": [], "m": [], "g": "UC"}],
+    })
 
     decoded = ollama_service._decode_grounding_review_wire_response(wire, aliases, [])
 
@@ -3503,13 +3623,13 @@ def test_compact_wire_derives_ordinals_by_segment_then_provider_order():
 
 
 def test_compact_wire_rejects_invalid_codes_blank_and_overlong_propositions():
-    base = {"s": "s0", "r": "F", "p": "x", "c": "DS", "a": [1], "m": [], "g": "AS"}
+    base = {"r": "F", "p": "x", "c": "DS", "a": [1], "m": [], "g": "AS"}
     for key, value in (("r", "X"), ("c", "XX"), ("g", "ZZ"), ("m", ["NO"]), ("p", " "), ("p", "x" * 121)):
         payload = dict(base); payload[key] = value
         with pytest.raises(ValidationError):
-            GroundingReviewWireResponse(f=[payload])
+            GroundingReviewWireResponse(f={"s0": [payload]})
     with pytest.raises(ValidationError):
-        GroundingReviewWireResponse(f=[{**base, "o": 0}])
+        GroundingReviewWireResponse(f={"s0": [{**base, "o": 0}]})
 
 
 def test_compact_wire_rejects_unknown_alias_and_unavailable_market_code():
@@ -3518,25 +3638,25 @@ def test_compact_wire_rejects_unknown_alias_and_unavailable_market_code():
         segment_ordinal=0, source_start=0, source_end=5,
     )
     aliases = ollama_service._build_coverage_segment_aliases([segment])
-    unknown = GroundingReviewWireResponse(f=[{"s":"s99","r":"F","p":"Claim.","c":"UE","a":[],"m":[],"g":"UC"}])
+    unknown = GroundingReviewWireResponse(f={"s99": [{"r":"F","p":"Claim.","c":"UE","a":[],"m":[],"g":"UC"}]})
     with pytest.raises(ollama_service.ReviewerMetadataError, match="unknown_coverage_segment_alias"):
         ollama_service._decode_grounding_review_wire_response(unknown, aliases, [])
-    unavailable = GroundingReviewWireResponse(f=[{"s":"s0","r":"F","p":"Claim.","c":"SM","a":[],"m":["MA50"],"g":"MD"}])
+    unavailable = GroundingReviewWireResponse(f={"s0": [{"r":"F","p":"Claim.","c":"SM","a":[],"m":["MA50"],"g":"MD"}]})
     with pytest.raises(ollama_service.ReviewerMetadataError, match="market_field_not_supplied"):
         ollama_service._decode_grounding_review_wire_response(unavailable, aliases, ["current_price"])
 
 
 @pytest.mark.parametrize("segment_value", [pytest.param(None, id="null"), pytest.param("", id="empty")])
-def test_compact_wire_requires_a_nonempty_segment_alias(segment_value):
+def test_compact_wire_rejects_redundant_inner_segment_alias(segment_value):
     payload = {"s": segment_value, "r": "F", "p": "Claim.", "c": "UE", "a": [], "m": [], "g": "UC"}
     with pytest.raises(ValidationError):
-        GroundingReviewWireResponse(f=[payload])
+        GroundingReviewWireResponse(f={"s0": [payload]})
 
 
-def test_compact_wire_rejects_missing_segment_alias():
+def test_compact_wire_uses_the_property_key_as_segment_alias():
     payload = {"r": "F", "p": "Claim.", "c": "UE", "a": [], "m": [], "g": "UC"}
-    with pytest.raises(ValidationError):
-        GroundingReviewWireResponse(f=[payload])
+    wire = GroundingReviewWireResponse(f={"s0": [payload]})
+    assert list(wire.f) == ["s0"]
 
 
 def test_batch_schema_limits_segment_aliases_to_its_exact_22_segment_batch():
@@ -3546,19 +3666,153 @@ def test_batch_schema_limits_segment_aliases_to_its_exact_22_segment_batch():
         [], coverage_segment_aliases=list(aliases)
     )
     finding = schema["$defs"]["GroundingReviewWireFinding"]
-    assert "s" in finding["required"]
-    assert finding["properties"]["s"]["enum"] == list(aliases)
+    assert "s" not in finding["properties"]
+    keyed = schema["properties"]["f"]
+    assert keyed["required"] == list(aliases)
+    assert list(keyed["properties"]) == list(aliases)
+    assert keyed["additionalProperties"] is False
+    assert all(item["minItems"] == 1 for item in keyed["properties"].values())
 
-    valid = {"f": [{"s": alias, "r": "F", "p": "Claim.", "c": "UE", "a": [], "m": [], "g": "UC"} for alias in aliases]}
+    finding_payload = {"r": "F", "p": "Claim.", "c": "UE", "a": [], "m": [], "g": "UC"}
+    valid = {"f": {alias: [finding_payload] for alias in aliases}}
     jsonschema.validate(valid, schema)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({"f": [{"s": "s999", "r": "F", "p": "Claim.", "c": "UE", "a": [], "m": [], "g": "UC"}]}, schema)
+        jsonschema.validate({"f": {**valid["f"], "s999": [finding_payload]}}, schema)
+
+
+def test_keyed_schema_rejects_a_missing_required_alias():
+    aliases = _coverage_aliases(23, 3)
+    schema = ollama_service.build_request_local_review_schema(
+        [], coverage_segment_aliases=list(aliases)
+    )
+    incomplete = _coverage_wire(["s23", "s25"])
+
+    with pytest.raises(jsonschema.ValidationError) as exc_info:
+        jsonschema.validate(incomplete.model_dump(mode="json"), schema)
+
+    assert exc_info.value.validator == "required"
+    assert "s24" in exc_info.value.message
+    # The existing backend completeness validator remains independent defense.
+    with pytest.raises(ollama_service.ReviewerMetadataError, match="missing_coverage_segment"):
+        _decode_and_validate_coverage(incomplete, aliases)
+
+
+def test_keyed_schema_and_typed_model_reject_an_empty_required_alias():
+    aliases = _coverage_aliases(23, 3)
+    schema = ollama_service.build_request_local_review_schema(
+        [], coverage_segment_aliases=list(aliases)
+    )
+    payload = _coverage_wire(list(aliases)).model_dump(mode="json")
+    payload["f"]["s24"] = []
+
+    with pytest.raises(jsonschema.ValidationError) as exc_info:
+        jsonschema.validate(payload, schema)
+    with pytest.raises(ValidationError):
+        GroundingReviewWireResponse(**payload)
+
+    assert exc_info.value.validator == "minItems"
+
+
+def test_keyed_complete_response_passes_schema_decode_and_completeness():
+    aliases = _coverage_aliases(23, 3)
+    schema = ollama_service.build_request_local_review_schema(
+        [], coverage_segment_aliases=list(aliases)
+    )
+    wire = _coverage_wire(list(aliases))
+
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(wire.model_dump(mode="json"), schema)
+    ollama_service._validate_grounding_review_wire_alias_contract(wire, aliases)
+    _decode_and_validate_coverage(wire, aliases)
+
+
+def test_keyed_multiple_findings_preserve_array_order_and_complete_coverage():
+    aliases = _coverage_aliases(23, 2)
+    schema = ollama_service.build_request_local_review_schema(
+        [], coverage_segment_aliases=list(aliases)
+    )
+    wire = _coverage_wire(["s23", "s23", "s24"])
+    wire.f["s23"][0].p = "Finding A"
+    wire.f["s23"][1].p = "Finding B"
+    wire.f["s24"][0].p = "Finding C"
+
+    jsonschema.validate(wire.model_dump(mode="json"), schema)
+    claims = ollama_service._decode_grounding_review_wire_response(wire, aliases, [])
+    ollama_service._validate_grounding_review_batch_coverage(claims, list(aliases.values()))
+
+    assert [claim.atomic_proposition for claim in claims] == [
+        "Finding A", "Finding B", "Finding C"
+    ]
+    assert [claim.coverage_segment_id for claim in claims] == [
+        aliases["s23"].coverage_segment_id,
+        aliases["s23"].coverage_segment_id,
+        aliases["s24"].coverage_segment_id,
+    ]
+
+
+def test_keyed_schema_rejects_unknown_property_and_redundant_inner_identity():
+    aliases = _coverage_aliases(23, 2)
+    schema = ollama_service.build_request_local_review_schema(
+        [], coverage_segment_aliases=list(aliases)
+    )
+    unknown = _coverage_wire(["s23", "s24", "s99"])
+    with pytest.raises(jsonschema.ValidationError) as exc_info:
+        jsonschema.validate(unknown.model_dump(mode="json"), schema)
+    assert exc_info.value.validator == "additionalProperties"
+    with pytest.raises(ollama_service.ReviewerMetadataError, match="unknown_coverage_segment_alias"):
+        ollama_service._decode_grounding_review_wire_response(unknown, aliases, [])
+
+    conflicting = _coverage_wire(list(aliases)).model_dump(mode="json")
+    conflicting["f"]["s23"][0]["s"] = "s24"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(conflicting, schema)
+    with pytest.raises(ValidationError):
+        GroundingReviewWireResponse(**conflicting)
+
+
+def test_keyed_batch_schemas_are_independent_and_preserve_global_alias_ranges():
+    all_aliases = ollama_service._build_coverage_segment_aliases(_batch_segments(46))
+    batch_aliases = [
+        {alias: segment for alias, segment in all_aliases.items() if alias in names}
+        for names in (
+            {f"s{index}" for index in range(23)},
+            {f"s{index}" for index in range(23, 46)},
+        )
+    ]
+    for batch, start in zip(batch_aliases, (0, 23)):
+        schema = ollama_service.build_request_local_review_schema(
+            [], coverage_segment_aliases=list(batch)
+        )
+        keyed = schema["properties"]["f"]
+        expected = [f"s{index}" for index in range(start, start + 23)]
+        assert keyed["required"] == expected
+        assert list(keyed["properties"]) == expected
+        assert keyed["additionalProperties"] is False
+        assert all(item["minItems"] == 1 for item in keyed["properties"].values())
+
+
+def test_keyed_schema_refuses_an_empty_explicit_batch():
+    with pytest.raises(ValueError, match="requires at least one alias"):
+        ollama_service.build_request_local_review_schema(
+            [], coverage_segment_aliases=[]
+        )
+
+
+def test_keyed_contract_rejects_the_legacy_array_shape_without_fallback():
+    schema = ollama_service.build_request_local_review_schema(
+        [], coverage_segment_aliases=["s23"]
+    )
+    legacy = {"f": [{"s": "s23", "r": "F", "p": "Claim", "c": "UE", "a": [], "m": [], "g": "UC"}]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(legacy, schema)
+    with pytest.raises(ValidationError):
+        GroundingReviewWireResponse(**legacy)
 
 
 def test_compact_wire_rejects_alias_from_another_batch_without_remapping():
     aliases = ollama_service._build_coverage_segment_aliases(_batch_segments(4))
     batch_b = {alias: segment for alias, segment in aliases.items() if alias in {"s2", "s3"}}
-    foreign = GroundingReviewWireResponse(f=[{"s": "s0", "r": "F", "p": "Claim.", "c": "UE", "a": [], "m": [], "g": "UC"}])
+    foreign = GroundingReviewWireResponse(f={"s0": [{"r": "F", "p": "Claim.", "c": "UE", "a": [], "m": [], "g": "UC"}]})
     with pytest.raises(ollama_service.ReviewerMetadataError, match="unknown_coverage_segment_alias"):
         ollama_service._decode_grounding_review_wire_response(foreign, batch_b, [])
 
@@ -3570,9 +3824,9 @@ def test_compact_wire_serialization_reduces_representative_output_by_sixty_perce
     for index in range(count):
         proposition = "A concise atomic proposition with no explanatory rationale."
         readable.append({"review_unit_id":f"technical_analysis.trend[{index}].claim", "coverage_segment_id":f"technical_analysis.trend[{index}].claim.segment_0", "atomic_ordinal":0, "claim_role":"interpretation", "atomic_proposition":proposition, "classification":"supported_interpretation", "supporting_article_indices":[1, 2], "supporting_market_data_fields":["current_price"], "rule":"technical_role_grounding"})
-        compact.append({"s":f"s{index}", "r":"I", "p":proposition, "c":"SI", "a":[1,2], "m":["CP"], "g":"TR"})
+        compact.append((f"s{index}", {"r":"I", "p":proposition, "c":"SI", "a":[1,2], "m":["CP"], "g":"TR"}))
     old_size = len(json.dumps({"claims": readable}, separators=(",", ":")))
-    compact_size = len(json.dumps({"f": compact}, separators=(",", ":")))
+    compact_size = len(json.dumps({"f": {alias: [finding] for alias, finding in compact}}, separators=(",", ":")))
     assert compact_size / old_size <= 0.40
 
 
@@ -3693,13 +3947,13 @@ def test_fn_input_context_cannot_support_weak_profitability_claim():
 
 
 def test_input_context_rejects_unknown_code():
-    payload = {"f": [{"s": "s0", "r": "I", "p": "Inputs lack fundamentals.", "c": "SI", "a": [], "m": [], "i": ["ZZ"], "g": "CM"}]}
+    payload = {"f": {"s0": [{"r": "I", "p": "Inputs lack fundamentals.", "c": "SI", "a": [], "m": [], "i": ["ZZ"], "g": "CM"}]}}
     with pytest.raises(ValidationError):
         GroundingReviewWireResponse(**payload)
 
 
 def test_input_context_rejects_known_but_unavailable_fn():
-    wire = GroundingReviewWireResponse(**{"f": [{"s": "s0", "r": "I", "p": "Inputs lack fundamentals.", "c": "SI", "a": [], "m": [], "i": ["FN"], "g": "CM"}]})
+    wire = GroundingReviewWireResponse(**{"f": {"s0": [{"r": "I", "p": "Inputs lack fundamentals.", "c": "SI", "a": [], "m": [], "i": ["FN"], "g": "CM"}]}})
     segment = ReviewCoverageSegment(review_unit_id="portfolio_fit", coverage_segment_id="portfolio_fit.segment_0", segment_ordinal=0, source_start=0, source_end=1)
     with pytest.raises(ollama_service.ReviewerMetadataError, match="input_context_not_supplied"):
         ollama_service._decode_grounding_review_wire_response(wire, {"s0": segment}, [], [])
@@ -5008,21 +5262,20 @@ async def test_phase_d_current_outlook_failure_stops_before_final_review(monkeyp
         "outlook.long_term.segment_0",
     }
     units_by_id = {unit.review_unit_id: unit for unit in units}
-    findings = []
+    findings = {}
     for alias, segment in aliases.items():
         proposition = units_by_id[segment.review_unit_id].candidate_text[
             segment.source_start:segment.source_end
         ]
         invalid = segment.coverage_segment_id in required
-        findings.append({
-            "s": alias,
+        findings[alias] = [{
             "r": "F",
             "p": proposition[:120],
             "c": "UE" if invalid else "DS",
             "a": [] if invalid else [2],
             "m": [],
             "g": "UC" if invalid else "AS",
-        })
+        }]
     patches = [
         _phase_b_patch(
             target.patch_target_id,

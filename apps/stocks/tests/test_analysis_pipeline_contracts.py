@@ -1024,17 +1024,16 @@ def test_cross_batch_alias_fails_before_violation_identity_can_be_created():
     aliases = ollama_service._build_coverage_segment_aliases(segments)
     second_batch = {"s1": aliases["s1"]}
     forged = GroundingReviewWireResponse(
-        f=[
-            {
-                "s": "s0",
+        f={
+            "s0": [{
                 "r": "F",
                 "p": "Unsupported proposition.",
                 "c": "UE",
                 "a": [],
                 "m": [],
                 "g": "UC",
-            }
-        ]
+            }]
+        }
     )
 
     with pytest.raises(
@@ -1130,18 +1129,17 @@ class _DeterministicPipelineClient:
         self.review_payloads.append(review_payload)
         return json.dumps(
             {
-                "f": [
-                    {
-                        "s": segment["s"],
+                "f": {
+                    segment["s"]: [{
                         "r": "F",
                         "p": segment["segment_text"][:120],
                         "c": "DS",
                         "a": [1],
                         "m": [],
                         "g": "AS",
-                    }
+                    }]
                     for segment in review_payload["review_coverage_segments"]
-                ]
+                }
             }
         )
 

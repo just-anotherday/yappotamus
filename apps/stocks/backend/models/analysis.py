@@ -7,7 +7,7 @@ JSON response schema that Ollama must conform to.
 
 import math
 import re
-from typing import Any, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from typing_extensions import Annotated
 from pydantic import (
@@ -632,7 +632,6 @@ class GroundingReviewWireFinding(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    s: str = Field(min_length=2, max_length=16)
     r: GroundingReviewWireRole
     p: str = Field(min_length=1, max_length=120)
     c: GroundingReviewWireClassification
@@ -650,11 +649,14 @@ class GroundingReviewWireFinding(BaseModel):
 
 
 class GroundingReviewWireResponse(BaseModel):
-    """Compact root object used by both Ollama and OpenAI reviewer calls."""
+    """Compact keyed root object used by both reviewer provider paths."""
 
     model_config = ConfigDict(extra="forbid")
 
-    f: List[GroundingReviewWireFinding] = Field(min_length=1)
+    f: Dict[
+        Annotated[str, StringConstraints(min_length=2, max_length=16, pattern=r"^s[0-9]+$")],
+        Annotated[List[GroundingReviewWireFinding], Field(min_length=1)],
+    ] = Field(min_length=1)
 
 
 class NormalizedGroundingClaimFinding(GroundingClaimFinding):
