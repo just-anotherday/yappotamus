@@ -4662,6 +4662,95 @@ def test_phase_b_invalid_operation_or_replacement_is_schema_failure(patch):
     ) == "correction_patch_schema_invalid"
 
 
+def _coverage_segment_count(text):
+    unit = ReviewableClaimUnit(
+        review_unit_id="technical_analysis.trend",
+        section="technical_analysis",
+        candidate_text=text,
+    )
+    return len(ollama_service._build_review_coverage_segments([unit]))
+
+
+def _assert_replacement_not_atomic(replacement):
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+    with pytest.raises(AISemanticGroundingError) as caught:
+        ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+            registry,
+            [target_id],
+        )
+    assert caught.value.details["failure_kind"] == "correction_patch_schema_invalid"
+    assert caught.value.details["reason"] == "replacement_not_atomic"
+
+
+def test_correction_prompt_positive_examples_are_backend_atomic():
+    for example in ollama_service._CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES:
+        assert _coverage_segment_count(example) == 1
+
+
+def test_valid_missing_ma_example_passes_production_replacement_validator():
+    replacement = ollama_service._CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES[0]
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+
+    validated = ollama_service.validate_correction_patch_set(
+        {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+        registry,
+        [target_id],
+    )
+
+    assert _coverage_segment_count(replacement) == 1
+    assert validated.patches[0].replacement == replacement
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "Moving-average-based trend assessment is limited because MA50 and MA200 were not supplied.",
+        "MA50 was not supplied. MA200 was not supplied.",
+        "The trend is bullish, but support remains at $140.",
+    ],
+)
+def test_known_non_atomic_replacements_fail_closed(replacement):
+    assert _coverage_segment_count(replacement) == 2
+    _assert_replacement_not_atomic(replacement)
+
+
+def test_atomic_finance_sentence_passes_production_replacement_validator():
+    replacement = (
+        "AMD traded at $469.17 (a 7.70% change) within its $149.22-$584.73 range."
+    )
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+
+    validated = ollama_service.validate_correction_patch_set(
+        {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+        registry,
+        [target_id],
+    )
+
+    assert _coverage_segment_count(replacement) == 1
+    assert validated.patches[0].replacement == replacement
+
+
+def test_atomic_technical_target_delete_remains_valid_at_patch_level():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+
+    validated = ollama_service.validate_correction_patch_set(
+        {
+            "patches": [
+                _phase_b_patch(target_id, operation="DELETE", replacement=None)
+            ]
+        },
+        registry,
+        [target_id],
+    )
+
+    assert validated.patches[0].operation == "DELETE"
+
+
 @pytest.mark.parametrize("indices", [[0], [-1], [1, 1]])
 def test_phase_b_article_index_structure_is_fail_closed(indices):
     _, registry = _phase_b_report_and_registry()
@@ -5348,6 +5437,46 @@ def test_phase_c_prompt_preserves_missing_ma_and_historical_range_guidance():
     assert "Do not claim insufficient technical data" in prompt
     assert "do not infer trend, momentum, support, resistance, breakout" in prompt
     assert "Prefer DELETE" in prompt
+
+
+def test_phase_c_prompt_aligns_atomic_examples_and_multi_rule_guidance():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+    prompt = ollama_service.build_patch_correction_prompt(
+        [target_id],
+        registry,
+        [
+            _phase_c_violation(
+                target_id,
+                rule="unsupported_company_specific_claim",
+                section="technical_analysis",
+            ),
+            _phase_c_violation(
+                target_id,
+                rule="historical_range_not_technical_level",
+                section="technical_analysis",
+            ),
+        ],
+        _request(),
+    )
+    payload = json.loads(prompt.split("Correction request (JSON):\n", 1)[1])
+    target = payload["targets"][0]
+
+    for example in ollama_service._CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES:
+        assert example in prompt
+        assert _coverage_segment_count(example) == 1
+    for example in ollama_service._CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES:
+        assert example in prompt
+        assert _coverage_segment_count(example) == 2
+    assert target["violating_rules"] == [
+        "historical_range_not_technical_level",
+        "unsupported_company_specific_claim",
+    ]
+    assert "satisfy every supplied violating rule" in target["repair_instruction"]
+    assert "one backend-atomic coverage segment" in target["repair_instruction"]
+    assert "do not return multiple patches for this target" in target["repair_instruction"]
+    assert "use DELETE" in target["repair_instruction"]
+    assert "parent constraints permit deletion" in target["repair_instruction"]
 
 
 @pytest.mark.parametrize(
