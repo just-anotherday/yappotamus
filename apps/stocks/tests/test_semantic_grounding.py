@@ -4691,6 +4691,306 @@ def test_phase_b_delete_required_list_item_fails_without_mutating_primary():
     assert report.model_dump(mode="python") == original
 
 
+def _assert_parent_invariant_rejection(monkeypatch, payload, patches, parent, reason):
+    report, registry = _phase_b_report_and_registry(payload)
+    original = report.model_dump(mode="python")
+    original_indices = list(report.article_indices_used)
+    required = [patch["target_id"] for patch in patches]
+    validated = ollama_service.validate_correction_patch_set(
+        {"patches": patches}, registry, required,
+    )
+
+    def unexpected_full_validation(**kwargs):
+        pytest.fail("parent invariants must reject before full report validation")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(ollama_service, "FinancialAnalysisLLMResponse", unexpected_full_validation)
+        with pytest.raises(AISemanticGroundingError) as caught:
+            ollama_service.merge_correction_patch_set(report, registry, required, validated)
+    assert caught.value.details["failure_kind"] == "correction_patch_merge_failure"
+    assert caught.value.details["reason"] == reason
+    assert caught.value.details["parent_path"] == parent
+    assert report.model_dump(mode="python") == original
+    assert report.article_indices_used == original_indices
+    return caught.value
+
+
+@pytest.mark.parametrize("parent", ["news_summary", "bull_case", "bear_case", "actionable_insights"])
+@pytest.mark.parametrize("count", [1, 2])
+def test_parent_invariant_rejects_exhaustive_required_list_delete(monkeypatch, parent, count):
+    payload = _report()
+    payload[parent] = [f"Item {index}." for index in range(count)]
+    patches = [
+        _phase_b_patch(f"{parent}[{index}].segment_0", operation="DELETE", replacement=None)
+        for index in range(count)
+    ]
+    _assert_parent_invariant_rejection(
+        monkeypatch, payload, patches, parent, "required_parent_empty_list",
+    )
+
+
+@pytest.mark.parametrize("parent", ["news_summary", "bull_case", "bear_case", "actionable_insights"])
+def test_parent_invariant_preserves_partial_list_delete_and_full_validation(monkeypatch, parent):
+    payload = _report()
+    payload[parent] = ["A", "B"]
+    report, registry = _phase_b_report_and_registry(payload)
+    target_id = f"{parent}[0].segment_0"
+    validated_payloads = []
+    model_contract = ollama_service.FinancialAnalysisLLMResponse
+
+    def full_validation(**candidate):
+        validated_payloads.append(candidate)
+        return model_contract(**candidate)
+
+    monkeypatch.setattr(ollama_service, "FinancialAnalysisLLMResponse", full_validation)
+    merged = ollama_service.merge_correction_patch_set(
+        report, registry, [target_id],
+        {"patches": [_phase_b_patch(target_id, operation="DELETE", replacement=None)]},
+    )
+    assert getattr(merged.report, parent) == ["B"]
+    assert getattr(report, parent) == ["A", "B"]
+    assert len(validated_payloads) == 1
+
+
+@pytest.mark.parametrize("parent", [
+    "news_summary", "bull_case", "bear_case", "actionable_insights", "key_catalysts", "key_risks",
+    "technical_analysis.support_levels", "technical_analysis.resistance_levels",
+])
+def test_parent_invariant_rejects_blank_surviving_item(monkeypatch, parent):
+    payload = _report()
+    text = "First proposition. Second proposition."
+    if parent == "key_risks":
+        payload[parent] = [{"risk": text, "severity": "Medium"}]
+        source = "key_risks[0].risk"
+    elif parent.startswith("technical_analysis."):
+        payload["technical_analysis"][parent.split(".")[1]] = [text]
+        source = f"{parent}[0]"
+    else:
+        payload[parent] = [text]
+        source = f"{parent}[0]"
+    patches = [
+        _phase_b_patch(f"{source}.segment_{index}", operation="DELETE", replacement=None)
+        for index in range(2)
+    ]
+    _assert_parent_invariant_rejection(
+        monkeypatch, payload, patches, parent, "required_parent_blank_item",
+    )
+
+
+@pytest.mark.parametrize("parent", [
+    "market_reaction_analysis", "portfolio_fit", "executive_summary", "technical_analysis.trend",
+    "technical_analysis.breakout_level", "technical_analysis.breakdown_level",
+])
+@pytest.mark.parametrize("text", ["Grounded discussion.", "First proposition. Second proposition."])
+def test_parent_invariant_rejects_required_scalar_exhaustion(monkeypatch, parent, text):
+    payload = _report()
+    if parent.startswith("technical_analysis."):
+        payload["technical_analysis"][parent.split(".")[1]] = text
+    else:
+        payload[parent] = text
+    _, registry = _phase_b_report_and_registry(payload)
+    patches = [
+        _phase_b_patch(target.patch_target_id, operation="DELETE", replacement=None)
+        for target in registry.targets if target.source_path == parent
+    ]
+    _assert_parent_invariant_rejection(
+        monkeypatch, payload, patches, parent, "required_parent_empty_scalar",
+    )
+
+
+def test_parent_invariant_rejects_whitespace_remaining_after_scalar_delete(monkeypatch):
+    payload = _report()
+    payload["portfolio_fit"] = "First proposition.\nSecond proposition."
+    patches = [
+        _phase_b_patch(f"portfolio_fit.segment_{index}", operation="DELETE", replacement=None)
+        for index in range(2)
+    ]
+    _assert_parent_invariant_rejection(
+        monkeypatch, payload, patches, "portfolio_fit", "required_parent_empty_scalar",
+    )
+
+
+@pytest.mark.parametrize("replacement", ["", "   ", "."])
+def test_parent_invariant_replacement_empty_checks(monkeypatch, replacement, caplog):
+    report, registry = _phase_b_report_and_registry()
+    target_id = "portfolio_fit.segment_0"
+
+    def unexpected_candidate(*args, **kwargs):
+        pytest.fail("empty replacement must reject before candidate reconstruction")
+
+    monkeypatch.setattr(ollama_service, "_build_correction_candidate_payload", unexpected_candidate)
+    with pytest.raises(AISemanticGroundingError) as caught:
+        ollama_service.merge_correction_patch_set(
+            report, registry, [target_id],
+            {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+        )
+    assert caught.value.details["failure_kind"] == "correction_patch_schema_invalid"
+    if replacement == ".":
+        assert caught.value.details["reason"] == "normalized_empty_replacement"
+        assert "[AI][CorrectionPatchValidation]" in caplog.text
+        assert ollama_service._normalize_review_proposition_text(".") == ""
+    assert report.portfolio_fit not in caplog.text
+
+
+@pytest.mark.parametrize("replacement", [
+    "Grounded portfolio discussion.", "Grounded portfolio discussion: risk remains material.",
+])
+def test_parent_invariant_accepts_nonempty_scalar_replace(monkeypatch, replacement):
+    report, registry = _phase_b_report_and_registry()
+    target_id = "portfolio_fit.segment_0"
+    calls = []
+    model_contract = ollama_service.FinancialAnalysisLLMResponse
+
+    def validate_full_report(**candidate):
+        calls.append(candidate)
+        return model_contract(**candidate)
+
+    monkeypatch.setattr(ollama_service, "FinancialAnalysisLLMResponse", validate_full_report)
+    merged = ollama_service.merge_correction_patch_set(
+        report, registry, [target_id],
+        {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+    )
+    assert merged.report.portfolio_fit == replacement
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("parent", [
+    "key_catalysts", "key_risks", "technical_analysis.support_levels", "technical_analysis.resistance_levels",
+])
+def test_parent_invariant_preserves_zero_minimum_list_semantics(parent):
+    payload = _report()
+    if parent.startswith("technical_analysis."):
+        payload["technical_analysis"][parent.split(".")[1]] = ["469.17"]
+    report, registry = _phase_b_report_and_registry(payload)
+    source = "key_risks[0].risk" if parent == "key_risks" else f"{parent}[0]"
+    target_id = f"{source}.segment_0"
+    assert registry.get(target_id).target_strategy == "list_item"
+    merged = ollama_service.merge_correction_patch_set(
+        report, registry, [target_id],
+        {"patches": [_phase_b_patch(target_id, operation="DELETE", replacement=None)]},
+    )
+    assert ollama_service._correction_parent_value(merged.report, parent) == []
+
+
+def test_parent_invariant_checks_only_affected_parents(monkeypatch):
+    report, registry = _phase_b_report_and_registry()
+    target_id = "portfolio_fit.segment_0"
+    checked = []
+    invariants = dict(ollama_service._CORRECTION_PARENT_INVARIANTS)
+
+    def unrelated_parent(value):
+        pytest.fail("unmodified parent preflight must not run")
+
+    for path in invariants:
+        invariants[path] = ollama_service.CorrectionParentInvariant(validator=unrelated_parent)
+    invariants["portfolio_fit"] = ollama_service.CorrectionParentInvariant(
+        min_normalized_length=1, validator=lambda value: checked.append(value),
+    )
+    monkeypatch.setattr(ollama_service, "_CORRECTION_PARENT_INVARIANTS", invariants)
+    merged = ollama_service.merge_correction_patch_set(
+        report, registry, [target_id], {"patches": [_phase_b_patch(target_id)]},
+    )
+    assert checked == [merged.report.portfolio_fit]
+
+
+def test_parent_invariant_multi_parent_rejection_has_bounded_value_free_diagnostics(monkeypatch, caplog):
+    payload = _report()
+    payload["portfolio_fit"] = "PRIVATE_ORIGINAL_FIT_CONTENT."
+    patches = [
+        _phase_b_patch("executive_summary.segment_0", replacement="PRIVATE_REPLACEMENT_CONTENT."),
+        _phase_b_patch("portfolio_fit.segment_0", operation="DELETE", replacement=None),
+    ]
+    error = _assert_parent_invariant_rejection(
+        monkeypatch, payload, patches, "portfolio_fit", "required_parent_empty_scalar",
+    )
+    records = [
+        json.loads(record.message.split("[AI][CorrectionParentInvariant] ", 1)[1])
+        for record in caplog.records if "[AI][CorrectionParentInvariant]" in record.message
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record["parent_path"] == "portfolio_fit"
+    assert record["before_size"] == len(payload["portfolio_fit"])
+    assert record["after_size"] == 0
+    assert record["size_kind"] == "characters"
+    assert record["reason"] == "required_parent_empty_scalar"
+    assert record["targets"] == [{
+        "target_id": "portfolio_fit.segment_0", "operation": "DELETE", "strategy": "text_segment",
+    }]
+    assert record["targets_truncated"] is False
+    for private in (payload["portfolio_fit"], "PRIVATE_REPLACEMENT_CONTENT", "AMD prepares"):
+        assert private not in caplog.text
+        assert private not in str(error.details)
+
+
+def test_parent_invariant_diagnostic_target_count_is_bounded(monkeypatch, caplog):
+    payload = _report()
+    payload["actionable_insights"] = [f"Private item {index}." for index in range(40)]
+    patches = [
+        _phase_b_patch(f"actionable_insights[{index}].segment_0", operation="DELETE", replacement=None)
+        for index in range(40)
+    ]
+    _assert_parent_invariant_rejection(
+        monkeypatch, payload, patches, "actionable_insights", "required_parent_empty_list",
+    )
+    record = next(
+        json.loads(item.message.split("[AI][CorrectionParentInvariant] ", 1)[1])
+        for item in caplog.records if "[AI][CorrectionParentInvariant]" in item.message
+    )
+    assert record["before_size"] == 40
+    assert record["after_size"] == 0
+    assert record["target_count"] == 40
+    assert len(record["targets"]) == ollama_service._CORRECTION_PARENT_DIAGNOSTIC_TARGET_LIMIT
+    assert record["targets_truncated"] is True
+    assert "Private item" not in caplog.text
+
+
+def test_parent_invariant_registry_covers_every_patchable_parent():
+    payload = _report()
+    payload["technical_analysis"].update(
+        support_levels=["400"], resistance_levels=["500"], breakout_level="510", breakdown_level="390",
+    )
+    _, registry = _phase_b_report_and_registry(payload)
+    parents = {ollama_service._correction_parent_path(target) for target in registry.targets}
+    assert parents == set(ollama_service._CORRECTION_PARENT_INVARIANTS)
+
+
+@pytest.mark.parametrize("parent", [
+    "technical_analysis.support_levels", "technical_analysis.resistance_levels",
+    "technical_analysis.breakout_level", "technical_analysis.breakdown_level",
+])
+def test_parent_invariant_retains_authoritative_technical_validators(parent):
+    from backend.models.analysis import FinancialAnalysisLLMTechnicalResponse
+
+    invariant = ollama_service._CORRECTION_PARENT_INVARIANTS[parent]
+    validator = (
+        FinancialAnalysisLLMTechnicalResponse.reject_malformed_level_lists
+        if invariant.min_items is not None
+        else FinancialAnalysisLLMTechnicalResponse.normalize_or_reject_malformed_scalar_levels
+    )
+    assert invariant.validator == validator
+    with pytest.raises(ValueError):
+        invariant.validator([float("inf")] if invariant.min_items is not None else float("inf"))
+    invariant.validator([469.17] if invariant.min_items is not None else 469.17)
+
+
+def test_parent_invariant_prompt_contains_constraints_without_whole_report():
+    _, registry = _phase_b_report_and_registry()
+    required = ["actionable_insights[0].segment_0", "portfolio_fit.segment_0", "key_catalysts[0].segment_0"]
+    prompt = ollama_service.build_patch_correction_prompt(
+        required, registry,
+        [_phase_c_violation(target_id, section=registry.get(target_id).section) for target_id in required],
+        _request(),
+    )
+    request = json.loads(prompt.split("Correction request (JSON):\n", 1)[1])
+    targets = {target["target_id"]: target for target in request["targets"]}
+    assert "last required item" in targets[required[0]]["parent_field_invariant"]
+    assert "Every surviving item" in targets[required[0]]["parent_field_invariant"]
+    assert "do not DELETE all its content" in targets[required[1]]["parent_field_invariant"]
+    assert "may contain zero items" in targets[required[2]]["parent_field_invariant"]
+    assert "never invent content" in prompt
+
+
 def test_phase_b_whole_optional_list_item_delete_uses_registry_strategy():
     report, registry = _phase_b_report_and_registry()
     target_id = "key_catalysts[0].segment_0"

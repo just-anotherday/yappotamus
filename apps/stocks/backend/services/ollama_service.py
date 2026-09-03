@@ -30,6 +30,7 @@ from backend.models.analysis import (
     CorrectionTargetRegistry,
     FinancialAnalysisLLMOutlookResponse,
     FinancialAnalysisLLMResponse,
+    FinancialAnalysisLLMTechnicalResponse,
     FinancialAnalysisRequest,
     FinancialAnalysisResponse,
     FinancialAnalysisV2LLMResponse,
@@ -1318,6 +1319,68 @@ _OUTLOOK_PARENT_SOURCE_PATHS = frozenset({
 
 
 @dataclass(frozen=True)
+class CorrectionParentInvariant:
+    """Explicit correction-only constraints; public/provider models stay unchanged."""
+
+    min_items: Optional[int] = None
+    min_normalized_length: int = 0
+    nonblank_items: bool = False
+    item_text_field: Optional[str] = None
+    validator: Optional[Callable[[Any], Any]] = None
+
+
+_CORRECTION_PARENT_INVARIANTS = MappingProxyType({
+    **{
+        path: CorrectionParentInvariant(min_items=1, nonblank_items=True)
+        for path in ("news_summary", "bull_case", "bear_case", "actionable_insights")
+    },
+    "key_catalysts": CorrectionParentInvariant(min_items=0, nonblank_items=True),
+    "key_risks": CorrectionParentInvariant(
+        min_items=0, nonblank_items=True, item_text_field="risk",
+    ),
+    **{
+        path: CorrectionParentInvariant(min_normalized_length=1)
+        for path in (
+            "market_reaction_analysis", "portfolio_fit", "executive_summary",
+            "technical_analysis.trend",
+        )
+    },
+    **{
+        f"technical_analysis.{name}": CorrectionParentInvariant(
+            min_items=0,
+            nonblank_items=True,
+            validator=FinancialAnalysisLLMTechnicalResponse.reject_malformed_level_lists,
+        )
+        for name in ("support_levels", "resistance_levels")
+    },
+    **{
+        f"technical_analysis.{name}": CorrectionParentInvariant(
+            min_normalized_length=1,
+            validator=(
+                FinancialAnalysisLLMTechnicalResponse.normalize_or_reject_malformed_scalar_levels
+            ),
+        )
+        for name in ("breakout_level", "breakdown_level")
+    },
+    "outlook": CorrectionParentInvariant(
+        validator=FinancialAnalysisLLMOutlookResponse.model_validate,
+    ),
+})
+_CORRECTION_PARENT_DIAGNOSTIC_TARGET_LIMIT = 32
+
+
+def _correction_parent_path(target: CorrectionPatchTarget) -> str:
+    """Resolve backend-owned paths without changing target identity or spans."""
+
+    path = re.sub(r"\[\d+\]", "", target.source_path)
+    if path.startswith("key_risks."):
+        return "key_risks"
+    if path in _OUTLOOK_PARENT_SOURCE_PATHS:
+        return "outlook"
+    return path
+
+
+@dataclass(frozen=True)
 class CorrectionPatchMergeResult:
     """Validated merged candidate plus freshly derived review structure."""
 
@@ -1706,6 +1769,25 @@ def _validate_patch_replacement(
     replacement = patch.replacement
     if replacement is None:
         _raise_correction_patch_error("correction_patch_schema_invalid")
+    if not _normalize_review_proposition_text(replacement):
+        logger.warning(
+            "[AI][CorrectionPatchValidation] %s",
+            json.dumps({
+                "correlation_id": current_correlation_id(),
+                "target_id": patch.target_id,
+                "operation": patch.operation,
+                "strategy": target.target_strategy,
+                "parent_path": _correction_parent_path(target),
+                "before_target_length": len(target.original_target_text),
+                "after_target_length": len(replacement),
+                "reason": "normalized_empty_replacement",
+            }, sort_keys=True),
+        )
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="normalized_empty_replacement",
+            target_id=patch.target_id,
+        )
     if _normalize_review_proposition_text(replacement) == _normalize_review_proposition_text(
         target.original_target_text
     ):
@@ -1906,6 +1988,29 @@ def _outlook_parent_invariant_instruction(
     return instruction
 
 
+def _correction_parent_invariant_instruction(target: CorrectionPatchTarget) -> str:
+    outlook_instruction = _outlook_parent_invariant_instruction(target)
+    if outlook_instruction is not None:
+        return outlook_instruction
+    parent_path = _correction_parent_path(target)
+    invariant = _CORRECTION_PARENT_INVARIANTS[parent_path]
+    guidance = [f"After the complete patch set, {parent_path}"]
+    if invariant.min_items:
+        guidance.append(
+            f"must retain at least {invariant.min_items} item; do not DELETE the last "
+            "required item or collectively DELETE every item."
+        )
+    elif invariant.min_items == 0:
+        guidance.append("may contain zero items.")
+    else:
+        guidance.append("must retain nonblank content; do not DELETE all its content.")
+    if invariant.nonblank_items:
+        guidance.append("Every surviving item must retain nonblank proposition content.")
+    if invariant.validator is not None:
+        guidance.append("Preserve the existing technical-level value constraints.")
+    return " ".join(guidance)
+
+
 def build_patch_correction_prompt(
     required_target_ids: List[str],
     registry: CorrectionTargetRegistry,
@@ -1950,9 +2055,9 @@ def build_patch_correction_prompt(
             "read_only_next_context": target.next_context,
             "trusted_article_indices_available": article_indices,
         }
-        parent_invariant = _outlook_parent_invariant_instruction(target)
-        if parent_invariant is not None:
-            target_payload["parent_field_invariant"] = parent_invariant
+        target_payload["parent_field_invariant"] = (
+            _correction_parent_invariant_instruction(target)
+        )
         targets_payload.append(target_payload)
 
     article_manifest = [
@@ -1990,7 +2095,9 @@ def build_patch_correction_prompt(
         "values inside targets are authorized. DELETE must use replacement=null and an empty "
         "article_indices_used list. REPLACE must be one trimmed atomic proposition with no "
         "newline or bullet. Neighbor context is read-only and must not be edited. Prefer DELETE "
-        "when the invalid proposition is unnecessary; otherwise use only the supplied evidence. "
+        "when the invalid proposition is unnecessary and all parent invariants remain valid. "
+        "Use REPLACE only when supplied evidence supports replacement content; never invent "
+        "content to satisfy a parent constraint. "
         "Do not create IDs, paths, sections, unrelated facts, or whole-section rewrites. Article "
         "indices are 1-based and must use the minimum useful trusted subset; structured-market-"
         "only replacements use an empty list.\n\nCorrection request (JSON):\n"
@@ -2215,6 +2322,8 @@ def _build_correction_candidate_payload(
     primary: FinancialAnalysisLLMResponse,
     parsed: CorrectionPatchSet,
     registry: CorrectionTargetRegistry,
+    *,
+    affected_parent_paths: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """Apply trusted offsets to a disposable payload for invariant preflight."""
 
@@ -2226,6 +2335,8 @@ def _build_correction_candidate_payload(
     container_deletes: List[Tuple[str, Optional[str], int]] = []
     for patch in parsed.patches:
         target = targets[patch.target_id]
+        if affected_parent_paths is not None:
+            affected_parent_paths.add(_correction_parent_path(target))
         source = _resolve_correction_source_value(payload, target.source_path)
         if not (0 <= target.source_start < target.source_end <= len(source)) or (
             source[target.source_start:target.source_end] != target.original_target_text
@@ -2292,30 +2403,131 @@ def _build_correction_candidate_payload(
     return payload
 
 
-def _preflight_outlook_parent_invariants(
+def _correction_parent_value(value: Any, parent_path: str) -> Any:
+    for part in parent_path.split("."):
+        value = value.get(part) if isinstance(value, dict) else getattr(value, part, None)
+    return value
+
+
+def _correction_parent_size(value: Any) -> Optional[int]:
+    if isinstance(value, OutlookResponse):
+        return len(value.model_dump())
+    return len(value) if isinstance(value, (str, list, dict)) else None
+
+
+def _reject_correction_parent_invariant(
+    primary: FinancialAnalysisLLMResponse,
     payload: Dict[str, Any],
     parsed: CorrectionPatchSet,
     registry: CorrectionTargetRegistry,
+    parent_path: str,
+    reason: str,
+    **details: Any,
 ) -> None:
-    """Validate affected outlook parents with their authoritative model contract."""
+    """Emit bounded identities/sizes only, never model or replacement content."""
 
     targets = {target.patch_target_id: target for target in registry.targets}
-    affected_paths = sorted({
-        targets[patch.target_id].source_path
-        for patch in parsed.patches
-        if targets[patch.target_id].source_path in _OUTLOOK_PARENT_SOURCE_PATHS
-    })
-    if not affected_paths:
-        return
-    try:
-        FinancialAnalysisLLMOutlookResponse.model_validate(payload.get("outlook"))
-    except ValidationError as exc:
-        _raise_correction_patch_error(
-            "correction_patch_schema_invalid",
-            reason="outlook_parent_invariant_violation",
-            affected_parent_paths=affected_paths,
-            validation_errors=_summarize_validation_errors(exc),
-        )
+    parent_patches = sorted(
+        (
+            patch for patch in parsed.patches
+            if _correction_parent_path(targets[patch.target_id]) == parent_path
+        ),
+        key=lambda patch: patch.target_id,
+    )
+    before = _correction_parent_value(primary, parent_path)
+    after = _correction_parent_value(payload, parent_path)
+    record = {
+        "correlation_id": current_correlation_id(),
+        "parent_path": parent_path,
+        "reason": reason,
+        "size_kind": "items" if isinstance(after, list) else (
+            "characters" if isinstance(after, str) else "fields"
+        ),
+        "before_size": _correction_parent_size(before),
+        "after_size": _correction_parent_size(after),
+        "target_count": len(parent_patches),
+        "targets_truncated": len(parent_patches) > _CORRECTION_PARENT_DIAGNOSTIC_TARGET_LIMIT,
+        "targets": [
+            {
+                "target_id": patch.target_id,
+                "operation": patch.operation,
+                "strategy": targets[patch.target_id].target_strategy,
+            }
+            for patch in parent_patches[:_CORRECTION_PARENT_DIAGNOSTIC_TARGET_LIMIT]
+        ],
+    }
+    logger.warning("[AI][CorrectionParentInvariant] %s", json.dumps(record, sort_keys=True))
+    _raise_correction_patch_error(
+        "correction_patch_schema_invalid" if parent_path == "outlook"
+        else "correction_patch_merge_failure",
+        reason=reason,
+        parent_path=parent_path,
+        **details,
+    )
+
+
+def _preflight_correction_parent_invariants(
+    primary: FinancialAnalysisLLMResponse,
+    payload: Dict[str, Any],
+    parsed: CorrectionPatchSet,
+    registry: CorrectionTargetRegistry,
+    affected_parent_paths: set[str],
+) -> None:
+    """Validate only modified parents, after the entire authorized patch set."""
+
+    for parent_path in sorted(affected_parent_paths):
+        invariant = _CORRECTION_PARENT_INVARIANTS.get(parent_path)
+        if invariant is None:
+            _reject_correction_parent_invariant(
+                primary, payload, parsed, registry, parent_path,
+                "unregistered_correction_parent",
+            )
+        value = _correction_parent_value(payload, parent_path)
+        reason = None
+        if invariant.min_items is not None:
+            if not isinstance(value, list):
+                reason = "correction_parent_invalid_type"
+            elif len(value) < invariant.min_items:
+                reason = "required_parent_empty_list"
+            elif invariant.nonblank_items:
+                for item in value:
+                    text = (
+                        item.get(invariant.item_text_field)
+                        if invariant.item_text_field and isinstance(item, dict)
+                        else item
+                    )
+                    if not isinstance(text, str) or not _normalize_review_proposition_text(text):
+                        reason = "required_parent_blank_item"
+                        break
+        elif invariant.min_normalized_length:
+            if not isinstance(value, str) or (
+                len(_normalize_review_proposition_text(value)) < invariant.min_normalized_length
+            ):
+                reason = "required_parent_empty_scalar"
+        if reason is not None:
+            _reject_correction_parent_invariant(
+                primary, payload, parsed, registry, parent_path, reason,
+            )
+        if invariant.validator is not None:
+            try:
+                invariant.validator(value)
+            except (ValueError, TypeError) as exc:
+                details: Dict[str, Any] = {}
+                if isinstance(exc, ValidationError):
+                    details["validation_errors"] = _summarize_validation_errors(exc)
+                if parent_path == "outlook":
+                    targets = {target.patch_target_id: target for target in registry.targets}
+                    details["affected_parent_paths"] = sorted({
+                        targets[patch.target_id].source_path
+                        for patch in parsed.patches
+                        if targets[patch.target_id].source_path in _OUTLOOK_PARENT_SOURCE_PATHS
+                    })
+                _reject_correction_parent_invariant(
+                    primary, payload, parsed, registry, parent_path,
+                    "outlook_parent_invariant_violation" if parent_path == "outlook"
+                    else "technical_parent_invariant_violation",
+                    **details,
+                )
 
 
 def merge_correction_patch_set(
@@ -2327,8 +2539,13 @@ def merge_correction_patch_set(
     """Apply a fully validated patch set atomically to a copy of ``primary``."""
 
     parsed = validate_correction_patch_set(patch_set, registry, required_target_ids)
-    payload = _build_correction_candidate_payload(primary, parsed, registry)
-    _preflight_outlook_parent_invariants(payload, parsed, registry)
+    affected_parent_paths: set[str] = set()
+    payload = _build_correction_candidate_payload(
+        primary, parsed, registry, affected_parent_paths=affected_parent_paths,
+    )
+    _preflight_correction_parent_invariants(
+        primary, payload, parsed, registry, affected_parent_paths,
+    )
 
     try:
         merged = FinancialAnalysisLLMResponse(**payload)
