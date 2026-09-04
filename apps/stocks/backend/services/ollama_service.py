@@ -422,7 +422,8 @@ codes, i=input-context codes, g=rule. Roles: F=fact, I=interpretation,
 P=investment implication. Classifications: DS=direct support, SM=structured market support,
 SI=supported interpretation, CS=conditional support, UE=no evidence, SC=scope mismatch,
 ES=event-status mismatch, UM=unsupported mechanism, TM=technical-role mismatch. Use only the
-finite codes in the schema for market fields and rules.
+finite codes in the schema for market fields and rules. Rule eligibility is alias-specific: for
+each f key, choose g only from that alias's response-schema enum.
 
 For EACH supplied review unit, identify every materially testable proposition and return one entry
 per atomic proposition. First decompose compound statements, including factual-to-interpretation or
@@ -1181,9 +1182,8 @@ def build_correction_target_registry(
         if coverage_segments is not None
         else _build_review_coverage_segments(review_units)
     )
+    policies_by_id = build_review_unit_policy_registry(review_units)
     units_by_id = {unit.review_unit_id: unit for unit in review_units}
-    if len(units_by_id) != len(review_units):
-        raise ValueError("review unit IDs must be unique")
 
     segments_by_unit: Dict[str, List[ReviewCoverageSegment]] = {}
     for segment in segments:
@@ -1194,7 +1194,7 @@ def build_correction_target_registry(
         unit = units_by_id.get(segment.review_unit_id)
         if unit is None:
             raise ValueError("coverage segment references an unknown review unit")
-        if unit.section not in _PATCHABLE_GROUNDING_SECTIONS:
+        if not policies_by_id[unit.review_unit_id].correctable:
             continue
         source = unit.candidate_text
         if not (0 <= segment.source_start < segment.source_end <= len(source)):
@@ -1316,6 +1316,91 @@ _OUTLOOK_PARENT_SOURCE_PATHS = frozenset({
     "outlook.medium_term",
     "outlook.long_term",
 })
+
+
+@dataclass(frozen=True)
+class ReviewUnitPolicy:
+    """Backend-owned semantic review and correction boundary for one unit type."""
+
+    category: str
+    reviewable: bool
+    allowed_blocking_rules: frozenset[str]
+    correctable: bool
+    protected: bool
+
+
+_ALL_REVIEW_RULES = frozenset(WIRE_RULE_TO_INTERNAL.values())
+_TEXTUAL_PROPOSITION_POLICY = ReviewUnitPolicy(
+    category="textual_proposition",
+    reviewable=True,
+    allowed_blocking_rules=_ALL_REVIEW_RULES,
+    correctable=True,
+    protected=False,
+)
+_PROTECTED_GLOBAL_DECISION_POLICY = ReviewUnitPolicy(
+    category="protected_global_decision",
+    reviewable=True,
+    allowed_blocking_rules=(
+        _ALL_REVIEW_RULES - {"investor_motive_grounding"}
+    ),
+    correctable=False,
+    protected=True,
+)
+_REVIEW_UNIT_POLICY_BY_ID: Mapping[str, ReviewUnitPolicy] = MappingProxyType({
+    "overall_sentiment": _PROTECTED_GLOBAL_DECISION_POLICY,
+    "investment_rating": _PROTECTED_GLOBAL_DECISION_POLICY,
+})
+
+
+def _validate_review_unit_policy(policy: ReviewUnitPolicy) -> None:
+    """Reject internally contradictory policy before it reaches a provider."""
+
+    if policy.protected and policy.correctable:
+        raise ValueError("protected review units cannot be correctable")
+    if policy.reviewable and not policy.allowed_blocking_rules:
+        raise ValueError("reviewable units require at least one allowed blocking rule")
+    if not policy.reviewable and policy.allowed_blocking_rules:
+        raise ValueError("nonreviewable units cannot allow blocking rules")
+    if not policy.reviewable and policy.correctable:
+        raise ValueError("nonreviewable units cannot be correctable")
+    if not policy.allowed_blocking_rules <= _ALL_REVIEW_RULES:
+        raise ValueError("review unit policy contains an unknown blocking rule")
+
+
+def review_unit_policy(unit: ReviewableClaimUnit) -> ReviewUnitPolicy:
+    """Resolve the single authoritative policy for every constructed review unit."""
+
+    policy = _REVIEW_UNIT_POLICY_BY_ID.get(unit.review_unit_id)
+    if policy is None and unit.section in _PATCHABLE_GROUNDING_SECTIONS:
+        policy = _TEXTUAL_PROPOSITION_POLICY
+    if policy is None:
+        raise ValueError(
+            f"review unit has no registered policy: {unit.review_unit_id}"
+        )
+    _validate_review_unit_policy(policy)
+    if policy.correctable != (unit.section in _PATCHABLE_GROUNDING_SECTIONS):
+        raise ValueError(
+            f"review unit policy disagrees with correction targetability: {unit.review_unit_id}"
+        )
+    return policy
+
+
+def build_review_unit_policy_registry(
+    review_units: List[ReviewableClaimUnit],
+) -> Dict[str, ReviewUnitPolicy]:
+    """Return unique, validated policies for request-local review units."""
+
+    policies: Dict[str, ReviewUnitPolicy] = {}
+    for unit in review_units:
+        if unit.review_unit_id in policies:
+            raise ValueError("review unit IDs must be unique")
+        policy = review_unit_policy(unit)
+        if not policy.reviewable:
+            raise ValueError(
+                f"nonreviewable unit cannot generate a reviewer alias: {unit.review_unit_id}"
+            )
+        policies[unit.review_unit_id] = policy
+    return policies
 
 
 @dataclass(frozen=True)
@@ -2680,8 +2765,9 @@ def build_request_local_review_schema(
     available_input_context: Optional[List[str]] = None,
     coverage_segment_aliases: Optional[List[str]] = None,
     coverage_segment_ids: Optional[List[str]] = None,
+    review_unit_policies_by_alias: Optional[Mapping[str, ReviewUnitPolicy]] = None,
 ) -> Dict[str, Any]:
-    """Return a keyed schema requiring every backend-issued batch alias."""
+    """Return a keyed schema requiring every backend-issued, policy-scoped alias."""
     schema = copy.deepcopy(GroundingReviewWireResponse.model_json_schema())
     defs = schema.get("$defs")
     if not isinstance(defs, dict):
@@ -2695,6 +2781,20 @@ def build_request_local_review_schema(
     market_fields_prop = props.get("m")
     if not isinstance(market_fields_prop, dict):
         raise ValueError("GroundingReviewWireFinding schema is missing m")
+    if not available_market_fields:
+        if "items" in market_fields_prop:
+            del market_fields_prop["items"]
+        market_fields_prop["maxItems"] = 0
+    else:
+        available_codes = [
+            INTERNAL_TO_WIRE_MARKET[field] for field in available_market_fields
+        ]
+        if "items" in market_fields_prop:
+            market_fields_prop["items"]["enum"] = available_codes
+        else:
+            market_fields_prop["items"] = {
+                "type": "string", "enum": available_codes
+            }
     aliases = coverage_segment_aliases
     if aliases is None:
         aliases = coverage_segment_ids
@@ -2704,6 +2804,10 @@ def build_request_local_review_schema(
             raise ValueError("grounding review schema requires at least one alias")
         if len(aliases) != len(set(aliases)):
             raise ValueError("coverage segment aliases must be unique")
+        if review_unit_policies_by_alias is not None and (
+            set(review_unit_policies_by_alias) != set(aliases)
+        ):
+            raise ValueError("review unit policies must match coverage segment aliases")
         root_props = schema.get("properties")
         if not isinstance(root_props, dict):
             raise ValueError("GroundingReviewWireResponse schema is missing properties")
@@ -2711,31 +2815,46 @@ def build_request_local_review_schema(
         if not isinstance(findings_prop, dict):
             raise ValueError("GroundingReviewWireResponse schema is missing f")
         findings_prop.clear()
+        scoped_definition_names: Dict[Tuple[str, ...], str] = {}
+        alias_properties: Dict[str, Any] = {}
+        for alias in aliases:
+            item_ref = "#/$defs/GroundingReviewWireFinding"
+            if review_unit_policies_by_alias is not None:
+                policy = review_unit_policies_by_alias[alias]
+                _validate_review_unit_policy(policy)
+                if not policy.reviewable:
+                    raise ValueError("nonreviewable unit cannot generate a reviewer alias")
+                allowed_codes = tuple(
+                    code for code, internal in WIRE_RULE_TO_INTERNAL.items()
+                    if internal in policy.allowed_blocking_rules
+                )
+                if not allowed_codes:
+                    raise ValueError("reviewable alias requires at least one allowed rule")
+                if len(allowed_codes) != len(WIRE_RULE_TO_INTERNAL):
+                    definition_name = scoped_definition_names.get(allowed_codes)
+                    if definition_name is None:
+                        definition_name = (
+                            "GroundingReviewWireFindingRuleScope"
+                            f"{len(scoped_definition_names)}"
+                        )
+                        scoped_definition = copy.deepcopy(claim_def)
+                        scoped_definition["properties"]["g"]["enum"] = list(
+                            allowed_codes
+                        )
+                        defs[definition_name] = scoped_definition
+                        scoped_definition_names[allowed_codes] = definition_name
+                    item_ref = f"#/$defs/{definition_name}"
+            alias_properties[alias] = {
+                "type": "array",
+                "items": {"$ref": item_ref},
+                "minItems": 1,
+            }
         findings_prop.update({
             "type": "object",
-            "properties": {
-                alias: {
-                    "type": "array",
-                    "items": {"$ref": "#/$defs/GroundingReviewWireFinding"},
-                    "minItems": 1,
-                }
-                for alias in aliases
-            },
+            "properties": alias_properties,
             "required": aliases,
             "additionalProperties": False,
         })
-
-    if not available_market_fields:
-        if "items" in market_fields_prop:
-            del market_fields_prop["items"]
-        market_fields_prop["maxItems"] = 0
-        return schema
-
-    available_codes = [INTERNAL_TO_WIRE_MARKET[field] for field in available_market_fields]
-    if "items" in market_fields_prop:
-        market_fields_prop["items"]["enum"] = available_codes
-    else:
-        market_fields_prop["items"] = {"type": "string", "enum": available_codes}
 
     return schema
 
@@ -2775,6 +2894,7 @@ def _decode_grounding_review_wire_response(
     segment_aliases: Dict[str, ReviewCoverageSegment],
     available_market_fields: List[str],
     available_input_context: Optional[List[str]] = None,
+    review_unit_policies: Optional[Mapping[str, ReviewUnitPolicy]] = None,
 ) -> List[GroundingClaimFinding]:
     """Decode compact provider output and assign backend-owned atomic ordinals.
 
@@ -2814,8 +2934,8 @@ def _decode_grounding_review_wire_response(
     decoded: List[GroundingClaimFinding] = []
     for review_unit_id, findings in decoded_by_unit.items():
         ordered = sorted(findings, key=lambda value: (value[1].segment_ordinal, value[0]))
-        for atomic_ordinal, (_, segment, item) in enumerate(ordered):
-            decoded.append(GroundingClaimFinding(
+        for atomic_ordinal, (finding_ordinal, segment, item) in enumerate(ordered):
+            claim = GroundingClaimFinding(
                 review_unit_id=review_unit_id,
                 coverage_segment_id=segment.coverage_segment_id,
                 atomic_ordinal=atomic_ordinal,
@@ -2826,7 +2946,23 @@ def _decode_grounding_review_wire_response(
                 supporting_market_data_fields=[WIRE_MARKET_TO_INTERNAL[code] for code in item.m],
                 supporting_input_context=input_context,
                 rule=WIRE_RULE_TO_INTERNAL[item.g],
-            ))
+            )
+            if review_unit_policies is not None:
+                policy = review_unit_policies.get(review_unit_id)
+                if policy is None:
+                    raise ReviewerMetadataError(
+                        "review_unit_policy_missing", finding_ordinal,
+                        "review_unit_id",
+                    )
+                if (
+                    not policy.reviewable
+                    or claim.rule not in policy.allowed_blocking_rules
+                ):
+                    raise ReviewerMetadataError(
+                        "reviewer_rule_scope_invalid", finding_ordinal,
+                        "g", enum_value=claim.rule,
+                    )
+            decoded.append(claim)
         assigned = [claim.atomic_ordinal for claim in decoded if claim.review_unit_id == review_unit_id]
         if assigned != list(range(len(assigned))):
             raise RuntimeError("backend_atomic_ordinal_invariant_failed")
@@ -4391,6 +4527,7 @@ async def _run_grounding_review(
     )
     available_fields = derive_available_market_fields(request)
     review_units = _build_reviewable_claim_units(result)
+    review_unit_policies = build_review_unit_policy_registry(review_units)
     all_coverage_segments = _build_review_coverage_segments(review_units)
     coverage_segments = (
         list(review_segments)
@@ -4443,6 +4580,10 @@ async def _run_grounding_review(
         request_local_schema = build_request_local_review_schema(
             available_fields,
             coverage_segment_aliases=list(batch_aliases),
+            review_unit_policies_by_alias={
+                alias: review_unit_policies[segment.review_unit_id]
+                for alias, segment in batch_aliases.items()
+            },
         )
         review_started = time.perf_counter()
         raw_review = await ai.generate(
@@ -4543,7 +4684,11 @@ async def _run_grounding_review(
             ) from exc
         try:
             batch_claims = _decode_grounding_review_wire_response(
-                reviewed, batch_aliases, available_fields, derive_available_input_context(request)
+                reviewed,
+                batch_aliases,
+                available_fields,
+                derive_available_input_context(request),
+                review_unit_policies,
             )
             _log_grounding_review_coverage(coverage_record)
             _validate_grounding_review_batch_coverage(batch_claims, batch_segments)
@@ -4564,7 +4709,11 @@ async def _run_grounding_review(
             raise AISemanticGroundingError(
                 "AI analysis could not be completed because semantic grounding review failed.",
                 details={
-                    "failure_kind": "semantic_review_metadata_validation",
+                    "failure_kind": (
+                        "reviewer_rule_scope_invalid"
+                        if exc.code == "reviewer_rule_scope_invalid"
+                        else "semantic_review_metadata_validation"
+                    ),
                     "metadata_error_code": exc.code,
                     "finding_ordinal": exc.finding_ordinal,
                     "field": exc.field,

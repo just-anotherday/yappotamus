@@ -1590,6 +1590,296 @@ def test_request_local_schema_isolated_between_requests():
     assert "injected" not in enum_b
 
 
+def _policy_scoped_schema_for_units(units):
+    segments = ollama_service._build_review_coverage_segments(units)
+    aliases = ollama_service._build_coverage_segment_aliases(segments)
+    policies = ollama_service.build_review_unit_policy_registry(units)
+    schema = ollama_service.build_request_local_review_schema(
+        [],
+        coverage_segment_aliases=list(aliases),
+        review_unit_policies_by_alias={
+            alias: policies[segment.review_unit_id]
+            for alias, segment in aliases.items()
+        },
+    )
+    return schema, aliases, policies
+
+
+def _alias_rule_codes(schema, alias):
+    item_ref = schema["properties"]["f"]["properties"][alias]["items"]["$ref"]
+    definition_name = item_ref.rsplit("/", 1)[-1]
+    return schema["$defs"][definition_name]["properties"]["g"]["enum"]
+
+
+def test_sentiment_alias_schema_excludes_investor_motive_rule():
+    unit = ReviewableClaimUnit(
+        review_unit_id="overall_sentiment",
+        section="overall_sentiment",
+        candidate_text="Bullish",
+    )
+    schema, aliases, _ = _policy_scoped_schema_for_units([unit])
+
+    assert "IM" not in _alias_rule_codes(schema, "s0")
+    assert schema["properties"]["f"]["required"] == list(aliases)
+    assert schema["properties"]["f"]["properties"]["s0"]["minItems"] == 1
+    assert schema["properties"]["f"]["additionalProperties"] is False
+    item_ref = schema["properties"]["f"]["properties"]["s0"]["items"]["$ref"]
+    scoped_finding = schema["$defs"][item_ref.rsplit("/", 1)[-1]]
+    assert scoped_finding["properties"]["m"]["maxItems"] == 0
+    assert "items" not in scoped_finding["properties"]["m"]
+    jsonschema.Draft202012Validator.check_schema(schema)
+
+
+def test_rating_alias_schema_excludes_investor_motive_rule():
+    unit = ReviewableClaimUnit(
+        review_unit_id="investment_rating",
+        section="investment_rating",
+        candidate_text="Hold",
+    )
+    schema, _, _ = _policy_scoped_schema_for_units([unit])
+
+    assert "IM" not in _alias_rule_codes(schema, "s0")
+
+
+def test_textual_proposition_alias_schema_preserves_investor_motive_rule():
+    unit = ReviewableClaimUnit(
+        review_unit_id="market_reaction_analysis",
+        section="market_reaction_analysis",
+        candidate_text="Investors welcomed the move.",
+    )
+    schema, _, _ = _policy_scoped_schema_for_units([unit])
+
+    assert "IM" in _alias_rule_codes(schema, "s0")
+
+
+@pytest.mark.parametrize(
+    ("review_unit_id", "section", "candidate_text"),
+    [
+        ("overall_sentiment", "overall_sentiment", "Bullish"),
+        ("investment_rating", "investment_rating", "Hold"),
+    ],
+)
+def test_post_decode_rejects_investor_motive_for_protected_global_unit(
+    review_unit_id, section, candidate_text
+):
+    unit = ReviewableClaimUnit(
+        review_unit_id=review_unit_id,
+        section=section,
+        candidate_text=candidate_text,
+    )
+    _, aliases, policies = _policy_scoped_schema_for_units([unit])
+    wire = GroundingReviewWireResponse(f={
+        "s0": [{
+            "r": "I", "p": candidate_text, "c": "UE",
+            "a": [], "m": [], "g": "IM",
+        }]
+    })
+
+    with pytest.raises(ollama_service.ReviewerMetadataError) as exc_info:
+        ollama_service._decode_grounding_review_wire_response(
+            wire, aliases, [], review_unit_policies=policies
+        )
+
+    assert exc_info.value.code == "reviewer_rule_scope_invalid"
+    assert exc_info.value.field == "g"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("review_unit_id", "section", "candidate_text"),
+    [
+        ("overall_sentiment", "overall_sentiment", "Bullish"),
+        ("investment_rating", "investment_rating", "Hold"),
+    ],
+)
+async def test_review_pipeline_classifies_invalid_global_rule_scope_before_targeting(
+    monkeypatch, review_unit_id, section, candidate_text
+):
+    unit = ReviewableClaimUnit(
+        review_unit_id=review_unit_id,
+        section=section,
+        candidate_text=candidate_text,
+    )
+    monkeypatch.setattr(
+        ollama_service, "_build_reviewable_claim_units", lambda _result: [unit]
+    )
+    client = SimpleNamespace(generate=AsyncMock(return_value=json.dumps({
+        "f": {"s0": [{
+            "r": "I", "p": candidate_text, "c": "UE",
+            "a": [], "m": [], "g": "IM",
+        }]}
+    })))
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        await ollama_service._run_grounding_review(
+            client,
+            _request(),
+            FinancialAnalysisLLMResponse(**_report()),
+            [1],
+            "test-model",
+        )
+
+    assert exc_info.value.details["failure_kind"] == "reviewer_rule_scope_invalid"
+    assert exc_info.value.details["metadata_error_code"] == (
+        "reviewer_rule_scope_invalid"
+    )
+    client.generate.assert_awaited_once()
+
+
+def _textual_motive_review(request):
+    unit = ReviewableClaimUnit(
+        review_unit_id="market_reaction_analysis",
+        section="market_reaction_analysis",
+        candidate_text="Investors welcomed the move.",
+    )
+    _, aliases, policies = _policy_scoped_schema_for_units([unit])
+    wire = GroundingReviewWireResponse(f={
+        "s0": [{
+            "r": "I", "p": unit.candidate_text, "c": "SI",
+            "a": [1], "m": [], "g": "IM",
+        }]
+    })
+    claims = ollama_service._decode_grounding_review_wire_response(
+        wire, aliases, [], review_unit_policies=policies
+    )
+    normalized = ollama_service._normalize_claim_findings(claims, [1], [unit])
+    registry = ollama_service.build_correction_target_registry([unit])
+    violations = ollama_service._claim_findings_to_violations(
+        normalized,
+        ollama_service._build_article_relationship_manifest(request),
+        registry,
+    )
+    return unit, registry, violations
+
+
+def test_unsupported_textual_investor_motive_remains_exactly_correctable():
+    unit, registry, violations = _textual_motive_review(_request())
+
+    assert len(violations) == 1
+    assert violations[0].rule == "investor_motive_grounding"
+    assert violations[0].target_scope == "PROPOSITION"
+    assert violations[0].patch_target_id == (
+        "market_reaction_analysis.segment_0"
+    )
+    assert registry.get(violations[0].patch_target_id).source_path == (
+        unit.review_unit_id
+    )
+
+
+def test_supported_textual_investor_motive_remains_valid():
+    request = _relationship_request(
+        "Investors welcomed the move after reviewing the announcement."
+    )
+    _, _, violations = _textual_motive_review(request)
+
+    assert violations == []
+
+
+def test_legitimate_protected_global_blocker_still_fails_closed():
+    unit = ReviewableClaimUnit(
+        review_unit_id="overall_sentiment",
+        section="overall_sentiment",
+        candidate_text="Bullish",
+    )
+    _, aliases, policies = _policy_scoped_schema_for_units([unit])
+    wire = GroundingReviewWireResponse(f={
+        "s0": [{
+            "r": "I", "p": "Bullish", "c": "UE",
+            "a": [], "m": [], "g": "UC",
+        }]
+    })
+    claims = ollama_service._decode_grounding_review_wire_response(
+        wire, aliases, [], review_unit_policies=policies
+    )
+    normalized = ollama_service._normalize_claim_findings(claims, [], [unit])
+    violations = ollama_service._claim_findings_to_violations(
+        normalized,
+        registry=ollama_service.build_correction_target_registry([unit]),
+    )
+
+    assert len(violations) == 1
+    assert violations[0].target_scope == "GLOBAL"
+    assert violations[0].patch_target_id is None
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.derive_required_patch_targets(violations)
+    assert exc_info.value.details["global_count"] == 1
+    assert exc_info.value.details["identity_loss_count"] == 0
+
+
+def test_global_and_identity_loss_target_failures_remain_distinct():
+    global_violation = GroundingViolation(
+        rule="unsupported_company_specific_claim",
+        section="overall_sentiment",
+        issue="Protected global conclusion is unsupported.",
+        target_scope="GLOBAL",
+        coverage_segment_id="overall_sentiment.segment_0",
+        atomic_proposition="Bullish",
+    )
+    lost_identity = GroundingViolation(
+        rule="unsupported_company_specific_claim",
+        section="bull_case",
+        issue="Proposition identity was lost.",
+    )
+
+    for violation, expected in (
+        (global_violation, (1, 0)),
+        (lost_identity, (0, 1)),
+    ):
+        with pytest.raises(AISemanticGroundingError) as exc_info:
+            ollama_service.derive_required_patch_targets([violation])
+        assert (
+            exc_info.value.details["global_count"],
+            exc_info.value.details["identity_loss_count"],
+        ) == expected
+
+
+def test_review_unit_policy_is_consistent_for_every_constructed_unit():
+    units = ollama_service._build_reviewable_claim_units(
+        FinancialAnalysisLLMResponse(**_report())
+    )
+    policies = ollama_service.build_review_unit_policy_registry(units)
+
+    assert set(policies) == {unit.review_unit_id for unit in units}
+    for unit in units:
+        policy = policies[unit.review_unit_id]
+        assert policy.reviewable is True
+        assert policy.allowed_blocking_rules
+        assert not (policy.protected and policy.correctable)
+        assert policy.correctable == (
+            unit.section in ollama_service._PATCHABLE_GROUNDING_SECTIONS
+        )
+    for unit_id in ("overall_sentiment", "investment_rating"):
+        assert policies[unit_id].category == "protected_global_decision"
+        assert policies[unit_id].protected is True
+        assert policies[unit_id].correctable is False
+        assert "investor_motive_grounding" not in (
+            policies[unit_id].allowed_blocking_rules
+        )
+    assert policies["market_reaction_analysis"].category == (
+        "textual_proposition"
+    )
+    assert "investor_motive_grounding" in (
+        policies["market_reaction_analysis"].allowed_blocking_rules
+    )
+
+
+def test_nonreviewable_policy_cannot_generate_a_reviewer_alias():
+    nonreviewable = ollama_service.ReviewUnitPolicy(
+        category="synthetic_nonreviewable",
+        reviewable=False,
+        allowed_blocking_rules=frozenset(),
+        correctable=False,
+        protected=True,
+    )
+
+    with pytest.raises(ValueError, match="nonreviewable unit"):
+        ollama_service.build_request_local_review_schema(
+            [],
+            coverage_segment_aliases=["s0"],
+            review_unit_policies_by_alias={"s0": nonreviewable},
+        )
+
+
 def test_reviewer_prompt_includes_available_fields_whitelist():
     """The review user prompt exposes the exact available-field whitelist."""
     prompt = ollama_service._build_grounding_review_prompt(
