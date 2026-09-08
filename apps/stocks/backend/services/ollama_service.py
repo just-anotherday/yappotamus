@@ -28,7 +28,9 @@ from backend.models.analysis import (
     CorrectionPatchSet,
     CorrectionPatchTarget,
     CorrectionTargetRegistry,
+    FinancialAnalysisLLMOutlookResponse,
     FinancialAnalysisLLMResponse,
+    FinancialAnalysisLLMTechnicalResponse,
     FinancialAnalysisRequest,
     FinancialAnalysisResponse,
     FinancialAnalysisV2LLMResponse,
@@ -413,12 +415,15 @@ GROUNDING_REVIEW_SYSTEM_PROMPT = """You are a strict claim-level semantic-ground
 structured financial analysis. Use only the supplied structured market data and indexed evidence
 manifest. Return only JSON matching the provided grounding-review schema. Do not reveal reasoning.
 
-Wire response: f is findings; each finding uses s=segment alias, r=role, p=proposition,
-c=classification, a=article indexes, m=market codes, i=input-context codes, g=rule. Roles: F=fact, I=interpretation,
+Wire response: f is an object keyed by the supplied segment aliases. Include EVERY supplied alias
+exactly as a key, give every key a non-empty array of one or more findings, omit no alias, and invent
+no keys. Each finding uses r=role, p=proposition, c=classification, a=article indexes, m=market
+codes, i=input-context codes, g=rule. Roles: F=fact, I=interpretation,
 P=investment implication. Classifications: DS=direct support, SM=structured market support,
 SI=supported interpretation, CS=conditional support, UE=no evidence, SC=scope mismatch,
 ES=event-status mismatch, UM=unsupported mechanism, TM=technical-role mismatch. Use only the
-finite codes in the schema for market fields and rules.
+finite codes in the schema for market fields and rules. Rule eligibility is alias-specific: for
+each f key, choose g only from that alias's response-schema enum.
 
 For EACH supplied review unit, identify every materially testable proposition and return one entry
 per atomic proposition. First decompose compound statements, including factual-to-interpretation or
@@ -429,7 +434,7 @@ evidence. Evidence for a first proposition never automatically supports a downst
 Do not omit a supplied review unit, collapse units across sections, or create a multiple_sections
 finding. Wire key p must identify only the proposition evaluated, be 120 characters or fewer, and
 contain no explanation, rationale, quotation, or repeated source paragraph. For EACH supplied
-coverage segment, return at least one finding referencing its compact s alias. A segment may require multiple findings; never let a fact's
+coverage segment, return at least one finding under its compact alias key. A segment may require multiple findings; never let a fact's
 support automatically cover an interpretation or investment implication in the same segment.
 The complete evidence manifest contains both selected and unselected supplied articles. Selected
 articles are the report's actual citation set. Unselected articles are visible only so you can detect
@@ -1177,9 +1182,8 @@ def build_correction_target_registry(
         if coverage_segments is not None
         else _build_review_coverage_segments(review_units)
     )
+    policies_by_id = build_review_unit_policy_registry(review_units)
     units_by_id = {unit.review_unit_id: unit for unit in review_units}
-    if len(units_by_id) != len(review_units):
-        raise ValueError("review unit IDs must be unique")
 
     segments_by_unit: Dict[str, List[ReviewCoverageSegment]] = {}
     for segment in segments:
@@ -1190,7 +1194,7 @@ def build_correction_target_registry(
         unit = units_by_id.get(segment.review_unit_id)
         if unit is None:
             raise ValueError("coverage segment references an unknown review unit")
-        if unit.section not in _PATCHABLE_GROUNDING_SECTIONS:
+        if not policies_by_id[unit.review_unit_id].correctable:
             continue
         source = unit.candidate_text
         if not (0 <= segment.source_start < segment.source_end <= len(source)):
@@ -1307,6 +1311,158 @@ _CORRECTION_PATCH_PROTECTED_FIELDS = (
     "investment_rating",
     "article_indices_used",
 )
+_OUTLOOK_PARENT_SOURCE_PATHS = frozenset({
+    "outlook.short_term",
+    "outlook.medium_term",
+    "outlook.long_term",
+})
+
+
+@dataclass(frozen=True)
+class ReviewUnitPolicy:
+    """Backend-owned semantic review and correction boundary for one unit type."""
+
+    category: str
+    reviewable: bool
+    allowed_blocking_rules: frozenset[str]
+    correctable: bool
+    protected: bool
+
+
+_ALL_REVIEW_RULES = frozenset(WIRE_RULE_TO_INTERNAL.values())
+_TEXTUAL_PROPOSITION_POLICY = ReviewUnitPolicy(
+    category="textual_proposition",
+    reviewable=True,
+    allowed_blocking_rules=_ALL_REVIEW_RULES,
+    correctable=True,
+    protected=False,
+)
+_PROTECTED_GLOBAL_DECISION_POLICY = ReviewUnitPolicy(
+    category="protected_global_decision",
+    reviewable=True,
+    allowed_blocking_rules=(
+        _ALL_REVIEW_RULES - {"investor_motive_grounding"}
+    ),
+    correctable=False,
+    protected=True,
+)
+_REVIEW_UNIT_POLICY_BY_ID: Mapping[str, ReviewUnitPolicy] = MappingProxyType({
+    "overall_sentiment": _PROTECTED_GLOBAL_DECISION_POLICY,
+    "investment_rating": _PROTECTED_GLOBAL_DECISION_POLICY,
+})
+
+
+def _validate_review_unit_policy(policy: ReviewUnitPolicy) -> None:
+    """Reject internally contradictory policy before it reaches a provider."""
+
+    if policy.protected and policy.correctable:
+        raise ValueError("protected review units cannot be correctable")
+    if policy.reviewable and not policy.allowed_blocking_rules:
+        raise ValueError("reviewable units require at least one allowed blocking rule")
+    if not policy.reviewable and policy.allowed_blocking_rules:
+        raise ValueError("nonreviewable units cannot allow blocking rules")
+    if not policy.reviewable and policy.correctable:
+        raise ValueError("nonreviewable units cannot be correctable")
+    if not policy.allowed_blocking_rules <= _ALL_REVIEW_RULES:
+        raise ValueError("review unit policy contains an unknown blocking rule")
+
+
+def review_unit_policy(unit: ReviewableClaimUnit) -> ReviewUnitPolicy:
+    """Resolve the single authoritative policy for every constructed review unit."""
+
+    policy = _REVIEW_UNIT_POLICY_BY_ID.get(unit.review_unit_id)
+    if policy is None and unit.section in _PATCHABLE_GROUNDING_SECTIONS:
+        policy = _TEXTUAL_PROPOSITION_POLICY
+    if policy is None:
+        raise ValueError(
+            f"review unit has no registered policy: {unit.review_unit_id}"
+        )
+    _validate_review_unit_policy(policy)
+    if policy.correctable != (unit.section in _PATCHABLE_GROUNDING_SECTIONS):
+        raise ValueError(
+            f"review unit policy disagrees with correction targetability: {unit.review_unit_id}"
+        )
+    return policy
+
+
+def build_review_unit_policy_registry(
+    review_units: List[ReviewableClaimUnit],
+) -> Dict[str, ReviewUnitPolicy]:
+    """Return unique, validated policies for request-local review units."""
+
+    policies: Dict[str, ReviewUnitPolicy] = {}
+    for unit in review_units:
+        if unit.review_unit_id in policies:
+            raise ValueError("review unit IDs must be unique")
+        policy = review_unit_policy(unit)
+        if not policy.reviewable:
+            raise ValueError(
+                f"nonreviewable unit cannot generate a reviewer alias: {unit.review_unit_id}"
+            )
+        policies[unit.review_unit_id] = policy
+    return policies
+
+
+@dataclass(frozen=True)
+class CorrectionParentInvariant:
+    """Explicit correction-only constraints; public/provider models stay unchanged."""
+
+    min_items: Optional[int] = None
+    min_normalized_length: int = 0
+    nonblank_items: bool = False
+    item_text_field: Optional[str] = None
+    validator: Optional[Callable[[Any], Any]] = None
+
+
+_CORRECTION_PARENT_INVARIANTS = MappingProxyType({
+    **{
+        path: CorrectionParentInvariant(min_items=1, nonblank_items=True)
+        for path in ("news_summary", "bull_case", "bear_case", "actionable_insights")
+    },
+    "key_catalysts": CorrectionParentInvariant(min_items=0, nonblank_items=True),
+    "key_risks": CorrectionParentInvariant(
+        min_items=0, nonblank_items=True, item_text_field="risk",
+    ),
+    **{
+        path: CorrectionParentInvariant(min_normalized_length=1)
+        for path in (
+            "market_reaction_analysis", "portfolio_fit", "executive_summary",
+            "technical_analysis.trend",
+        )
+    },
+    **{
+        f"technical_analysis.{name}": CorrectionParentInvariant(
+            min_items=0,
+            nonblank_items=True,
+            validator=FinancialAnalysisLLMTechnicalResponse.reject_malformed_level_lists,
+        )
+        for name in ("support_levels", "resistance_levels")
+    },
+    **{
+        f"technical_analysis.{name}": CorrectionParentInvariant(
+            min_normalized_length=1,
+            validator=(
+                FinancialAnalysisLLMTechnicalResponse.normalize_or_reject_malformed_scalar_levels
+            ),
+        )
+        for name in ("breakout_level", "breakdown_level")
+    },
+    "outlook": CorrectionParentInvariant(
+        validator=FinancialAnalysisLLMOutlookResponse.model_validate,
+    ),
+})
+_CORRECTION_PARENT_DIAGNOSTIC_TARGET_LIMIT = 32
+
+
+def _correction_parent_path(target: CorrectionPatchTarget) -> str:
+    """Resolve backend-owned paths without changing target identity or spans."""
+
+    path = re.sub(r"\[\d+\]", "", target.source_path)
+    if path.startswith("key_risks."):
+        return "key_risks"
+    if path in _OUTLOOK_PARENT_SOURCE_PATHS:
+        return "outlook"
+    return path
 
 
 @dataclass(frozen=True)
@@ -1317,6 +1473,285 @@ class CorrectionPatchMergeResult:
     review_units: List[ReviewableClaimUnit]
     coverage_segments: List[ReviewCoverageSegment]
     target_registry: CorrectionTargetRegistry
+
+
+_PROPOSITION_REVIEW_CONTRACT_VERSION = "prompt-v3-semantic-review-v1"
+
+
+@dataclass(frozen=True)
+class PropositionReviewIdentity:
+    """Batch-independent identity for one backend-owned coverage proposition."""
+
+    fingerprint: str
+    coverage_segment_id: str
+    review_unit_id: str
+    section: str
+    normalized_text: str
+    evaluation_contract: str
+    evidence_fingerprint: str
+    structured_support_fingerprint: str
+    backend_derived_market_fields: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PropositionReviewLedgerEntry:
+    """Immutable initial verdict and evidence record for one proposition."""
+
+    identity: PropositionReviewIdentity
+    claims: Tuple[NormalizedGroundingClaimFinding, ...]
+    violations: Tuple[GroundingViolation, ...]
+    applicable_rules: Tuple[str, ...]
+    passed: bool
+
+
+@dataclass(frozen=True)
+class InitialPropositionReviewLedger:
+    """Request-local initial-review ledger; never persisted or exposed."""
+
+    entries_by_fingerprint: Mapping[str, PropositionReviewLedgerEntry]
+    entries_by_segment_id: Mapping[str, PropositionReviewLedgerEntry]
+
+
+@dataclass(frozen=True)
+class FinalPropositionReviewPlan:
+    """Deterministic reconciliation of final propositions against the ledger."""
+
+    final_identities_by_segment_id: Mapping[str, PropositionReviewIdentity]
+    carried_entries: Tuple[PropositionReviewLedgerEntry, ...]
+    review_segments: Tuple[ReviewCoverageSegment, ...]
+    changed_segment_ids: Tuple[str, ...]
+    new_segment_ids: Tuple[str, ...]
+
+
+def _normalize_review_proposition_text(text: str) -> str:
+    """Normalize only representation-level differences safe for identity.
+
+    Case, numeric formatting, commas, colons, semicolons, question marks, and
+    exclamation marks remain material. A terminal full stop is the one allowed
+    punctuation exception because it cannot change an otherwise complete
+    declarative proposition's financial meaning.
+    """
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized[:-1].rstrip() if normalized.endswith(".") else normalized
+
+
+def _canonical_fingerprint(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _trusted_review_evidence_fingerprint(
+    request: FinancialAnalysisRequest,
+    selected_indices: List[int],
+) -> str:
+    """Fingerprint exactly the trusted evidence manifest visible to review."""
+
+    return _canonical_fingerprint({
+        "selected_article_indices": list(selected_indices),
+        "articles": [article.model_dump(mode="json") for article in request.news_articles],
+        "input_context": derive_available_input_context(request),
+    })
+
+
+def _structured_review_input_fingerprint(
+    request: FinancialAnalysisRequest,
+    backend_derived_market_fields: Tuple[str, ...],
+) -> str:
+    return _canonical_fingerprint({
+        "available_market_data": build_available_market_data(request),
+        "backend_derived_market_fields": list(backend_derived_market_fields),
+    })
+
+
+def _build_proposition_review_identities(
+    request: FinancialAnalysisRequest,
+    result: FinancialAnalysisLLMResponse,
+    selected_indices: List[int],
+    coverage_segments: Optional[List[ReviewCoverageSegment]] = None,
+) -> Tuple[List[ReviewableClaimUnit], List[ReviewCoverageSegment], Dict[str, PropositionReviewIdentity]]:
+    """Build backend-owned identities without using reviewer-generated prose."""
+
+    review_units = _build_reviewable_claim_units(result)
+    segments = (
+        coverage_segments
+        if coverage_segments is not None
+        else _build_review_coverage_segments(review_units)
+    )
+    units_by_id = {unit.review_unit_id: unit for unit in review_units}
+    evidence_fingerprint = _trusted_review_evidence_fingerprint(
+        request, selected_indices
+    )
+    evaluation_contract = _canonical_fingerprint({
+        "version": _PROPOSITION_REVIEW_CONTRACT_VERSION,
+        "review_prompt": GROUNDING_REVIEW_SYSTEM_PROMPT,
+    })
+    identities: Dict[str, PropositionReviewIdentity] = {}
+    for segment in segments:
+        unit = units_by_id[segment.review_unit_id]
+        proposition = unit.candidate_text[segment.source_start:segment.source_end]
+        normalized_text = _normalize_review_proposition_text(proposition)
+        derived_fields = tuple(_derive_structured_market_support(proposition, request))
+        structured_fingerprint = _structured_review_input_fingerprint(
+            request, derived_fields
+        )
+        material = {
+            "coverage_segment_id": segment.coverage_segment_id,
+            "review_unit_id": segment.review_unit_id,
+            "section": unit.section,
+            "normalized_text": normalized_text,
+            "evaluation_contract": evaluation_contract,
+            "evidence_fingerprint": evidence_fingerprint,
+            "structured_support_fingerprint": structured_fingerprint,
+        }
+        identity = PropositionReviewIdentity(
+            fingerprint=_canonical_fingerprint(material),
+            coverage_segment_id=segment.coverage_segment_id,
+            review_unit_id=segment.review_unit_id,
+            section=unit.section,
+            normalized_text=normalized_text,
+            evaluation_contract=evaluation_contract,
+            evidence_fingerprint=evidence_fingerprint,
+            structured_support_fingerprint=structured_fingerprint,
+            backend_derived_market_fields=derived_fields,
+        )
+        if identity.fingerprint in identities:
+            raise RuntimeError("proposition_review_identity_collision")
+        identities[identity.fingerprint] = identity
+    return review_units, segments, identities
+
+
+def _build_initial_proposition_review_ledger(
+    request: FinancialAnalysisRequest,
+    result: FinancialAnalysisLLMResponse,
+    selected_indices: List[int],
+    review: GroundingEnforcementResult,
+) -> InitialPropositionReviewLedger:
+    """Freeze every initial proposition's exact review inputs and verdict."""
+
+    _, segments, identities = _build_proposition_review_identities(
+        request, result, selected_indices
+    )
+    identity_by_segment = {
+        identity.coverage_segment_id: identity for identity in identities.values()
+    }
+    claims_by_segment: Dict[str, List[NormalizedGroundingClaimFinding]] = {}
+    for claim in review.claims:
+        claims_by_segment.setdefault(claim.coverage_segment_id, []).append(claim)
+    violations_by_segment: Dict[str, List[GroundingViolation]] = {}
+    for violation in review.violations:
+        if violation.coverage_segment_id is None:
+            continue
+        violations_by_segment.setdefault(violation.coverage_segment_id, []).append(
+            violation
+        )
+
+    entries_by_fingerprint: Dict[str, PropositionReviewLedgerEntry] = {}
+    entries_by_segment_id: Dict[str, PropositionReviewLedgerEntry] = {}
+    for segment in segments:
+        identity = identity_by_segment[segment.coverage_segment_id]
+        claims = tuple(
+            claim.model_copy(deep=True)
+            for claim in claims_by_segment.get(segment.coverage_segment_id, [])
+        )
+        violations = tuple(
+            violation.model_copy(deep=True)
+            for violation in violations_by_segment.get(segment.coverage_segment_id, [])
+        )
+        rules = tuple(_order_preserving_dedupe(
+            [claim.rule for claim in claims]
+            + [violation.rule for violation in violations]
+        ))
+        entry = PropositionReviewLedgerEntry(
+            identity=identity,
+            claims=claims,
+            violations=violations,
+            applicable_rules=rules,
+            passed=not violations,
+        )
+        entries_by_fingerprint[identity.fingerprint] = entry
+        entries_by_segment_id[identity.coverage_segment_id] = entry
+
+    # A global violation is deliberately unreconcilable and must never be
+    # silently carried as a proposition verdict.
+    if any(violation.coverage_segment_id is None for violation in review.violations):
+        raise RuntimeError("global_initial_violation_cannot_enter_proposition_ledger")
+    return InitialPropositionReviewLedger(
+        entries_by_fingerprint=MappingProxyType(entries_by_fingerprint),
+        entries_by_segment_id=MappingProxyType(entries_by_segment_id),
+    )
+
+
+def _plan_final_proposition_review(
+    request: FinancialAnalysisRequest,
+    result: FinancialAnalysisLLMResponse,
+    selected_indices: List[int],
+    initial_ledger: InitialPropositionReviewLedger,
+    touched_target_ids: List[str],
+) -> FinalPropositionReviewPlan:
+    """Carry exact identities and select only changed/new units for review."""
+
+    _, final_segments, identities = _build_proposition_review_identities(
+        request, result, selected_indices
+    )
+    identity_by_segment = {
+        identity.coverage_segment_id: identity for identity in identities.values()
+    }
+    touched = set(touched_target_ids)
+    carried: List[PropositionReviewLedgerEntry] = []
+    review_segments: List[ReviewCoverageSegment] = []
+    changed: List[str] = []
+    new: List[str] = []
+    for segment in final_segments:
+        identity = identity_by_segment[segment.coverage_segment_id]
+        entry = initial_ledger.entries_by_fingerprint.get(identity.fingerprint)
+        if entry is not None and segment.coverage_segment_id not in touched:
+            carried.append(entry)
+            continue
+        review_segments.append(segment)
+        if segment.coverage_segment_id in initial_ledger.entries_by_segment_id:
+            changed.append(segment.coverage_segment_id)
+        else:
+            new.append(segment.coverage_segment_id)
+    return FinalPropositionReviewPlan(
+        final_identities_by_segment_id=MappingProxyType(identity_by_segment),
+        carried_entries=tuple(carried),
+        review_segments=tuple(review_segments),
+        changed_segment_ids=tuple(changed),
+        new_segment_ids=tuple(new),
+    )
+
+
+def _assemble_reconciled_final_review(
+    plan: FinalPropositionReviewPlan,
+    reviewed: Optional[GroundingEnforcementResult],
+) -> GroundingEnforcementResult:
+    carried_claims = [
+        claim.model_copy(deep=True)
+        for entry in plan.carried_entries
+        for claim in entry.claims
+    ]
+    carried_violations = [
+        violation.model_copy(deep=True)
+        for entry in plan.carried_entries
+        for violation in entry.violations
+    ]
+    reviewed_claims = [] if reviewed is None else list(reviewed.claims)
+    reviewed_violations = [] if reviewed is None else list(reviewed.violations)
+    violations = _merge_grounding_violations(
+        carried_violations, reviewed_violations
+    )
+    return GroundingEnforcementResult(
+        valid=not violations,
+        claims=carried_claims + reviewed_claims,
+        violations=violations,
+    )
 
 
 def _raise_correction_patch_error(failure_kind: str, **details: Any) -> None:
@@ -1391,15 +1826,66 @@ def _replacement_length_limit(target: CorrectionPatchTarget) -> int:
     )
 
 
+def _is_outlook_leading_target(target: CorrectionPatchTarget) -> bool:
+    """Return whether an exact target owns an outlook field's required prefix."""
+
+    return target.source_path in _OUTLOOK_PARENT_SOURCE_PATHS and (
+        target.source_start == 0
+        or target.patch_target_id == f"{target.source_path}.segment_0"
+    )
+
+
 def _validate_patch_replacement(
     patch: CorrectionPatch,
     target: CorrectionPatchTarget,
 ) -> None:
+    if (
+        patch.operation == "DELETE"
+        and _is_outlook_leading_target(target)
+    ):
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="outlook_leading_target_delete_forbidden",
+            target_id=patch.target_id,
+            parent_path=target.source_path,
+        )
     if patch.operation != "REPLACE":
         return
     replacement = patch.replacement
     if replacement is None:
         _raise_correction_patch_error("correction_patch_schema_invalid")
+    if not _normalize_review_proposition_text(replacement):
+        logger.warning(
+            "[AI][CorrectionPatchValidation] %s",
+            json.dumps({
+                "correlation_id": current_correlation_id(),
+                "target_id": patch.target_id,
+                "operation": patch.operation,
+                "strategy": target.target_strategy,
+                "parent_path": _correction_parent_path(target),
+                "before_target_length": len(target.original_target_text),
+                "after_target_length": len(replacement),
+                "reason": "normalized_empty_replacement",
+            }, sort_keys=True),
+        )
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="normalized_empty_replacement",
+            target_id=patch.target_id,
+        )
+    if _normalize_review_proposition_text(replacement) == _normalize_review_proposition_text(
+        target.original_target_text
+    ):
+        logger.warning(
+            "[AI][PatchCorrection] no_op_patch_rejections=1 target_id=%s",
+            patch.target_id,
+        )
+        _raise_correction_patch_error(
+            "correction_patch_schema_invalid",
+            reason="replacement_no_op",
+            target_id=patch.target_id,
+            no_op_patch_rejections=1,
+        )
     if replacement != replacement.strip():
         _raise_correction_patch_error(
             "correction_patch_schema_invalid",
@@ -1494,11 +1980,22 @@ def validate_correction_patch_set(
     return parsed
 
 
+_CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES = (
+    "Moving-average-based trend assessment is limited without supplied MA50 and MA200 values.",
+)
+_CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES = (
+    "MA50 was not supplied. MA200 was not supplied.",
+    "Moving-average-based trend assessment is limited because MA50 and MA200 were not supplied.",
+)
+
+
 PATCH_CORRECTION_SYSTEM_PROMPT = """You repair only explicitly authorized report propositions.
 Return one JSON object matching the supplied CorrectionPatchSet schema. Use exactly one DELETE or
 REPLACE patch for every supplied target_id and no other IDs. DELETE removes an unnecessary invalid
-proposition. REPLACE substitutes exactly one concise atomic proposition. Never rewrite a section,
-modify context, invent a target, add unrelated facts, or include prose outside the JSON object."""
+proposition. REPLACE substitutes exactly one concise backend-atomic coverage segment with no newline
+or bullet. Keep each replacement limited to its exact target; never rewrite neighboring targets or
+the parent section. Never invent a target, add unrelated facts, or include prose outside the JSON
+object."""
 
 
 def build_request_local_patch_schema(
@@ -1565,10 +2062,56 @@ def _patch_repair_instruction(target_rules: List[str]) -> str:
             "Prefer DELETE unless supplied relationship evidence explicitly supports a "
             "replacement; never substitute a different speculative motive or causal explanation."
         )
+    if len(set(target_rules)) > 1:
+        guidance.append(
+            "If replacing, satisfy every supplied violating rule in one backend-atomic coverage "
+            "segment; do not return multiple patches for this target. Otherwise use DELETE when "
+            "evidence cannot support a replacement and the supplied parent constraints permit "
+            "deletion."
+        )
     return " ".join(guidance) or (
         "Remove the unsupported proposition or replace it with one proposition supported only "
         "by the supplied target evidence."
     )
+
+
+def _outlook_parent_invariant_instruction(
+    target: CorrectionPatchTarget,
+) -> Optional[str]:
+    """Describe the backend-owned parent constraint for an outlook target."""
+
+    if target.source_path not in _OUTLOOK_PARENT_SOURCE_PATHS:
+        return None
+    instruction = (
+        "After all patches, this outlook field must start with Bullish, Neutral, or Bearish "
+        "and retain a substantive explanation."
+    )
+    if _is_outlook_leading_target(target):
+        instruction += " This leading target must use REPLACE; DELETE is forbidden."
+    return instruction
+
+
+def _correction_parent_invariant_instruction(target: CorrectionPatchTarget) -> str:
+    outlook_instruction = _outlook_parent_invariant_instruction(target)
+    if outlook_instruction is not None:
+        return outlook_instruction
+    parent_path = _correction_parent_path(target)
+    invariant = _CORRECTION_PARENT_INVARIANTS[parent_path]
+    guidance = [f"After the complete patch set, {parent_path}"]
+    if invariant.min_items:
+        guidance.append(
+            f"must retain at least {invariant.min_items} item; do not DELETE the last "
+            "required item or collectively DELETE every item."
+        )
+    elif invariant.min_items == 0:
+        guidance.append("may contain zero items.")
+    else:
+        guidance.append("must retain nonblank content; do not DELETE all its content.")
+    if invariant.nonblank_items:
+        guidance.append("Every surviving item must retain nonblank proposition content.")
+    if invariant.validator is not None:
+        guidance.append("Preserve the existing technical-level value constraints.")
+    return " ".join(guidance)
 
 
 def build_patch_correction_prompt(
@@ -1605,7 +2148,7 @@ def build_patch_correction_prompt(
         })
         used_article_indices.update(article_indices)
         target_rules = rules_by_target.get(target_id, [])
-        targets_payload.append({
+        target_payload = {
             "target_id": target_id,
             "section": target.section,
             "original_proposition": target.original_target_text,
@@ -1614,7 +2157,11 @@ def build_patch_correction_prompt(
             "read_only_previous_context": target.previous_context,
             "read_only_next_context": target.next_context,
             "trusted_article_indices_available": article_indices,
-        })
+        }
+        target_payload["parent_field_invariant"] = (
+            _correction_parent_invariant_instruction(target)
+        )
+        targets_payload.append(target_payload)
 
     article_manifest = [
         {
@@ -1633,11 +2180,12 @@ def build_patch_correction_prompt(
         and request.price_data.moving_average_50 is None
         and request.price_data.moving_average_200 is None
     ):
+        missing_ma_example = _CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES[0]
         missing_ma_guidance = (
             "MA50 and MA200 were not supplied. If this absence is material, say exactly that, "
-            "or say moving-average-based trend assessment is limited because MA50 and MA200 "
-            "were not supplied. Do not claim insufficient technical data, insufficient price "
-            "data, inability to perform technical analysis, or lack of detailed technical data."
+            f'or use this valid one-segment replacement: "{missing_ma_example}" Do not claim '
+            "insufficient technical data, insufficient price data, inability to perform "
+            "technical analysis, or lack of detailed technical data."
         )
     request_payload = {
         "targets": targets_payload,
@@ -1646,12 +2194,24 @@ def build_patch_correction_prompt(
         "deterministic_input_context": derive_available_input_context(request),
         "missing_moving_average_guidance": missing_ma_guidance,
     }
+    multi_sentence_example, causal_boundary_example = (
+        _CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES
+    )
     return (
         "Return only CorrectionPatchSet JSON. Patch every target exactly once. Only the target_id "
         "values inside targets are authorized. DELETE must use replacement=null and an empty "
-        "article_indices_used list. REPLACE must be one trimmed atomic proposition with no "
-        "newline or bullet. Neighbor context is read-only and must not be edited. Prefer DELETE "
-        "when the invalid proposition is unnecessary; otherwise use only the supplied evidence. "
+        "article_indices_used list. REPLACE must contain exactly one backend-atomic coverage "
+        "segment, with no newline or bullet. A REPLACE is invalid when backend segmentation "
+        f'splits it; invalid examples include "{multi_sentence_example}" and '
+        f'"{causal_boundary_example}" Neighbor context is read-only and must not be edited, and '
+        "a replacement must not rewrite neighboring targets or its parent section. When one "
+        "target lists multiple violating_rules, satisfy every supplied rule in ONE backend-atomic "
+        "replacement; do not return multiple patches for that target. Otherwise use DELETE when "
+        "evidence cannot support a replacement, DELETE is allowed for the target, and the supplied "
+        "parent constraints permit deletion. Prefer DELETE when the invalid proposition is "
+        "unnecessary and all parent invariants remain valid. Use REPLACE only when supplied "
+        "evidence supports replacement content; never invent content to satisfy a parent "
+        "constraint. "
         "Do not create IDs, paths, sections, unrelated facts, or whole-section rewrites. Article "
         "indices are 1-based and must use the minimum useful trusted subset; structured-market-"
         "only replacements use an empty list.\n\nCorrection request (JSON):\n"
@@ -1872,15 +2432,15 @@ def _delete_correction_text_span(source: str, start: int, end: int) -> str:
     return left + right
 
 
-def merge_correction_patch_set(
+def _build_correction_candidate_payload(
     primary: FinancialAnalysisLLMResponse,
+    parsed: CorrectionPatchSet,
     registry: CorrectionTargetRegistry,
-    required_target_ids: List[str],
-    patch_set: Any,
-) -> CorrectionPatchMergeResult:
-    """Apply a fully validated patch set atomically to a copy of ``primary``."""
+    *,
+    affected_parent_paths: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    """Apply trusted offsets to a disposable payload for invariant preflight."""
 
-    parsed = validate_correction_patch_set(patch_set, registry, required_target_ids)
     targets = {target.patch_target_id: target for target in registry.targets}
     payload = primary.model_dump(mode="python")
     payload["article_indices_used"] = list(primary.article_indices_used)
@@ -1889,6 +2449,8 @@ def merge_correction_patch_set(
     container_deletes: List[Tuple[str, Optional[str], int]] = []
     for patch in parsed.patches:
         target = targets[patch.target_id]
+        if affected_parent_paths is not None:
+            affected_parent_paths.add(_correction_parent_path(target))
         source = _resolve_correction_source_value(payload, target.source_path)
         if not (0 <= target.source_start < target.source_end <= len(source)) or (
             source[target.source_start:target.source_end] != target.original_target_text
@@ -1904,7 +2466,10 @@ def merge_correction_patch_set(
             )
             delete_index = nested_index if nested_index is not None else index
             if delete_index is None:
-                _raise_correction_patch_error("correction_patch_merge_failure", reason="invalid_list_delete")
+                _raise_correction_patch_error(
+                    "correction_patch_merge_failure",
+                    reason="invalid_list_delete",
+                )
             container_deletes.append((field, nested, delete_index))
         else:
             patches_by_path.setdefault(target.source_path, []).append((patch, target))
@@ -1936,14 +2501,165 @@ def merge_correction_patch_set(
         _set_correction_source_value(payload, source_path, source)
 
     for field, nested, index in sorted(
-        container_deletes, key=lambda item: (item[0], item[1] or "", item[2]), reverse=True
+        container_deletes,
+        key=lambda item: (item[0], item[1] or "", item[2]),
+        reverse=True,
     ):
         value = payload.get(field)
         if nested is not None and isinstance(value, dict):
             value = value.get(nested)
         if not isinstance(value, list) or not (0 <= index < len(value)):
-            _raise_correction_patch_error("correction_patch_merge_failure", reason="list_delete_invalid")
+            _raise_correction_patch_error(
+                "correction_patch_merge_failure",
+                reason="list_delete_invalid",
+            )
         del value[index]
+    return payload
+
+
+def _correction_parent_value(value: Any, parent_path: str) -> Any:
+    for part in parent_path.split("."):
+        value = value.get(part) if isinstance(value, dict) else getattr(value, part, None)
+    return value
+
+
+def _correction_parent_size(value: Any) -> Optional[int]:
+    if isinstance(value, OutlookResponse):
+        return len(value.model_dump())
+    return len(value) if isinstance(value, (str, list, dict)) else None
+
+
+def _reject_correction_parent_invariant(
+    primary: FinancialAnalysisLLMResponse,
+    payload: Dict[str, Any],
+    parsed: CorrectionPatchSet,
+    registry: CorrectionTargetRegistry,
+    parent_path: str,
+    reason: str,
+    **details: Any,
+) -> None:
+    """Emit bounded identities/sizes only, never model or replacement content."""
+
+    targets = {target.patch_target_id: target for target in registry.targets}
+    parent_patches = sorted(
+        (
+            patch for patch in parsed.patches
+            if _correction_parent_path(targets[patch.target_id]) == parent_path
+        ),
+        key=lambda patch: patch.target_id,
+    )
+    before = _correction_parent_value(primary, parent_path)
+    after = _correction_parent_value(payload, parent_path)
+    record = {
+        "correlation_id": current_correlation_id(),
+        "parent_path": parent_path,
+        "reason": reason,
+        "size_kind": "items" if isinstance(after, list) else (
+            "characters" if isinstance(after, str) else "fields"
+        ),
+        "before_size": _correction_parent_size(before),
+        "after_size": _correction_parent_size(after),
+        "target_count": len(parent_patches),
+        "targets_truncated": len(parent_patches) > _CORRECTION_PARENT_DIAGNOSTIC_TARGET_LIMIT,
+        "targets": [
+            {
+                "target_id": patch.target_id,
+                "operation": patch.operation,
+                "strategy": targets[patch.target_id].target_strategy,
+            }
+            for patch in parent_patches[:_CORRECTION_PARENT_DIAGNOSTIC_TARGET_LIMIT]
+        ],
+    }
+    logger.warning("[AI][CorrectionParentInvariant] %s", json.dumps(record, sort_keys=True))
+    _raise_correction_patch_error(
+        "correction_patch_schema_invalid" if parent_path == "outlook"
+        else "correction_patch_merge_failure",
+        reason=reason,
+        parent_path=parent_path,
+        **details,
+    )
+
+
+def _preflight_correction_parent_invariants(
+    primary: FinancialAnalysisLLMResponse,
+    payload: Dict[str, Any],
+    parsed: CorrectionPatchSet,
+    registry: CorrectionTargetRegistry,
+    affected_parent_paths: set[str],
+) -> None:
+    """Validate only modified parents, after the entire authorized patch set."""
+
+    for parent_path in sorted(affected_parent_paths):
+        invariant = _CORRECTION_PARENT_INVARIANTS.get(parent_path)
+        if invariant is None:
+            _reject_correction_parent_invariant(
+                primary, payload, parsed, registry, parent_path,
+                "unregistered_correction_parent",
+            )
+        value = _correction_parent_value(payload, parent_path)
+        reason = None
+        if invariant.min_items is not None:
+            if not isinstance(value, list):
+                reason = "correction_parent_invalid_type"
+            elif len(value) < invariant.min_items:
+                reason = "required_parent_empty_list"
+            elif invariant.nonblank_items:
+                for item in value:
+                    text = (
+                        item.get(invariant.item_text_field)
+                        if invariant.item_text_field and isinstance(item, dict)
+                        else item
+                    )
+                    if not isinstance(text, str) or not _normalize_review_proposition_text(text):
+                        reason = "required_parent_blank_item"
+                        break
+        elif invariant.min_normalized_length:
+            if not isinstance(value, str) or (
+                len(_normalize_review_proposition_text(value)) < invariant.min_normalized_length
+            ):
+                reason = "required_parent_empty_scalar"
+        if reason is not None:
+            _reject_correction_parent_invariant(
+                primary, payload, parsed, registry, parent_path, reason,
+            )
+        if invariant.validator is not None:
+            try:
+                invariant.validator(value)
+            except (ValueError, TypeError) as exc:
+                details: Dict[str, Any] = {}
+                if isinstance(exc, ValidationError):
+                    details["validation_errors"] = _summarize_validation_errors(exc)
+                if parent_path == "outlook":
+                    targets = {target.patch_target_id: target for target in registry.targets}
+                    details["affected_parent_paths"] = sorted({
+                        targets[patch.target_id].source_path
+                        for patch in parsed.patches
+                        if targets[patch.target_id].source_path in _OUTLOOK_PARENT_SOURCE_PATHS
+                    })
+                _reject_correction_parent_invariant(
+                    primary, payload, parsed, registry, parent_path,
+                    "outlook_parent_invariant_violation" if parent_path == "outlook"
+                    else "technical_parent_invariant_violation",
+                    **details,
+                )
+
+
+def merge_correction_patch_set(
+    primary: FinancialAnalysisLLMResponse,
+    registry: CorrectionTargetRegistry,
+    required_target_ids: List[str],
+    patch_set: Any,
+) -> CorrectionPatchMergeResult:
+    """Apply a fully validated patch set atomically to a copy of ``primary``."""
+
+    parsed = validate_correction_patch_set(patch_set, registry, required_target_ids)
+    affected_parent_paths: set[str] = set()
+    payload = _build_correction_candidate_payload(
+        primary, parsed, registry, affected_parent_paths=affected_parent_paths,
+    )
+    _preflight_correction_parent_invariants(
+        primary, payload, parsed, registry, affected_parent_paths,
+    )
 
     try:
         merged = FinancialAnalysisLLMResponse(**payload)
@@ -2049,8 +2765,9 @@ def build_request_local_review_schema(
     available_input_context: Optional[List[str]] = None,
     coverage_segment_aliases: Optional[List[str]] = None,
     coverage_segment_ids: Optional[List[str]] = None,
+    review_unit_policies_by_alias: Optional[Mapping[str, ReviewUnitPolicy]] = None,
 ) -> Dict[str, Any]:
-    """Return the compact, request-local provider schema without semantic allOfs."""
+    """Return a keyed schema requiring every backend-issued, policy-scoped alias."""
     schema = copy.deepcopy(GroundingReviewWireResponse.model_json_schema())
     defs = schema.get("$defs")
     if not isinstance(defs, dict):
@@ -2064,26 +2781,80 @@ def build_request_local_review_schema(
     market_fields_prop = props.get("m")
     if not isinstance(market_fields_prop, dict):
         raise ValueError("GroundingReviewWireFinding schema is missing m")
-    segment_prop = props.get("s")
-    if not isinstance(segment_prop, dict):
-        raise ValueError("GroundingReviewWireFinding schema is missing s")
-    aliases = coverage_segment_aliases
-    if aliases is None:
-        aliases = coverage_segment_ids
-    if aliases is not None:
-        segment_prop["enum"] = list(aliases)
-
     if not available_market_fields:
         if "items" in market_fields_prop:
             del market_fields_prop["items"]
         market_fields_prop["maxItems"] = 0
-        return schema
-
-    available_codes = [INTERNAL_TO_WIRE_MARKET[field] for field in available_market_fields]
-    if "items" in market_fields_prop:
-        market_fields_prop["items"]["enum"] = available_codes
     else:
-        market_fields_prop["items"] = {"type": "string", "enum": available_codes}
+        available_codes = [
+            INTERNAL_TO_WIRE_MARKET[field] for field in available_market_fields
+        ]
+        if "items" in market_fields_prop:
+            market_fields_prop["items"]["enum"] = available_codes
+        else:
+            market_fields_prop["items"] = {
+                "type": "string", "enum": available_codes
+            }
+    aliases = coverage_segment_aliases
+    if aliases is None:
+        aliases = coverage_segment_ids
+    if aliases is not None:
+        aliases = list(aliases)
+        if not aliases:
+            raise ValueError("grounding review schema requires at least one alias")
+        if len(aliases) != len(set(aliases)):
+            raise ValueError("coverage segment aliases must be unique")
+        if review_unit_policies_by_alias is not None and (
+            set(review_unit_policies_by_alias) != set(aliases)
+        ):
+            raise ValueError("review unit policies must match coverage segment aliases")
+        root_props = schema.get("properties")
+        if not isinstance(root_props, dict):
+            raise ValueError("GroundingReviewWireResponse schema is missing properties")
+        findings_prop = root_props.get("f")
+        if not isinstance(findings_prop, dict):
+            raise ValueError("GroundingReviewWireResponse schema is missing f")
+        findings_prop.clear()
+        scoped_definition_names: Dict[Tuple[str, ...], str] = {}
+        alias_properties: Dict[str, Any] = {}
+        for alias in aliases:
+            item_ref = "#/$defs/GroundingReviewWireFinding"
+            if review_unit_policies_by_alias is not None:
+                policy = review_unit_policies_by_alias[alias]
+                _validate_review_unit_policy(policy)
+                if not policy.reviewable:
+                    raise ValueError("nonreviewable unit cannot generate a reviewer alias")
+                allowed_codes = tuple(
+                    code for code, internal in WIRE_RULE_TO_INTERNAL.items()
+                    if internal in policy.allowed_blocking_rules
+                )
+                if not allowed_codes:
+                    raise ValueError("reviewable alias requires at least one allowed rule")
+                if len(allowed_codes) != len(WIRE_RULE_TO_INTERNAL):
+                    definition_name = scoped_definition_names.get(allowed_codes)
+                    if definition_name is None:
+                        definition_name = (
+                            "GroundingReviewWireFindingRuleScope"
+                            f"{len(scoped_definition_names)}"
+                        )
+                        scoped_definition = copy.deepcopy(claim_def)
+                        scoped_definition["properties"]["g"]["enum"] = list(
+                            allowed_codes
+                        )
+                        defs[definition_name] = scoped_definition
+                        scoped_definition_names[allowed_codes] = definition_name
+                    item_ref = f"#/$defs/{definition_name}"
+            alias_properties[alias] = {
+                "type": "array",
+                "items": {"$ref": item_ref},
+                "minItems": 1,
+            }
+        findings_prop.update({
+            "type": "object",
+            "properties": alias_properties,
+            "required": aliases,
+            "additionalProperties": False,
+        })
 
     return schema
 
@@ -2098,11 +2869,32 @@ def _build_coverage_segment_aliases(
     return aliases
 
 
+def _validate_grounding_review_wire_alias_contract(
+    wire: GroundingReviewWireResponse,
+    segment_aliases: Dict[str, ReviewCoverageSegment],
+) -> None:
+    """Enforce the request-local required-key contract after typed parsing."""
+
+    expected = set(segment_aliases)
+    returned = set(wire.f)
+    unknown = _ordered_grounding_review_aliases(list(returned - expected))
+    if unknown:
+        raise ReviewerMetadataError(
+            "unknown_coverage_segment_alias", 0, "f", enum_value=unknown[0]
+        )
+    missing = expected - returned
+    if missing:
+        raise ReviewerMetadataError(
+            "missing_coverage_segment", 0, "f"
+        )
+
+
 def _decode_grounding_review_wire_response(
     wire: GroundingReviewWireResponse,
     segment_aliases: Dict[str, ReviewCoverageSegment],
     available_market_fields: List[str],
     available_input_context: Optional[List[str]] = None,
+    review_unit_policies: Optional[Mapping[str, ReviewUnitPolicy]] = None,
 ) -> List[GroundingClaimFinding]:
     """Decode compact provider output and assign backend-owned atomic ordinals.
 
@@ -2112,28 +2904,38 @@ def _decode_grounding_review_wire_response(
     """
     available = set(available_market_fields)
     available_context = set(available_input_context or [])
-    decoded_by_unit: Dict[str, List[Tuple[int, ReviewCoverageSegment, GroundingReviewWireFinding]]] = {}
-    for finding_ordinal, item in enumerate(wire.f, 1):
-        segment = segment_aliases.get(item.s)
-        if segment is None:
-            raise ReviewerMetadataError("unknown_coverage_segment_alias", finding_ordinal, "s")
-        market_fields = [WIRE_MARKET_TO_INTERNAL[code] for code in item.m]
-        input_context = [WIRE_INPUT_CONTEXT_TO_INTERNAL[code] for code in item.i]
-        unavailable_context = next((code for code in input_context if code not in available_context), None)
-        if unavailable_context is not None:
-            raise ReviewerMetadataError("input_context_not_supplied", finding_ordinal, "i", enum_value=unavailable_context)
-        unavailable = next((field for field in market_fields if field not in available), None)
-        if unavailable is not None:
-            raise ReviewerMetadataError("market_field_not_supplied", finding_ordinal, "m", enum_value=unavailable)
-        decoded_by_unit.setdefault(segment.review_unit_id, []).append(
-            (finding_ordinal, segment, item)
+    unknown_alias = next(
+        (alias for alias in wire.f if alias not in segment_aliases),
+        None,
+    )
+    if unknown_alias is not None:
+        raise ReviewerMetadataError(
+            "unknown_coverage_segment_alias", 0, "f", enum_value=unknown_alias
         )
+
+    decoded_by_unit: Dict[str, List[Tuple[int, ReviewCoverageSegment, GroundingReviewWireFinding]]] = {}
+    finding_ordinal = 0
+    for alias, items in wire.f.items():
+        segment = segment_aliases[alias]
+        for item in items:
+            finding_ordinal += 1
+            market_fields = [WIRE_MARKET_TO_INTERNAL[code] for code in item.m]
+            input_context = [WIRE_INPUT_CONTEXT_TO_INTERNAL[code] for code in item.i]
+            unavailable_context = next((code for code in input_context if code not in available_context), None)
+            if unavailable_context is not None:
+                raise ReviewerMetadataError("input_context_not_supplied", finding_ordinal, "i", enum_value=unavailable_context)
+            unavailable = next((field for field in market_fields if field not in available), None)
+            if unavailable is not None:
+                raise ReviewerMetadataError("market_field_not_supplied", finding_ordinal, "m", enum_value=unavailable)
+            decoded_by_unit.setdefault(segment.review_unit_id, []).append(
+                (finding_ordinal, segment, item)
+            )
 
     decoded: List[GroundingClaimFinding] = []
     for review_unit_id, findings in decoded_by_unit.items():
         ordered = sorted(findings, key=lambda value: (value[1].segment_ordinal, value[0]))
-        for atomic_ordinal, (_, segment, item) in enumerate(ordered):
-            decoded.append(GroundingClaimFinding(
+        for atomic_ordinal, (finding_ordinal, segment, item) in enumerate(ordered):
+            claim = GroundingClaimFinding(
                 review_unit_id=review_unit_id,
                 coverage_segment_id=segment.coverage_segment_id,
                 atomic_ordinal=atomic_ordinal,
@@ -2144,7 +2946,23 @@ def _decode_grounding_review_wire_response(
                 supporting_market_data_fields=[WIRE_MARKET_TO_INTERNAL[code] for code in item.m],
                 supporting_input_context=input_context,
                 rule=WIRE_RULE_TO_INTERNAL[item.g],
-            ))
+            )
+            if review_unit_policies is not None:
+                policy = review_unit_policies.get(review_unit_id)
+                if policy is None:
+                    raise ReviewerMetadataError(
+                        "review_unit_policy_missing", finding_ordinal,
+                        "review_unit_id",
+                    )
+                if (
+                    not policy.reviewable
+                    or claim.rule not in policy.allowed_blocking_rules
+                ):
+                    raise ReviewerMetadataError(
+                        "reviewer_rule_scope_invalid", finding_ordinal,
+                        "g", enum_value=claim.rule,
+                    )
+            decoded.append(claim)
         assigned = [claim.atomic_ordinal for claim in decoded if claim.review_unit_id == review_unit_id]
         if assigned != list(range(len(assigned))):
             raise RuntimeError("backend_atomic_ordinal_invariant_failed")
@@ -2784,6 +3602,47 @@ def _derive_structured_market_support(
     )
     if any(term in text for term in forbidden):
         return []
+    subject = (
+        rf"(?:the\s+)?(?:current|stock|share)\s+price"
+        rf"(?:\s+of\s+\$?[\d,.]+)?|(?:the\s+)?price|"
+        rf"(?:the\s+)?(?:stock|shares)|"
+        rf"{re.escape(request.ticker.lower())}"
+    )
+    descriptive_verb = r"(?:(?:is|are)\s+(?:currently\s+)?(?:trading\s+)?|trades?\s+)"
+    optional_current_value = r"(?:at\s+\$?[\d,.]+\s*,?\s*)?"
+    below_high = bool(re.search(
+        rf"(?:{subject})\s+{descriptive_verb}{optional_current_value}(?:well\s+)?below\s+"
+        r"(?:its\s+|the\s+)?52(?:-|\s)?week\s+high\b",
+        text,
+    ))
+    above_low = bool(re.search(
+        rf"(?:{subject})\s+{descriptive_verb}{optional_current_value}(?:well\s+)?above\s+"
+        r"(?:its\s+|the\s+)?52(?:-|\s)?week\s+low\b",
+        text,
+    ))
+    if below_high and not above_low:
+        above_low = bool(re.search(
+            r"\band\s+(?:well\s+)?above\s+(?:its\s+|the\s+)?"
+            r"52(?:-|\s)?week\s+low\b",
+            text,
+        ))
+    comparison_fields: List[str] = []
+    if (
+        below_high
+        and price.current_price is not None
+        and price.fifty_two_week_high is not None
+        and price.current_price < price.fifty_two_week_high
+    ):
+        comparison_fields.extend(["current_price", "fifty_two_week_high"])
+    if (
+        above_low
+        and price.current_price is not None
+        and price.fifty_two_week_low is not None
+        and price.current_price > price.fifty_two_week_low
+    ):
+        comparison_fields.extend(["current_price", "fifty_two_week_low"])
+    if comparison_fields:
+        return _order_preserving_dedupe(comparison_fields)
     has_range = (
         price.fifty_two_week_low is not None
         and price.fifty_two_week_high is not None
@@ -2889,8 +3748,14 @@ def _validate_reviewer_finding_metadata(
         indices = claim.supporting_article_indices
         market_fields = claim.supporting_market_data_fields
         input_context = claim.supporting_input_context
+        source_proposition = claim.atomic_proposition
+        if segment is not None:
+            source = units_by_id[segment.review_unit_id]
+            source_proposition = source.candidate_text[
+                segment.source_start:segment.source_end
+            ]
         claim.backend_derived_market_fields = _derive_structured_market_support(
-            claim.atomic_proposition, request
+            source_proposition, request
         )
         unavailable_context = next((value for value in input_context if value not in available_input_context), None)
         if unavailable_context is not None:
@@ -2952,7 +3817,7 @@ def _validate_reviewer_finding_metadata(
                     "supporting_article_indices",
                 )
         elif claim.classification == "supported_by_structured_market_data":
-            if not market_fields:
+            if not market_fields and not claim.backend_derived_market_fields:
                 record_evidence_contract(
                     "structured_support_fields_required",
                     finding_ordinal,
@@ -2960,7 +3825,7 @@ def _validate_reviewer_finding_metadata(
                     "supporting_market_data_fields",
                 )
         elif claim.classification == "supported_interpretation":
-            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context:
+            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context and not claim.backend_derived_market_fields:
                 record_evidence_contract(
                     "interpretation_support_required",
                     finding_ordinal,
@@ -2968,7 +3833,7 @@ def _validate_reviewer_finding_metadata(
                     "supporting_article_indices|supporting_market_data_fields",
                 )
         elif claim.classification == "conditional_supported":
-            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context:
+            if not indices and not market_fields and not input_context and not claim.backend_derived_input_context and not claim.backend_derived_market_fields:
                 record_evidence_contract(
                     "conditional_support_required",
                     finding_ordinal,
@@ -3130,6 +3995,193 @@ def _semantic_trace_phase(stage: str) -> str:
     return "final" if stage == "final_review" else "initial"
 
 
+_GROUNDING_REVIEW_ALIAS_RE = re.compile(r"^s([0-9]+)$")
+
+
+def _grounding_review_alias_has_safe_shape(alias: Any) -> bool:
+    return (
+        isinstance(alias, str)
+        and len(alias) <= 16
+        and _GROUNDING_REVIEW_ALIAS_RE.fullmatch(alias) is not None
+    )
+
+
+def _grounding_review_alias_sort_key(alias: str) -> Tuple[int, int, str]:
+    """Order compact segment aliases numerically, with unknown forms last."""
+
+    match = _GROUNDING_REVIEW_ALIAS_RE.fullmatch(alias)
+    if match is None:
+        return (1, 0, alias)
+    return (0, int(match.group(1)), alias)
+
+
+def _ordered_grounding_review_aliases(aliases: List[str]) -> List[str]:
+    """Return deterministic numeric ordering without removing duplicates."""
+
+    return sorted(aliases, key=_grounding_review_alias_sort_key)
+
+
+def _grounding_review_batch_identity(
+    stage: str,
+    batch_index: int,
+    batch_count: int,
+) -> Dict[str, Any]:
+    """Return the bounded correlation and batch identity shared by coverage events."""
+
+    return {
+        "correlation_id": current_correlation_id(),
+        "review_phase": _semantic_trace_phase(stage),
+        "batch_index": batch_index,
+        "batch_count": batch_count,
+    }
+
+
+def _build_grounding_review_batch_manifest_record(
+    stage: str,
+    batch_index: int,
+    batch_count: int,
+    batch_aliases: Dict[str, ReviewCoverageSegment],
+) -> Dict[str, Any]:
+    """Build a safe pre-call manifest without report or evidence content."""
+
+    allowed_aliases = _ordered_grounding_review_aliases(list(batch_aliases))
+    record = _grounding_review_batch_identity(stage, batch_index, batch_count)
+    record.update({
+        "segment_count": len(batch_aliases),
+        "allowed_aliases": allowed_aliases,
+        "first_alias": allowed_aliases[0] if allowed_aliases else None,
+        "last_alias": allowed_aliases[-1] if allowed_aliases else None,
+        "alias_mapping": [
+            {
+                "alias": alias,
+                "backend_segment_id": batch_aliases[alias].coverage_segment_id,
+                "review_unit_id": batch_aliases[alias].review_unit_id,
+            }
+            for alias in allowed_aliases
+        ],
+    })
+    return record
+
+
+def _build_grounding_review_coverage_record(
+    stage: str,
+    batch_index: int,
+    batch_count: int,
+    reviewed: GroundingReviewWireResponse,
+    batch_aliases: Dict[str, ReviewCoverageSegment],
+) -> Dict[str, Any]:
+    """Summarize reviewer coverage without freeform provider content.
+
+    ``duplicate_aliases`` retains its diagnostic meaning of multiple findings
+    for one alias, not duplicate JSON object keys.
+    """
+
+    expected_aliases = _ordered_grounding_review_aliases(list(batch_aliases))
+    returned_alias_keys = _ordered_grounding_review_aliases(list(reviewed.f))
+    occurrence_counts = {
+        alias: len(reviewed.f[alias])
+        for alias in returned_alias_keys
+    }
+    returned_aliases = [
+        alias
+        for alias in returned_alias_keys
+        for _ in reviewed.f[alias]
+    ]
+    represented_unique_aliases = _ordered_grounding_review_aliases(
+        [alias for alias, count in occurrence_counts.items() if count]
+    )
+    duplicate_aliases = [
+        alias for alias in represented_unique_aliases
+        if occurrence_counts[alias] > 1
+    ]
+    missing_aliases = [
+        alias for alias in expected_aliases
+        if alias not in occurrence_counts
+    ]
+    record = _grounding_review_batch_identity(stage, batch_index, batch_count)
+    record.update({
+        "expected_aliases": expected_aliases,
+        "returned_aliases": returned_aliases,
+        "represented_unique_aliases": represented_unique_aliases,
+        "duplicate_aliases": duplicate_aliases,
+        "missing_aliases": missing_aliases,
+        "alias_occurrence_counts": {
+            alias: occurrence_counts[alias]
+            for alias in represented_unique_aliases
+        },
+        "expected_count": len(expected_aliases),
+        "returned_finding_count": sum(occurrence_counts.values()),
+        "represented_unique_count": len(represented_unique_aliases),
+        "sanitized_findings": [
+            {
+                "finding_ordinal": finding_ordinal,
+                "s": alias,
+                "r": finding.r,
+                "c": finding.c,
+                "a": list(finding.a),
+                "m": list(finding.m),
+                "i": list(finding.i),
+                "g": finding.g,
+            }
+            for finding_ordinal, (alias, finding) in enumerate(
+                (
+                    (alias, finding)
+                    for alias, findings in reviewed.f.items()
+                    for finding in findings
+                ),
+                1,
+            )
+        ],
+    })
+    return record
+
+
+def _log_grounding_review_batch_manifest(record: Dict[str, Any]) -> None:
+    logger.info(
+        "[AI][GroundingReviewBatchManifest] %s",
+        json.dumps(record, sort_keys=True),
+    )
+
+
+def _log_grounding_review_coverage(record: Dict[str, Any]) -> None:
+    logger.info(
+        "[AI][GroundingReviewCoverage] %s",
+        json.dumps(record, sort_keys=True),
+    )
+
+
+def _log_grounding_review_missing_coverage(record: Dict[str, Any]) -> None:
+    logger.warning(
+        "[AI][GroundingReviewMissingCoverage] %s",
+        json.dumps(record, sort_keys=True),
+    )
+
+
+def _log_grounding_review_unknown_alias(
+    record: Dict[str, Any],
+    invalid_alias: Optional[str],
+) -> None:
+    diagnostic = {
+        key: record[key]
+        for key in (
+            "correlation_id", "review_phase", "batch_index", "batch_count",
+            "expected_aliases",
+        )
+    }
+    diagnostic.update({
+        "invalid_alias": (
+            invalid_alias
+            if _grounding_review_alias_has_safe_shape(invalid_alias)
+            else "<invalid_alias>"
+        ),
+        "allowed_aliases": record["expected_aliases"],
+    })
+    logger.warning(
+        "[AI][GroundingReviewUnknownAlias] %s",
+        json.dumps(diagnostic, sort_keys=True),
+    )
+
+
 def _backend_rules_by_atomic_claim_id(
     violations: List[GroundingViolation],
 ) -> Dict[str, List[str]]:
@@ -3245,7 +4297,11 @@ def _claim_findings_to_violations(
         rule = finding.rule
         selected = bool(finding.supporting_selected_indices)
         compatible_technical = bool(
-            set(finding.supporting_market_data_fields) & _TECHNICAL_COMPATIBLE_FIELDS
+            (
+                set(finding.supporting_market_data_fields)
+                | set(finding.backend_derived_market_fields)
+            )
+            & _TECHNICAL_COMPATIBLE_FIELDS
         )
         has_event_price_link = (
             selected
@@ -3383,11 +4439,38 @@ def _violation_ids(violations: List[GroundingViolation]) -> List[str]:
 def _log_grounding_delta(
     initial: List[GroundingViolation],
     final: List[GroundingViolation],
+    plan: Optional[FinalPropositionReviewPlan] = None,
 ) -> None:
-    """Log semantic convergence using only normalized finding hashes."""
+    """Log semantic convergence using backend lineage when it is available."""
 
     initial_ids = set(_violation_ids(initial))
     final_ids = set(_violation_ids(final))
+    if plan is not None:
+        carried_violations = [
+            violation
+            for entry in plan.carried_entries
+            for violation in entry.violations
+        ]
+        remaining_ids = set(_violation_ids(carried_violations))
+        new_segment_ids = set(plan.new_segment_ids)
+        new_ids = set(_violation_ids([
+            violation for violation in final
+            if violation.coverage_segment_id in new_segment_ids
+        ]))
+        logger.info(
+            "[AI][GroundingDelta] resolved_count=%d remaining_count=%d new_count=%d "
+            "genuinely_new_count=%d changed_and_re_reviewed=%d "
+            "resolved_ids=%s remaining_ids=%s new_ids=%s",
+            len(initial_ids - remaining_ids),
+            len(remaining_ids),
+            len(new_ids),
+            len(new_ids),
+            len(plan.changed_segment_ids),
+            sorted(initial_ids - remaining_ids),
+            sorted(remaining_ids),
+            sorted(new_ids),
+        )
+        return
     logger.info(
         "[AI][GroundingDelta] resolved_count=%d remaining_count=%d new_count=%d "
         "resolved_ids=%s remaining_ids=%s new_ids=%s",
@@ -3400,6 +4483,34 @@ def _log_grounding_delta(
     )
 
 
+def _log_final_review_reconciliation(
+    initial_ledger: InitialPropositionReviewLedger,
+    plan: FinalPropositionReviewPlan,
+    final_review: GroundingEnforcementResult,
+) -> None:
+    carried_passes = sum(entry.passed for entry in plan.carried_entries)
+    carried_blockers = sum(not entry.passed for entry in plan.carried_entries)
+    new_segment_ids = set(plan.new_segment_ids)
+    genuinely_new_findings = sum(
+        violation.coverage_segment_id in new_segment_ids
+        for violation in final_review.violations
+    )
+    logger.info(
+        "[AI][GroundingReconciliation] initial_review_units=%d "
+        "changed_review_units=%d new_review_units=%d carried_forward_units=%d "
+        "final_review_units=%d carried_forward_passes=%d "
+        "carried_forward_blockers=%d final_genuine_new_findings=%d",
+        len(initial_ledger.entries_by_fingerprint),
+        len(plan.changed_segment_ids),
+        len(plan.new_segment_ids),
+        len(plan.carried_entries),
+        len(plan.review_segments),
+        carried_passes,
+        carried_blockers,
+        genuinely_new_findings,
+    )
+
+
 async def _run_grounding_review(
     ai: Any,
     request: FinancialAnalysisRequest,
@@ -3407,6 +4518,7 @@ async def _run_grounding_review(
     selected_indices: List[int],
     active_model: str,
     stage: str = "initial_review",
+    review_segments: Optional[List[ReviewCoverageSegment]] = None,
 ) -> GroundingEnforcementResult:
     """Run one strict same-provider semantic review and merge structural findings."""
 
@@ -3415,11 +4527,33 @@ async def _run_grounding_review(
     )
     available_fields = derive_available_market_fields(request)
     review_units = _build_reviewable_claim_units(result)
-    coverage_segments = _build_review_coverage_segments(review_units)
-    target_registry = build_correction_target_registry(
-        review_units, coverage_segments
+    review_unit_policies = build_review_unit_policy_registry(review_units)
+    all_coverage_segments = _build_review_coverage_segments(review_units)
+    coverage_segments = (
+        list(review_segments)
+        if review_segments is not None
+        else all_coverage_segments
     )
-    segment_aliases = _build_coverage_segment_aliases(coverage_segments)
+    if not coverage_segments:
+        raise ValueError("grounding review requires at least one coverage segment")
+    allowed_segment_ids = {
+        segment.coverage_segment_id for segment in coverage_segments
+    }
+    if review_segments is not None:
+        deterministic = [
+            violation for violation in deterministic
+            if violation.coverage_segment_id in allowed_segment_ids
+            or violation.coverage_segment_id is None
+        ]
+    target_registry = build_correction_target_registry(
+        review_units, all_coverage_segments
+    )
+    all_segment_aliases = _build_coverage_segment_aliases(all_coverage_segments)
+    segment_aliases = {
+        alias: segment
+        for alias, segment in all_segment_aliases.items()
+        if segment.coverage_segment_id in allowed_segment_ids
+    }
     batches = _plan_grounding_review_batches(coverage_segments)
     logger.info(
         "[AI][GroundingReview] review_phase=%s total_review_units=%d "
@@ -3437,10 +4571,19 @@ async def _run_grounding_review(
                 item.coverage_segment_id for item in batch_segments
             }
         }
+        _log_grounding_review_batch_manifest(
+            _build_grounding_review_batch_manifest_record(
+                stage, batch_index, len(batches), batch_aliases
+            )
+        )
         reviewer_max_tokens = _grounding_review_max_tokens(len(batch_segments))
         request_local_schema = build_request_local_review_schema(
             available_fields,
             coverage_segment_aliases=list(batch_aliases),
+            review_unit_policies_by_alias={
+                alias: review_unit_policies[segment.review_unit_id]
+                for alias, segment in batch_aliases.items()
+            },
         )
         review_started = time.perf_counter()
         raw_review = await ai.generate(
@@ -3467,6 +4610,30 @@ async def _run_grounding_review(
                 "AI analysis could not be completed because semantic grounding review failed.",
                 details={"failure_kind": "semantic_review_invalid_json"},
             )
+        keyed_findings = parsed_review.get("f")
+        if isinstance(keyed_findings, dict):
+            invalid_key_count = sum(
+                not _grounding_review_alias_has_safe_shape(alias)
+                for alias in keyed_findings
+            )
+            if invalid_key_count:
+                # A Pydantic dictionary-key error location includes the raw key.
+                # Reject unsafe names before that location can enter telemetry.
+                logger.warning(
+                    "[AI][GroundingReview] request_local_schema_validation_failed "
+                    "stage=%s batch_index=%d schema_error_code=invalid_alias_key_format "
+                    "invalid_alias_key_count=%d",
+                    stage,
+                    batch_index,
+                    invalid_key_count,
+                )
+                raise AISemanticGroundingError(
+                    "AI analysis could not be completed because semantic grounding review failed.",
+                    details={
+                        "failure_kind": "semantic_review_schema_validation",
+                        "schema_error_code": "invalid_alias_key_format",
+                    },
+                )
         try:
             reviewed = GroundingReviewWireResponse(**parsed_review)
         except ValidationError as exc:
@@ -3485,12 +4652,53 @@ async def _run_grounding_review(
                 "AI analysis could not be completed because semantic grounding review failed.",
                 details={"failure_kind": failure_kind, "validation_error_count": exc.error_count()},
             ) from exc
+        coverage_record = _build_grounding_review_coverage_record(
+            stage, batch_index, len(batches), reviewed, batch_aliases
+        )
+        try:
+            _validate_grounding_review_wire_alias_contract(
+                reviewed, batch_aliases
+            )
+        except ReviewerMetadataError as exc:
+            if exc.code == "missing_coverage_segment":
+                _log_grounding_review_missing_coverage(coverage_record)
+                schema_error_code = "missing_required_alias"
+            else:
+                _log_grounding_review_unknown_alias(
+                    coverage_record, exc.enum_value
+                )
+                schema_error_code = "unknown_alias_property"
+            logger.warning(
+                "[AI][GroundingReview] request_local_schema_validation_failed "
+                "stage=%s batch_index=%d schema_error_code=%s",
+                stage,
+                batch_index,
+                schema_error_code,
+            )
+            raise AISemanticGroundingError(
+                "AI analysis could not be completed because semantic grounding review failed.",
+                details={
+                    "failure_kind": "semantic_review_schema_validation",
+                    "schema_error_code": schema_error_code,
+                },
+            ) from exc
         try:
             batch_claims = _decode_grounding_review_wire_response(
-                reviewed, batch_aliases, available_fields, derive_available_input_context(request)
+                reviewed,
+                batch_aliases,
+                available_fields,
+                derive_available_input_context(request),
+                review_unit_policies,
             )
+            _log_grounding_review_coverage(coverage_record)
             _validate_grounding_review_batch_coverage(batch_claims, batch_segments)
         except ReviewerMetadataError as exc:
+            if exc.code == "missing_coverage_segment":
+                _log_grounding_review_missing_coverage(coverage_record)
+            elif exc.code == "unknown_coverage_segment_alias":
+                _log_grounding_review_unknown_alias(
+                    coverage_record, exc.enum_value
+                )
             logger.warning(
                 "[AI][GroundingReview] reviewer_metadata_invalid stage=%s batch_index=%d "
                 "metadata_error_code=%s finding_ordinal=%d field=%s "
@@ -3501,7 +4709,11 @@ async def _run_grounding_review(
             raise AISemanticGroundingError(
                 "AI analysis could not be completed because semantic grounding review failed.",
                 details={
-                    "failure_kind": "semantic_review_metadata_validation",
+                    "failure_kind": (
+                        "reviewer_rule_scope_invalid"
+                        if exc.code == "reviewer_rule_scope_invalid"
+                        else "semantic_review_metadata_validation"
+                    ),
                     "metadata_error_code": exc.code,
                     "finding_ordinal": exc.finding_ordinal,
                     "field": exc.field,
@@ -3515,8 +4727,15 @@ async def _run_grounding_review(
                 decoded_claims, coverage_segments
             )
         normalized_reviewer_claims = _normalize_reviewer_metadata(decoded_claims)
+        reviewed_unit_ids = {
+            segment.review_unit_id for segment in coverage_segments
+        }
+        validation_units = [
+            unit for unit in review_units
+            if unit.review_unit_id in reviewed_unit_ids
+        ]
         evidence_contract_contradictions = _validate_reviewer_finding_metadata(
-            normalized_reviewer_claims, request, review_units, coverage_segments
+            normalized_reviewer_claims, request, validation_units, coverage_segments
         )
     except ReviewerMetadataError as exc:
         logger.warning(
@@ -4410,6 +5629,12 @@ async def generate_analysis(
             required_target_ids = derive_required_patch_targets(
                 grounding_review.violations
             )
+            initial_review_ledger = _build_initial_proposition_review_ledger(
+                request,
+                llm_result,
+                sanitized_indices,
+                grounding_review,
+            )
             try:
                 patch_set = await generate_correction_patch_set(
                     ai,
@@ -4457,14 +5682,28 @@ async def generate_analysis(
                     time.perf_counter() - analysis_started,
                 )
                 raise
+            final_review_plan = _plan_final_proposition_review(
+                request,
+                llm_result,
+                sanitized_indices,
+                initial_review_ledger,
+                [patch.target_id for patch in patch_set.patches],
+            )
             try:
-                final_review = await _run_grounding_review(
-                    ai,
-                    request,
-                    llm_result,
-                    sanitized_indices,
-                    active_model,
-                    stage="final_review",
+                reviewed_changes = None
+                if final_review_plan.review_segments:
+                    reviewed_changes = await _run_grounding_review(
+                        ai,
+                        request,
+                        llm_result,
+                        sanitized_indices,
+                        active_model,
+                        stage="final_review",
+                        review_segments=list(final_review_plan.review_segments),
+                    )
+                final_review = _assemble_reconciled_final_review(
+                    final_review_plan,
+                    reviewed_changes,
                 )
             except AISemanticGroundingError:
                 logger.warning(
@@ -4475,6 +5714,12 @@ async def generate_analysis(
             _log_grounding_delta(
                 grounding_review.violations,
                 final_review.violations,
+                final_review_plan,
+            )
+            _log_final_review_reconciliation(
+                initial_review_ledger,
+                final_review_plan,
+                final_review,
             )
             _log_patch_correction_trace(
                 target_registry,

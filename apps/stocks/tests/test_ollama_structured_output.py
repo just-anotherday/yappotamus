@@ -86,7 +86,7 @@ async def test_ollama_generate_sends_the_strict_pydantic_schema(monkeypatch):
 @pytest.mark.asyncio
 async def test_grounding_reviewer_uses_native_ollama_structured_output(monkeypatch):
     captured = []
-    reviewer_response = {"f": [{"s": "s0", "r": "F", "p": "$463 is identified as support", "c": "DS", "a": [4], "m": [], "g": "TR"}]}
+    reviewer_response = {"f": {"s0": [{"r": "F", "p": "$463 is identified as support", "c": "DS", "a": [4], "m": [], "g": "TR"}]}}
     response = _FakeOllamaResponse(
         {"response": json.dumps(reviewer_response), "done": True, "done_reason": "stop"}
     )
@@ -94,7 +94,9 @@ async def test_grounding_reviewer_uses_native_ollama_structured_output(monkeypat
         "backend.services.ai.ollama_provider.httpx.AsyncClient",
         lambda **kwargs: _CapturingAsyncClient(captured, response, **kwargs),
     )
-    schema = ollama_service.build_request_local_review_schema(["current_price"])
+    schema = ollama_service.build_request_local_review_schema(
+        ["current_price"], coverage_segment_aliases=["s0"]
+    )
 
     result = await OllamaProvider().generate(
         system_prompt="grounding reviewer",
@@ -105,14 +107,26 @@ async def test_grounding_reviewer_uses_native_ollama_structured_output(monkeypat
     )
 
     parsed = GroundingReviewWireResponse(**json.loads(result))
-    assert parsed.f[0].a == [4]
+    assert parsed.f["s0"][0].a == [4]
     assert captured[0]["payload"]["stream"] is False
     assert captured[0]["payload"]["think"] is False
     assert captured[0]["payload"]["options"]["temperature"] == 0
     assert captured[0]["payload"]["format"] == schema
     claim_schema = schema["$defs"]["GroundingReviewWireFinding"]
-    assert set(claim_schema["properties"]) == {"s", "r", "p", "c", "a", "m", "i", "g"}
+    assert set(claim_schema["properties"]) == {"r", "p", "c", "a", "m", "i", "g"}
     assert "allOf" not in claim_schema and "oneOf" not in claim_schema
+    assert captured[0]["payload"]["format"]["properties"]["f"] == {
+        "type": "object",
+        "properties": {
+            "s0": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/GroundingReviewWireFinding"},
+                "minItems": 1,
+            }
+        },
+        "required": ["s0"],
+        "additionalProperties": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -300,6 +314,42 @@ async def test_openai_forwards_generic_json_schema_response_format(
             "schema": FinancialAnalysisLLMResponse.model_json_schema(),
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_openai_forwards_required_alias_reviewer_schema_without_weakening(monkeypatch):
+    captured = []
+
+    class _CapturingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            captured.append({"url": url, "payload": json, "headers": headers})
+            return _FakeOpenAIResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _CapturingOpenAIClient([], **kwargs),
+    )
+    schema = ollama_service.build_request_local_review_schema(
+        ["current_price"], coverage_segment_aliases=["s23", "s24", "s25"]
+    )
+
+    await OpenAIProvider().generate(
+        system_prompt="reviewer",
+        user_prompt="safe fixture",
+        model="gpt-4o-mini",
+        response_schema=schema,
+        max_attempts=1,
+    )
+
+    supplied = captured[0]["payload"]["response_format"]["json_schema"]
+    assert supplied["schema"] == schema
+    assert supplied["strict"] is False  # Existing generic adapter behavior.
+    keyed = supplied["schema"]["properties"]["f"]
+    assert keyed["required"] == ["s23", "s24", "s25"]
+    assert keyed["additionalProperties"] is False
+    assert all(item["minItems"] == 1 for item in keyed["properties"].values())
 
 
 @pytest.mark.asyncio

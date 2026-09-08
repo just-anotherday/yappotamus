@@ -1024,17 +1024,16 @@ def test_cross_batch_alias_fails_before_violation_identity_can_be_created():
     aliases = ollama_service._build_coverage_segment_aliases(segments)
     second_batch = {"s1": aliases["s1"]}
     forged = GroundingReviewWireResponse(
-        f=[
-            {
-                "s": "s0",
+        f={
+            "s0": [{
                 "r": "F",
                 "p": "Unsupported proposition.",
                 "c": "UE",
                 "a": [],
                 "m": [],
                 "g": "UC",
-            }
-        ]
+            }]
+        }
     )
 
     with pytest.raises(
@@ -1130,24 +1129,23 @@ class _DeterministicPipelineClient:
         self.review_payloads.append(review_payload)
         return json.dumps(
             {
-                "f": [
-                    {
-                        "s": segment["s"],
+                "f": {
+                    segment["s"]: [{
                         "r": "F",
                         "p": segment["segment_text"][:120],
                         "c": "DS",
                         "a": [1],
                         "m": [],
                         "g": "AS",
-                    }
+                    }]
                     for segment in review_payload["review_coverage_segments"]
-                ]
+                }
             }
         )
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_no_ai_pipeline_rebuilds_fresh_review_and_trusted_citations(
+async def test_end_to_end_no_ai_pipeline_carries_unchanged_review_and_trusted_citations(
     monkeypatch,
 ):
     client = _DeterministicPipelineClient()
@@ -1166,29 +1164,17 @@ async def test_end_to_end_no_ai_pipeline_rebuilds_fresh_review_and_trusted_citat
     )
 
     assert client.patch_calls == 1
-    assert len(client.review_payloads) == 2
-    initial, final = client.review_payloads
+    assert len(client.review_payloads) == 1
+    initial = client.review_payloads[0]
     initial_texts = [
         item["segment_text"] for item in initial["review_coverage_segments"]
     ]
-    final_texts = [
-        item["segment_text"] for item in final["review_coverage_segments"]
-    ]
     invalid = "Price position implies a range-bound trend."
     assert invalid in initial_texts
-    assert invalid not in final_texts
     assert invalid in initial["report_under_review"]["technical_analysis"]["trend"]
-    assert invalid not in final["report_under_review"]["technical_analysis"]["trend"]
     assert result.technical_analysis.trend == (
         "The current price of $100 is between the 52-week high of $120 and low of $70."
     )
-    assert initial["review_coverage_segments"] is not final["review_coverage_segments"]
-    assert len(final["review_coverage_segments"]) == len(
-        initial["review_coverage_segments"]
-    ) - 1
-    assert [item["s"] for item in final["review_coverage_segments"]] == [
-        f"s{index}" for index in range(len(final["review_coverage_segments"]))
-    ]
     assert [article.title for article in result.articles_used] == [
         _request().news_articles[0].title
     ]
