@@ -17,7 +17,6 @@ import {
 } from '@/lib/reportPresentation';
 import {
   PROMPT_VERSION_OPTIONS,
-  PROMPT_VERSION_SELECTOR_ENABLED,
   promptVersionRequestFields,
   type PromptVersion,
 } from '@/lib/promptVersionSelector';
@@ -242,7 +241,6 @@ export default function ReportsPage() {
             model: selectedModel,
             provider: selectedProvider,
             ...promptVersionRequestFields(
-              PROMPT_VERSION_SELECTOR_ENABLED,
               selectedPromptVersion,
             ),
             article_ids: selectedArticleIds.length > 0 ? selectedArticleIds : undefined,
@@ -427,7 +425,6 @@ export default function ReportsPage() {
           </select>
         </div>
 
-        {PROMPT_VERSION_SELECTOR_ENABLED && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
             <label htmlFor="prompt-version-select" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}
               className="dark:text-gray-300">
@@ -452,8 +449,6 @@ export default function ReportsPage() {
               ))}
             </select>
           </div>
-        )}
-
         {/* Step 3: Days Back Slider */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
           <label htmlFor="days-back" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}

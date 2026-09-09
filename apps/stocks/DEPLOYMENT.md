@@ -165,6 +165,12 @@ npm run deploy:cf
 The two `NEXT_PUBLIC_*` values are compiled into the browser bundle, so set them
 as **build variables before building**. They are not secrets.
 
+The reports page offers both prompt v2.0 (Stable) and v3.0 (Experimental).
+Deploy both the backend and frontend when releasing prompt selection changes.
+The former `NEXT_PUBLIC_ENABLE_PROMPT_VERSION_SELECTOR` and
+`ALLOW_PROMPT_VERSION_OVERRIDE` flags are no longer used. The selected version
+applies to manual report requests; automated reports continue to default to v2.0.
+
 ### Custom Domain and 404 Recovery
 
 1. Deploy the Worker and verify its generated `*.workers.dev` URL returns HTTP 200.

@@ -1,4 +1,4 @@
-"""Request-scoped local prompt selector and production-safety contracts."""
+"""Request-scoped prompt selection, provenance, and validation contracts."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,7 +8,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.config.database import get_async_session
-from backend.config.settings import Settings
 from backend.models.analysis import FinancialAnalysisResponse
 from backend.routers import analysis as analysis_router
 from backend.services import ollama_service
@@ -104,16 +103,7 @@ def _payload(prompt_version=...):
     return payload
 
 
-def test_backend_override_setting_defaults_false_and_requires_explicit_true(monkeypatch):
-    monkeypatch.delenv("ALLOW_PROMPT_VERSION_OVERRIDE", raising=False)
-    assert Settings().ALLOW_PROMPT_VERSION_OVERRIDE is False
-    monkeypatch.setenv("ALLOW_PROMPT_VERSION_OVERRIDE", "true")
-    assert Settings().ALLOW_PROMPT_VERSION_OVERRIDE is True
-
-
-def test_selector_resolves_existing_immutable_registry_descriptors(monkeypatch):
-    monkeypatch.setenv("ALLOW_PROMPT_VERSION_OVERRIDE", "true")
-
+def test_selector_resolves_existing_immutable_registry_descriptors():
     omitted = analysis_router._resolve_analysis_prompt_pipeline(None)
     explicit_v2 = analysis_router._resolve_analysis_prompt_pipeline("2.0")
     explicit_v3 = analysis_router._resolve_analysis_prompt_pipeline("3.0")
@@ -126,12 +116,16 @@ def test_selector_resolves_existing_immutable_registry_descriptors(monkeypatch):
 
 @pytest.mark.parametrize(
     ("requested", "expected_version"),
-    [(..., "2.0"), ("2.0", "2.0"), ("3.0", "3.0")],
+    [(..., "2.0"), (None, "2.0"), ("2.0", "2.0"), ("3.0", "3.0")],
 )
-def test_enabled_override_couples_execution_version_and_hash(
-    monkeypatch, requested, expected_version
+@pytest.mark.parametrize("legacy_override", [None, "false", "true"])
+def test_selection_couples_execution_version_and_hash(
+    monkeypatch, requested, expected_version, legacy_override
 ):
-    monkeypatch.setenv("ALLOW_PROMPT_VERSION_OVERRIDE", "true")
+    if legacy_override is None:
+        monkeypatch.delenv("ALLOW_PROMPT_VERSION_OVERRIDE", raising=False)
+    else:
+        monkeypatch.setenv("ALLOW_PROMPT_VERSION_OVERRIDE", legacy_override)
     client, session, pipelines, persist, _price = _endpoint_harness(monkeypatch)
 
     response = client.post("/api/analysis/analyze_ticker", json=_payload(requested))
@@ -148,43 +142,10 @@ def test_enabled_override_couples_execution_version_and_hash(
     session.commit.assert_awaited_once()
 
 
-@pytest.mark.parametrize("requested", [..., "2.0"])
-def test_production_default_and_explicit_v2_use_v2(monkeypatch, requested):
-    monkeypatch.delenv("ALLOW_PROMPT_VERSION_OVERRIDE", raising=False)
-    client, session, pipelines, persist, _price = _endpoint_harness(monkeypatch)
-
-    response = client.post("/api/analysis/analyze_ticker", json=_payload(requested))
-
-    assert response.status_code == 200
-    pipelines["2.0"].generate.assert_awaited_once()
-    pipelines["3.0"].generate.assert_not_awaited()
-    assert persist.await_args.kwargs["prompt_version"] == "2.0"
-    session.commit.assert_awaited_once()
-
-
-def test_unauthorized_v3_is_rejected_before_provider_or_persistence(monkeypatch):
-    monkeypatch.delenv("ALLOW_PROMPT_VERSION_OVERRIDE", raising=False)
-    client, session, pipelines, persist, price = _endpoint_harness(monkeypatch)
-
-    response = client.post(
-        "/api/analysis/analyze_ticker", json=_payload("3.0")
-    )
-
-    assert response.status_code == 403
-    assert "not available" in response.json()["detail"]
-    session.execute.assert_not_awaited()
-    price.assert_not_awaited()
-    pipelines["2.0"].generate.assert_not_awaited()
-    pipelines["3.0"].generate.assert_not_awaited()
-    persist.assert_not_awaited()
-    session.commit.assert_not_awaited()
-
-
-@pytest.mark.parametrize("invalid", [1.0, 4.0, "v3", 3, True])
+@pytest.mark.parametrize("invalid", [1.0, 4.0, "4.0", "v3", "", 3, True])
 def test_invalid_versions_fail_typed_validation_without_side_effects(
     monkeypatch, invalid
 ):
-    monkeypatch.setenv("ALLOW_PROMPT_VERSION_OVERRIDE", "true")
     client, session, pipelines, persist, price = _endpoint_harness(monkeypatch)
 
     response = client.post("/api/analysis/analyze_ticker", json=_payload(invalid))

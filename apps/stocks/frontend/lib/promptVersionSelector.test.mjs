@@ -3,16 +3,8 @@ import test from 'node:test';
 
 import {
   PROMPT_VERSION_OPTIONS,
-  isPromptVersionSelectorEnabled,
   promptVersionRequestFields,
 } from './promptVersionSelector.ts';
-
-test('selector is hidden by default and only enabled explicitly', () => {
-  assert.equal(isPromptVersionSelectorEnabled(undefined), false);
-  assert.equal(isPromptVersionSelectorEnabled('false'), false);
-  assert.equal(isPromptVersionSelectorEnabled('TRUE'), false);
-  assert.equal(isPromptVersionSelectorEnabled('true'), true);
-});
 
 test('selector options default to stable v2 and label v3 experimental', () => {
   assert.deepEqual(PROMPT_VERSION_OPTIONS, [
@@ -23,15 +15,10 @@ test('selector options default to stable v2 and label v3 experimental', () => {
 });
 
 test('visible selector includes the exact selected version in requests', () => {
-  assert.deepEqual(promptVersionRequestFields(true, '2.0'), {
+  assert.deepEqual(promptVersionRequestFields('2.0'), {
     prompt_version: '2.0',
   });
-  assert.deepEqual(promptVersionRequestFields(true, '3.0'), {
+  assert.deepEqual(promptVersionRequestFields('3.0'), {
     prompt_version: '3.0',
   });
-});
-
-test('production request shape is unchanged when selector is hidden', () => {
-  assert.deepEqual(promptVersionRequestFields(false, '2.0'), {});
-  assert.deepEqual(promptVersionRequestFields(false, '3.0'), {});
 });

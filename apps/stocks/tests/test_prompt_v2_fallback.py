@@ -168,7 +168,6 @@ def test_active_registry_is_immutable_and_selects_v2_while_retaining_v3():
 async def test_explicit_local_v2_uses_only_primary_generation_and_bypasses_all_v3_stages(
     monkeypatch,
 ):
-    monkeypatch.setenv("ALLOW_PROMPT_VERSION_OVERRIDE", "true")
     review = AsyncMock(side_effect=AssertionError("v3 reviewer invoked"))
     correction = AsyncMock(side_effect=AssertionError("v3 correction invoked"))
     registry = MagicMock(side_effect=AssertionError("v3 target registry invoked"))
