@@ -14,7 +14,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
@@ -1466,6 +1466,16 @@ def _correction_parent_path(target: CorrectionPatchTarget) -> str:
 
 
 @dataclass(frozen=True)
+class CorrectionPropositionLineage:
+    """Exact source ancestry transported through validated correction edits."""
+
+    initial_segment_ids_by_final_segment: Mapping[str, Tuple[str, ...]]
+    unchanged_final_segment_ids: Tuple[str, ...]
+    unreconciled_final_segment_ids: Tuple[str, ...]
+    deleted_initial_segment_ids: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class CorrectionPatchMergeResult:
     """Validated merged candidate plus freshly derived review structure."""
 
@@ -1473,6 +1483,7 @@ class CorrectionPatchMergeResult:
     review_units: List[ReviewableClaimUnit]
     coverage_segments: List[ReviewCoverageSegment]
     target_registry: CorrectionTargetRegistry
+    proposition_lineage: Optional[CorrectionPropositionLineage] = None
 
 
 _PROPOSITION_REVIEW_CONTRACT_VERSION = "prompt-v3-semantic-review-v1"
@@ -1521,6 +1532,11 @@ class FinalPropositionReviewPlan:
     review_segments: Tuple[ReviewCoverageSegment, ...]
     changed_segment_ids: Tuple[str, ...]
     new_segment_ids: Tuple[str, ...]
+    evidence_changed_segment_ids: Tuple[str, ...]
+    unreconciled_segment_ids: Tuple[str, ...]
+    initial_segment_ids_by_final_segment: Mapping[str, Tuple[str, ...]]
+    deleted_initial_segment_ids: Tuple[str, ...]
+    initial_identities_by_segment_id: Mapping[str, PropositionReviewIdentity]
 
 
 def _normalize_review_proposition_text(text: str) -> str:
@@ -1688,14 +1704,50 @@ def _build_initial_proposition_review_ledger(
     )
 
 
+def _remap_carried_proposition_entry(
+    entry: PropositionReviewLedgerEntry,
+    identity: PropositionReviewIdentity,
+) -> PropositionReviewLedgerEntry:
+    """Move an unchanged verdict to its exact descendant's current addresses."""
+
+    claims = tuple(
+        claim.model_copy(deep=True, update={
+            "review_unit_id": identity.review_unit_id,
+            "coverage_segment_id": identity.coverage_segment_id,
+            "atomic_claim_id": f"{identity.review_unit_id}.atomic_{claim.atomic_ordinal}",
+        })
+        for claim in entry.claims
+    )
+    atomic_ids = {
+        original.atomic_claim_id: moved.atomic_claim_id
+        for original, moved in zip(entry.claims, claims)
+    }
+    violations = []
+    for violation in entry.violations:
+        atomic_id, separator, remainder = violation.issue.partition(":")
+        violations.append(violation.model_copy(deep=True, update={
+            "coverage_segment_id": identity.coverage_segment_id,
+            "patch_target_id": (
+                identity.coverage_segment_id if violation.patch_target_id is not None else None
+            ),
+            "issue": (
+                f"{atomic_ids[atomic_id]}:{remainder}"
+                if separator and atomic_id in atomic_ids else violation.issue
+            ),
+        }))
+    return replace(entry, identity=identity, claims=claims, violations=tuple(violations))
+
+
 def _plan_final_proposition_review(
     request: FinancialAnalysisRequest,
     result: FinancialAnalysisLLMResponse,
     selected_indices: List[int],
     initial_ledger: InitialPropositionReviewLedger,
     touched_target_ids: List[str],
+    *,
+    proposition_lineage: Optional[CorrectionPropositionLineage] = None,
 ) -> FinalPropositionReviewPlan:
-    """Carry exact identities and select only changed/new units for review."""
+    """Carry exact source descendants; review changed or unproven lineage."""
 
     _, final_segments, identities = _build_proposition_review_identities(
         request, result, selected_indices
@@ -1708,23 +1760,83 @@ def _plan_final_proposition_review(
     review_segments: List[ReviewCoverageSegment] = []
     changed: List[str] = []
     new: List[str] = []
+    evidence_changed: List[str] = []
+    unreconciled: List[str] = []
+    ancestry: Dict[str, Tuple[str, ...]] = {}
+    unchanged_ids = set(
+        proposition_lineage.unchanged_final_segment_ids if proposition_lineage else ()
+    )
+    unproven_ids = set(
+        proposition_lineage.unreconciled_final_segment_ids if proposition_lineage else ()
+    )
     for segment in final_segments:
-        identity = identity_by_segment[segment.coverage_segment_id]
-        entry = initial_ledger.entries_by_fingerprint.get(identity.fingerprint)
-        if entry is not None and segment.coverage_segment_id not in touched:
-            carried.append(entry)
-            continue
-        review_segments.append(segment)
-        if segment.coverage_segment_id in initial_ledger.entries_by_segment_id:
-            changed.append(segment.coverage_segment_id)
+        segment_id = segment.coverage_segment_id
+        identity = identity_by_segment[segment_id]
+        if proposition_lineage is None:
+            origin_ids = (
+                (segment_id,) if segment_id in initial_ledger.entries_by_segment_id else ()
+            )
         else:
-            new.append(segment.coverage_segment_id)
+            origin_ids = proposition_lineage.initial_segment_ids_by_final_segment.get(
+                segment_id, ()
+            )
+            if segment_id not in proposition_lineage.initial_segment_ids_by_final_segment:
+                unproven_ids.add(segment_id)
+        ancestry[segment_id] = origin_ids
+        if (
+            segment_id in unproven_ids
+            or any(origin not in initial_ledger.entries_by_segment_id for origin in origin_ids)
+            or (proposition_lineage is None and not origin_ids)
+        ):
+            unreconciled.append(segment_id)
+        elif not origin_ids:
+            # Empty ancestry is new only when an exact transformation proves it.
+            new.append(segment_id)
+        elif len(origin_ids) != 1:
+            changed.append(segment_id)
+        else:
+            entry = initial_ledger.entries_by_segment_id[origin_ids[0]]
+            original = entry.identity
+            source_unchanged = (
+                segment_id in unchanged_ids if proposition_lineage is not None
+                else segment_id not in touched
+            )
+            if (
+                not source_unchanged
+                or identity.normalized_text != original.normalized_text
+                or identity.section != original.section
+            ):
+                changed.append(segment_id)
+            elif (
+                identity.evidence_fingerprint != original.evidence_fingerprint
+                or identity.structured_support_fingerprint != original.structured_support_fingerprint
+                or identity.evaluation_contract != original.evaluation_contract
+            ):
+                evidence_changed.append(segment_id)
+            else:
+                # The fingerprint remains anchored to the original source occurrence;
+                # mutable list indexes and segment ordinals are only current addresses.
+                identity = replace(identity, fingerprint=original.fingerprint)
+                identity_by_segment[segment_id] = identity
+                carried.append(_remap_carried_proposition_entry(entry, identity))
+                continue
+        review_segments.append(segment)
     return FinalPropositionReviewPlan(
         final_identities_by_segment_id=MappingProxyType(identity_by_segment),
         carried_entries=tuple(carried),
         review_segments=tuple(review_segments),
         changed_segment_ids=tuple(changed),
         new_segment_ids=tuple(new),
+        evidence_changed_segment_ids=tuple(evidence_changed),
+        unreconciled_segment_ids=tuple(unreconciled),
+        initial_segment_ids_by_final_segment=MappingProxyType(ancestry),
+        deleted_initial_segment_ids=(
+            proposition_lineage.deleted_initial_segment_ids if proposition_lineage else ()
+        ),
+        initial_identities_by_segment_id=MappingProxyType({
+            segment_id: entry.identity
+            for segment_id, entry in initial_ledger.entries_by_segment_id.items()
+        }),
     )
 
 
@@ -1747,9 +1859,35 @@ def _assemble_reconciled_final_review(
     violations = _merge_grounding_violations(
         carried_violations, reviewed_violations
     )
+    segment_order = {
+        segment_id: index
+        for index, segment_id in enumerate(plan.final_identities_by_segment_id)
+    }
+    ordered_claims = sorted(
+        carried_claims + reviewed_claims,
+        key=lambda claim: (segment_order[claim.coverage_segment_id], claim.atomic_ordinal),
+    )
+    next_ordinals: Dict[str, int] = {}
+    remapped_ids: Dict[Tuple[str, str], str] = {}
+    claims = []
+    for claim in ordered_claims:
+        ordinal = next_ordinals.get(claim.review_unit_id, 0)
+        next_ordinals[claim.review_unit_id] = ordinal + 1
+        atomic_id = f"{claim.review_unit_id}.atomic_{ordinal}"
+        remapped_ids[(claim.coverage_segment_id, claim.atomic_claim_id)] = atomic_id
+        claims.append(claim.model_copy(deep=True, update={
+            "atomic_ordinal": ordinal, "atomic_claim_id": atomic_id,
+        }))
+    for index, violation in enumerate(violations):
+        old_id, separator, remainder = violation.issue.partition(":")
+        atomic_id = remapped_ids.get((violation.coverage_segment_id, old_id))
+        if separator and atomic_id is not None:
+            violations[index] = violation.model_copy(deep=True, update={
+                "issue": f"{atomic_id}:{remainder}",
+            })
     return GroundingEnforcementResult(
         valid=not violations,
-        claims=carried_claims + reviewed_claims,
+        claims=claims,
         violations=violations,
     )
 
@@ -2419,16 +2557,27 @@ def _set_correction_source_value(
         payload[field][index][nested] = replacement
 
 
-def _delete_correction_text_span(source: str, start: int, end: int) -> str:
+def _delete_correction_text_span(
+    source: str,
+    start: int,
+    end: int,
+    *,
+    source_origins: Optional[List[Optional[str]]] = None,
+) -> str:
     """Delete one span and clean only whitespace duplicated at its seam."""
 
     left, right = source[:start], source[end:]
     if not left:
-        return right.lstrip(" \t")
-    if not right:
-        return left.rstrip(" \t")
-    if left[-1].isspace() and right[0].isspace():
         right = right.lstrip(" \t")
+    elif not right:
+        left = left.rstrip(" \t")
+    elif left[-1].isspace() and right[0].isspace():
+        right = right.lstrip(" \t")
+    if source_origins is not None:
+        source_origins[:] = (
+            source_origins[:len(left)]
+            + source_origins[len(source) - len(right):]
+        )
     return left + right
 
 
@@ -2438,6 +2587,7 @@ def _build_correction_candidate_payload(
     registry: CorrectionTargetRegistry,
     *,
     affected_parent_paths: Optional[set[str]] = None,
+    source_lineage: Optional[Dict[str, Tuple[str, List[Optional[str]]]]] = None,
 ) -> Dict[str, Any]:
     """Apply trusted offsets to a disposable payload for invariant preflight."""
 
@@ -2483,12 +2633,19 @@ def _build_correction_candidate_payload(
                     reason="overlapping_targets",
                 )
         source = _resolve_correction_source_value(payload, source_path)
+        source_origins = (
+            source_lineage[source_path][1] if source_lineage is not None else None
+        )
         for patch, target in sorted(
             path_patches,
             key=lambda item: item[1].source_start,
             reverse=True,
         ):
             if patch.operation == "REPLACE":
+                if source_origins is not None:
+                    source_origins[target.source_start:target.source_end] = (
+                        [target.patch_target_id] * len(patch.replacement or "")
+                    )
                 source = (
                     source[:target.source_start]
                     + (patch.replacement or "")
@@ -2496,9 +2653,12 @@ def _build_correction_candidate_payload(
                 )
             else:
                 source = _delete_correction_text_span(
-                    source, target.source_start, target.source_end
+                    source, target.source_start, target.source_end,
+                    source_origins=source_origins,
                 )
         _set_correction_source_value(payload, source_path, source)
+        if source_lineage is not None:
+            source_lineage[source_path] = (source, source_origins)
 
     for field, nested, index in sorted(
         container_deletes,
@@ -2514,6 +2674,21 @@ def _build_correction_candidate_payload(
                 reason="list_delete_invalid",
             )
         del value[index]
+        if source_lineage is not None:
+            container = f"{field}.{nested}" if isinstance(payload.get(field), dict) else field
+            indexed_path = re.compile(rf"^{re.escape(container)}\[(\d+)\](.*)$")
+            shifted = {}
+            for source_path, lineage in source_lineage.items():
+                match = indexed_path.fullmatch(source_path)
+                if match is None:
+                    shifted[source_path] = lineage
+                    continue
+                old_index = int(match.group(1))
+                if old_index != index:
+                    final_index = old_index - (old_index > index)
+                    shifted[f"{container}[{final_index}]{match.group(2)}"] = lineage
+            source_lineage.clear()
+            source_lineage.update(shifted)
     return payload
 
 
@@ -2644,6 +2819,72 @@ def _preflight_correction_parent_invariants(
                 )
 
 
+def _initial_correction_source_lineage(
+    primary: FinancialAnalysisLLMResponse,
+) -> Tuple[Dict[str, Tuple[str, List[Optional[str]]]], Dict[str, str]]:
+    """Label original source characters by occurrence, never by matching prose."""
+
+    units = _build_reviewable_claim_units(primary)
+    sources = {
+        unit.review_unit_id: (unit.candidate_text, [None] * len(unit.candidate_text))
+        for unit in units
+    }
+    original_texts = {}
+    for segment in _build_review_coverage_segments(units):
+        text, origins = sources[segment.review_unit_id]
+        origins[segment.source_start:segment.source_end] = (
+            [segment.coverage_segment_id] * (segment.source_end - segment.source_start)
+        )
+        original_texts[segment.coverage_segment_id] = text[
+            segment.source_start:segment.source_end
+        ]
+    return sources, original_texts
+
+
+def _finish_correction_proposition_lineage(
+    source_lineage: Dict[str, Tuple[str, List[Optional[str]]]],
+    original_texts: Dict[str, str],
+    parsed: CorrectionPatchSet,
+    review_units: List[ReviewableClaimUnit],
+    coverage_segments: List[ReviewCoverageSegment],
+) -> CorrectionPropositionLineage:
+    units = {unit.review_unit_id: unit for unit in review_units}
+    touched = {patch.target_id for patch in parsed.patches}
+    ancestry: Dict[str, Tuple[str, ...]] = {}
+    unchanged: List[str] = []
+    unreconciled: List[str] = []
+    for segment in coverage_segments:
+        unit = units[segment.review_unit_id]
+        tracked = source_lineage.get(unit.review_unit_id)
+        aligned = tracked is not None and tracked[0] == unit.candidate_text
+        labels = (
+            tracked[1][segment.source_start:segment.source_end]
+            if aligned else tracked[1] if tracked is not None else []
+        )
+        origin_ids = tuple(dict.fromkeys(label for label in labels if label is not None))
+        ancestry[segment.coverage_segment_id] = origin_ids
+        if not aligned or not origin_ids:
+            unreconciled.append(segment.coverage_segment_id)
+        elif (
+            len(origin_ids) == 1
+            and origin_ids[0] not in touched
+            and _normalize_review_proposition_text(
+                unit.candidate_text[segment.source_start:segment.source_end]
+            ) == _normalize_review_proposition_text(original_texts[origin_ids[0]])
+        ):
+            unchanged.append(segment.coverage_segment_id)
+    surviving_origins = {origin for origins in ancestry.values() for origin in origins}
+    return CorrectionPropositionLineage(
+        initial_segment_ids_by_final_segment=MappingProxyType(ancestry),
+        unchanged_final_segment_ids=tuple(unchanged),
+        unreconciled_final_segment_ids=tuple(unreconciled),
+        deleted_initial_segment_ids=tuple(sorted(
+            patch.target_id for patch in parsed.patches
+            if patch.operation == "DELETE" and patch.target_id not in surviving_origins
+        )),
+    )
+
+
 def merge_correction_patch_set(
     primary: FinancialAnalysisLLMResponse,
     registry: CorrectionTargetRegistry,
@@ -2654,8 +2895,10 @@ def merge_correction_patch_set(
 
     parsed = validate_correction_patch_set(patch_set, registry, required_target_ids)
     affected_parent_paths: set[str] = set()
+    source_lineage, original_texts = _initial_correction_source_lineage(primary)
     payload = _build_correction_candidate_payload(
         primary, parsed, registry, affected_parent_paths=affected_parent_paths,
+        source_lineage=source_lineage,
     )
     _preflight_correction_parent_invariants(
         primary, payload, parsed, registry, affected_parent_paths,
@@ -2685,6 +2928,9 @@ def merge_correction_patch_set(
         coverage_segments=coverage_segments,
         target_registry=build_correction_target_registry(
             review_units, coverage_segments
+        ),
+        proposition_lineage=_finish_correction_proposition_lineage(
+            source_lineage, original_texts, parsed, review_units, coverage_segments,
         ),
     )
 
@@ -4436,6 +4682,75 @@ def _violation_ids(violations: List[GroundingViolation]) -> List[str]:
     ]
 
 
+def _summarize_grounding_delta(
+    initial: List[GroundingViolation],
+    final: List[GroundingViolation],
+    plan: FinalPropositionReviewPlan,
+) -> Dict[str, Any]:
+    """Account for blockers using patch ancestry, never reviewer wording.
+
+    A replacement does not resolve its initial blockers until every descendant
+    is clear. Missing lineage is unknown; only an explicit deletion proves an
+    absent proposition was removed. Counts refer to findings, not target spans.
+    """
+
+    descendants: Dict[str, set[str]] = {}
+    for final_segment_id, origin_ids in plan.initial_segment_ids_by_final_segment.items():
+        for origin_id in origin_ids:
+            descendants.setdefault(origin_id, set()).add(final_segment_id)
+    blocked_segments = {item.coverage_segment_id for item in final}
+    unreconciled = set(plan.unreconciled_segment_ids)
+    deleted = set(plan.deleted_initial_segment_ids)
+    unscoped_blocker = None in blocked_segments
+    resolved: List[GroundingViolation] = []
+    remaining: List[GroundingViolation] = []
+    unresolved: List[GroundingViolation] = []
+    for violation in initial:
+        origin_id = violation.coverage_segment_id
+        current_ids = descendants.get(origin_id, set())
+        if current_ids & blocked_segments:
+            remaining.append(violation)
+        elif not current_ids and origin_id in deleted:
+            resolved.append(violation)
+        elif current_ids and not current_ids & unreconciled and not unscoped_blocker:
+            resolved.append(violation)
+        else:
+            unresolved.append(violation)
+
+    # A new position is not a new proposition. The plan must prove that the
+    # segment has no initial ancestry and is not an unreconciled reconstruction.
+    new_segments = {
+        segment_id for segment_id in plan.new_segment_ids
+        if segment_id in plan.initial_segment_ids_by_final_segment
+        and not plan.initial_segment_ids_by_final_segment[segment_id]
+        and segment_id not in unreconciled
+    }
+    new_findings = [item for item in final if item.coverage_segment_id in new_segments]
+    changed = set(plan.changed_segment_ids)
+    evidence_changed = set(plan.evidence_changed_segment_ids)
+    return {
+        "initial_blocker_count": len(initial),
+        "final_blocker_count": len(final),
+        "resolved_count": len(resolved),
+        "remaining_count": len(remaining),
+        "unresolved_initial_count": len(unresolved),
+        "new_count": len(new_findings),
+        "changed_blocker_count": sum(item.coverage_segment_id in changed for item in final),
+        "evidence_changed_blocker_count": sum(
+            item.coverage_segment_id in evidence_changed for item in final
+        ),
+        "unreconciled_blocker_count": sum(
+            item.coverage_segment_id in unreconciled for item in final
+        ),
+        # These hashes are safe display labels only. They never decide lineage
+        # or whether a blocker was resolved across phases.
+        "resolved_ids": sorted(_violation_ids(resolved)),
+        "remaining_ids": sorted(_violation_ids(remaining)),
+        "unresolved_ids": sorted(_violation_ids(unresolved)),
+        "new_ids": sorted(_violation_ids(new_findings)),
+    }
+
+
 def _log_grounding_delta(
     initial: List[GroundingViolation],
     final: List[GroundingViolation],
@@ -4446,29 +4761,29 @@ def _log_grounding_delta(
     initial_ids = set(_violation_ids(initial))
     final_ids = set(_violation_ids(final))
     if plan is not None:
-        carried_violations = [
-            violation
-            for entry in plan.carried_entries
-            for violation in entry.violations
-        ]
-        remaining_ids = set(_violation_ids(carried_violations))
-        new_segment_ids = set(plan.new_segment_ids)
-        new_ids = set(_violation_ids([
-            violation for violation in final
-            if violation.coverage_segment_id in new_segment_ids
-        ]))
+        summary = _summarize_grounding_delta(initial, final, plan)
         logger.info(
             "[AI][GroundingDelta] resolved_count=%d remaining_count=%d new_count=%d "
             "genuinely_new_count=%d changed_and_re_reviewed=%d "
-            "resolved_ids=%s remaining_ids=%s new_ids=%s",
-            len(initial_ids - remaining_ids),
-            len(remaining_ids),
-            len(new_ids),
-            len(new_ids),
+            "initial_blocker_count=%d final_blocker_count=%d "
+            "changed_blocker_count=%d evidence_changed_blocker_count=%d "
+            "unreconciled_blocker_count=%d unresolved_initial_count=%d "
+            "resolved_ids=%s remaining_ids=%s new_ids=%s unresolved_ids=%s",
+            summary["resolved_count"],
+            summary["remaining_count"],
+            summary["new_count"],
+            summary["new_count"],
             len(plan.changed_segment_ids),
-            sorted(initial_ids - remaining_ids),
-            sorted(remaining_ids),
-            sorted(new_ids),
+            summary["initial_blocker_count"],
+            summary["final_blocker_count"],
+            summary["changed_blocker_count"],
+            summary["evidence_changed_blocker_count"],
+            summary["unreconciled_blocker_count"],
+            summary["unresolved_initial_count"],
+            summary["resolved_ids"],
+            summary["remaining_ids"],
+            summary["new_ids"],
+            summary["unresolved_ids"],
         )
         return
     logger.info(
@@ -4490,16 +4805,14 @@ def _log_final_review_reconciliation(
 ) -> None:
     carried_passes = sum(entry.passed for entry in plan.carried_entries)
     carried_blockers = sum(not entry.passed for entry in plan.carried_entries)
-    new_segment_ids = set(plan.new_segment_ids)
-    genuinely_new_findings = sum(
-        violation.coverage_segment_id in new_segment_ids
-        for violation in final_review.violations
-    )
+    summary = _summarize_grounding_delta([], final_review.violations, plan)
     logger.info(
         "[AI][GroundingReconciliation] initial_review_units=%d "
         "changed_review_units=%d new_review_units=%d carried_forward_units=%d "
         "final_review_units=%d carried_forward_passes=%d "
-        "carried_forward_blockers=%d final_genuine_new_findings=%d",
+        "carried_forward_blockers=%d final_genuine_new_findings=%d "
+        "evidence_changed_review_units=%d unreconciled_review_units=%d "
+        "deleted_initial_units=%d final_blocker_count=%d",
         len(initial_ledger.entries_by_fingerprint),
         len(plan.changed_segment_ids),
         len(plan.new_segment_ids),
@@ -4507,8 +4820,45 @@ def _log_final_review_reconciliation(
         len(plan.review_segments),
         carried_passes,
         carried_blockers,
-        genuinely_new_findings,
+        summary["new_count"],
+        len(plan.evidence_changed_segment_ids),
+        len(plan.unreconciled_segment_ids),
+        len(plan.deleted_initial_segment_ids),
+        summary["final_blocker_count"],
     )
+    carried_by_id = {
+        entry.identity.coverage_segment_id: entry for entry in plan.carried_entries
+    }
+    final_blocked = {item.coverage_segment_id for item in final_review.violations}
+    for segment_id, identity in plan.final_identities_by_segment_id.items():
+        origin_ids = plan.initial_segment_ids_by_final_segment.get(segment_id, ())
+        carried = carried_by_id.get(segment_id)
+        if carried is not None:
+            reason = "carried_pass" if carried.passed else "carried_blocker"
+        elif segment_id in plan.unreconciled_segment_ids:
+            reason = "unreconciled"
+        elif segment_id in plan.evidence_changed_segment_ids:
+            reason = "evidence_changed"
+        elif segment_id in plan.changed_segment_ids:
+            reason = "changed"
+        else:
+            reason = "new"
+        record = {
+            "correlation_id": current_correlation_id(),
+            "final_segment_id": segment_id,
+            "final_review_unit_id": identity.review_unit_id,
+            "final_fingerprint": identity.fingerprint,
+            "initial_segment_ids": list(origin_ids),
+            "initial_fingerprints": [
+                plan.initial_identities_by_segment_id[origin_id].fingerprint
+                for origin_id in origin_ids
+                if origin_id in plan.initial_identities_by_segment_id
+            ],
+            "reason": reason,
+            "generatively_reviewed": carried is None,
+            "final_blocking": segment_id in final_blocked,
+        }
+        logger.info("[AI][GroundingLineage] %s", json.dumps(record, sort_keys=True))
 
 
 async def _run_grounding_review(
@@ -5688,6 +6038,7 @@ async def generate_analysis(
                 sanitized_indices,
                 initial_review_ledger,
                 [patch.target_id for patch in patch_set.patches],
+                proposition_lineage=merge_result.proposition_lineage,
             )
             try:
                 reviewed_changes = None
