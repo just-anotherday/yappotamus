@@ -6128,7 +6128,7 @@ def test_unchanged_same_parent_proposition_is_carried_not_re_reviewed():
     ]
 
 
-def test_changed_and_new_propositions_receive_fresh_review_and_can_block():
+def test_changed_and_unreconciled_propositions_receive_fresh_review_and_can_block():
     request = _request()
     initial = _report_with_market_segments("The current price is stable.")
     review = _synthetic_review_for_report(request, initial)
@@ -6147,7 +6147,8 @@ def test_changed_and_new_propositions_receive_fresh_review_and_can_block():
         ["market_reaction_analysis.segment_0"],
     )
     assert plan.changed_segment_ids == ("market_reaction_analysis.segment_0",)
-    assert plan.new_segment_ids == ("market_reaction_analysis.segment_1",)
+    assert plan.unreconciled_segment_ids == ("market_reaction_analysis.segment_1",)
+    assert not plan.new_segment_ids
     fresh = _synthetic_review_for_report(
         request,
         corrected,
@@ -6186,7 +6187,8 @@ def test_evidence_change_forces_fresh_review_even_when_text_is_identical():
     )
 
     assert not plan.carried_entries
-    assert len(plan.changed_segment_ids) == len(plan.review_segments)
+    assert len(plan.evidence_changed_segment_ids) == len(plan.review_segments)
+    assert not plan.changed_segment_ids
     assert not plan.new_segment_ids
 
 
