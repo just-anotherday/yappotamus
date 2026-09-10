@@ -4979,8 +4979,68 @@ def test_correction_prompt_positive_examples_are_backend_atomic():
         assert _coverage_segment_count(example) == 1
 
 
-def test_valid_missing_ma_example_passes_production_replacement_validator():
-    replacement = ollama_service._CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES[0]
+@pytest.mark.parametrize("connector", [
+    "because", "suggesting", "indicating", "therefore", "which could", "leading to",
+    "resulting in", "reflecting", "if", "while", "but",
+])
+def test_correction_internal_connector_boundaries_fail_closed(connector):
+    replacement = f"The trend is bullish {connector} support remains at $140."
+    assert _coverage_segment_count(replacement) == 2
+    _assert_replacement_not_atomic(replacement)
+    assert connector in ollama_service._CORRECTION_ATOMIC_REPLACE_GUIDANCE
+
+
+def test_patch_guidance_is_target_local_and_explicitly_atomic():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+    prompt = ollama_service.build_patch_correction_prompt(
+        [target_id], registry,
+        [_phase_c_violation(target_id, rule=rule, section="technical_analysis")
+         for rule in ollama_service.GROUNDING_RULE_CORRECTION_GUIDANCE],
+        _request(),
+    )
+    payload = json.loads(prompt.split("Correction request (JSON):\n", 1)[1])
+    repair = payload["targets"][0]["repair_instruction"]
+    assert "Across the complete report" not in repair
+    assert "in every mention" not in repair
+    assert "single authorized proposition" in repair
+    assert "Do not combine a fact with an interpretive explanation" in repair
+    assert "existing separately authorized target" in repair
+    for rendered in (prompt, ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT):
+        for instruction in (
+            "exactly one authorized target", "exactly one backend coverage segment",
+            "exactly one atomic proposition", "Prefer one short declarative sentence",
+            "no appended explanation", "no neighboring assertion copied",
+            "no second independent factual or interpretive claim",
+            "no causal explanation appended", "One grammatical sentence can still be non-atomic",
+            "Use DELETE when a safe atomic replacement cannot be constructed",
+            "only when DELETE is authorized", "complete patch set preserves",
+        ):
+            assert instruction in " ".join(rendered.split())
+    # Correction rendering must not rewrite the shared generation/review rules.
+    assert "Across the complete report" in (
+        ollama_service.GROUNDING_RULE_CORRECTION_GUIDANCE["historical_range_not_technical_level"]
+    )
+    assert "in every mention" in (
+        ollama_service.GROUNDING_RULE_CORRECTION_GUIDANCE["event_status_preservation"]
+    )
+
+
+def test_atomic_target_delete_preserves_surviving_trend_parent():
+    payload = _report()
+    payload["technical_analysis"]["trend"] = "MA50 was not supplied. Unsupported trend claim."
+    report, registry = _phase_b_report_and_registry(payload)
+    target_id = "technical_analysis.trend.segment_1"
+    merged = ollama_service.merge_correction_patch_set(
+        report, registry, [target_id],
+        {"patches": [_phase_b_patch(target_id, operation="DELETE", replacement=None)]},
+    )
+    assert merged.report.technical_analysis.trend == "MA50 was not supplied."
+    assert report.technical_analysis.trend == payload["technical_analysis"]["trend"]
+
+
+@pytest.mark.parametrize("replacement", ollama_service._CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES)
+def test_valid_missing_ma_example_passes_production_replacement_validator(replacement):
     _, registry = _phase_b_report_and_registry()
     target_id = "technical_analysis.trend.segment_0"
 

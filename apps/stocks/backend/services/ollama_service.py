@@ -2120,10 +2120,28 @@ def validate_correction_patch_set(
 
 _CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES = (
     "Moving-average-based trend assessment is limited without supplied MA50 and MA200 values.",
+    "MA50 was not supplied.",
 )
 _CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES = (
     "MA50 was not supplied. MA200 was not supplied.",
     "Moving-average-based trend assessment is limited because MA50 and MA200 were not supplied.",
+    "The trend is bullish, but support remains at $140.",
+)
+
+
+_CORRECTION_ATOMIC_REPLACE_GUIDANCE = (
+    "Every REPLACE repairs exactly one authorized target with exactly one backend coverage "
+    "segment and exactly one atomic proposition. Prefer one short declarative sentence with "
+    "no appended explanation, no neighboring assertion copied into the replacement, no second "
+    "independent factual or interpretive claim, and no causal explanation appended to another "
+    "claim. One grammatical sentence can still be non-atomic. Internal connectors including "
+    "because, suggesting, indicating, therefore, which could, leading to, resulting in, "
+    "reflecting, if, while, and but can create additional backend coverage segments, as can "
+    "sentence boundaries. These are boundary warnings, not a global ban on English words: "
+    "the final replacement must produce exactly one backend coverage segment under the "
+    "production segmenter. Use DELETE when a safe atomic replacement cannot be constructed, "
+    "but only when DELETE is authorized for this target and the complete patch set preserves "
+    "the supplied parent constraints and whole-report invariants."
 )
 
 
@@ -2133,7 +2151,7 @@ REPLACE patch for every supplied target_id and no other IDs. DELETE removes an u
 proposition. REPLACE substitutes exactly one concise backend-atomic coverage segment with no newline
 or bullet. Keep each replacement limited to its exact target; never rewrite neighboring targets or
 the parent section. Never invent a target, add unrelated facts, or include prose outside the JSON
-object."""
+object.""" + "\n" + _CORRECTION_ATOMIC_REPLACE_GUIDANCE
 
 
 def build_request_local_patch_schema(
@@ -2182,9 +2200,20 @@ def _patch_claims_by_target(
 def _patch_repair_instruction(target_rules: List[str]) -> str:
     guidance = [
         GROUNDING_RULE_CORRECTION_GUIDANCE[rule]
+        .replace("Across the complete report,", "For this authorized target only,")
+        .replace("in every mention", "within this target")
         for rule in target_rules
         if rule in GROUNDING_RULE_CORRECTION_GUIDANCE
+        and rule != "fact_interpretation_separation"
     ]
+    if "fact_interpretation_separation" in target_rules:
+        guidance.append(
+            "Repair only this target's single authorized proposition: state supported behavior "
+            "as fact or label a defensible inference as an interpretation, according to the "
+            "proposition being repaired. Do not combine a fact with an interpretive explanation. "
+            "If both ideas are needed, rely on the existing separately authorized target "
+            "structure; do not synthesize a compound replacement or create another target."
+        )
     if "historical_range_not_technical_level" in target_rules:
         guidance.append(
             "Prefer DELETE. If replacement is structurally necessary, state only a supported "
@@ -2332,16 +2361,20 @@ def build_patch_correction_prompt(
         "deterministic_input_context": derive_available_input_context(request),
         "missing_moving_average_guidance": missing_ma_guidance,
     }
-    multi_sentence_example, causal_boundary_example = (
-        _CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES
+    positive_examples = " ".join(
+        f'"{example}"' for example in _CORRECTION_ATOMIC_REPLACE_POSITIVE_EXAMPLES
+    )
+    negative_examples = " ".join(
+        f'"{example}"' for example in _CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES
     )
     return (
+        _CORRECTION_ATOMIC_REPLACE_GUIDANCE + "\n"
         "Return only CorrectionPatchSet JSON. Patch every target exactly once. Only the target_id "
         "values inside targets are authorized. DELETE must use replacement=null and an empty "
         "article_indices_used list. REPLACE must contain exactly one backend-atomic coverage "
         "segment, with no newline or bullet. A REPLACE is invalid when backend segmentation "
-        f'splits it; invalid examples include "{multi_sentence_example}" and '
-        f'"{causal_boundary_example}" Neighbor context is read-only and must not be edited, and '
+        f"splits it. Atomic form examples (use only when target evidence supports them): {positive_examples} "
+        f"Invalid non-atomic examples: {negative_examples} Neighbor context is read-only and must not be edited, and "
         "a replacement must not rewrite neighboring targets or its parent section. When one "
         "target lists multiple violating_rules, satisfy every supplied rule in ONE backend-atomic "
         "replacement; do not return multiple patches for that target. Otherwise use DELETE when "
