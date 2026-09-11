@@ -2614,6 +2614,82 @@ def _delete_correction_text_span(
     return left + right
 
 
+def _exhausted_text_segment_container_deletes(
+    payload: Dict[str, Any],
+    parsed: CorrectionPatchSet,
+    registry: CorrectionTargetRegistry,
+) -> List[Tuple[str, Optional[str], int]]:
+    """Promote only provenance-complete list-item segment DELETE sets."""
+
+    patches_by_id = {patch.target_id: patch for patch in parsed.patches}
+    targets_by_path: Dict[str, List[CorrectionPatchTarget]] = {}
+    for target in registry.targets:
+        targets_by_path.setdefault(target.source_path, []).append(target)
+
+    container_deletes: List[Tuple[str, Optional[str], int]] = []
+    for source_path, path_targets in targets_by_path.items():
+        if not path_targets or any(
+            target.target_strategy != "text_segment" for target in path_targets
+        ):
+            continue
+        parent_path = _correction_parent_path(path_targets[0])
+        invariant = _CORRECTION_PARENT_INVARIANTS.get(parent_path)
+        if (
+            invariant is None
+            or invariant.min_items is None
+            or not invariant.nonblank_items
+        ):
+            continue
+
+        field, index, nested, nested_index = _parse_correction_source_path(source_path)
+        if index is not None and nested_index is None:
+            delete_index = index
+        elif index is None and nested is not None and nested_index is not None:
+            delete_index = nested_index
+        else:
+            continue
+
+        sections = {target.section for target in path_targets}
+        if len(sections) != 1:
+            continue
+        source = _resolve_correction_source_value(payload, source_path)
+        expected_segments = _build_review_coverage_segments([
+            ReviewableClaimUnit(
+                review_unit_id=source_path,
+                section=path_targets[0].section,
+                candidate_text=source,
+            )
+        ])
+        expected = [
+            (
+                segment.coverage_segment_id,
+                segment.source_start,
+                segment.source_end,
+                source[segment.source_start:segment.source_end],
+            )
+            for segment in expected_segments
+        ]
+        registered = sorted(
+            (
+                target.patch_target_id,
+                target.source_start,
+                target.source_end,
+                target.original_target_text,
+            )
+            for target in path_targets
+        )
+        if sorted(expected) != registered:
+            continue
+        path_patches = [patches_by_id.get(target.patch_target_id) for target in path_targets]
+        if not path_patches or any(
+            patch is None or patch.operation != "DELETE" for patch in path_patches
+        ):
+            continue
+        container_deletes.append((field, nested, delete_index))
+
+    return container_deletes
+
+
 def _build_correction_candidate_payload(
     primary: FinancialAnalysisLLMResponse,
     parsed: CorrectionPatchSet,
@@ -2629,7 +2705,9 @@ def _build_correction_candidate_payload(
     payload["article_indices_used"] = list(primary.article_indices_used)
 
     patches_by_path: Dict[str, List[Tuple[CorrectionPatch, CorrectionPatchTarget]]] = {}
-    container_deletes: List[Tuple[str, Optional[str], int]] = []
+    container_deletes = _exhausted_text_segment_container_deletes(
+        payload, parsed, registry,
+    )
     for patch in parsed.patches:
         target = targets[patch.target_id]
         if affected_parent_paths is not None:
