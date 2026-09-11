@@ -12,7 +12,7 @@ resolved through the current request-local registry.
 from dataclasses import dataclass
 from types import MappingProxyType, SimpleNamespace
 from typing import Mapping, Optional
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
@@ -1243,6 +1243,56 @@ async def _call_route(session):
         article_ids=[1],
         session=session,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ollama_service._CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES)
+async def test_non_atomic_correction_stops_pipeline_before_merge_review_and_persistence(
+    monkeypatch, replacement,
+):
+    import json
+
+    class InvalidAtomicClient(_DeterministicPipelineClient):
+        async def generate(self, **kwargs):
+            if kwargs["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT:
+                self.patch_calls += 1
+                assert self.patch_calls == 1, "No second correction call"
+                assert kwargs["max_attempts"] == 1, "No provider retry"
+                return json.dumps({"patches": [{
+                    "target_id": "technical_analysis.trend.segment_1",
+                    "operation": "REPLACE",
+                    "replacement": replacement,
+                    "article_indices_used": [],
+                }]})
+            return await super().generate(**kwargs)
+
+    client = InvalidAtomicClient()
+    async def provider(*_args, **_kwargs):
+        return "ollama", "fixture-model", client
+
+    monkeypatch.setattr("backend.services.ai.ai_service.validate_provider_model", provider)
+    session, generate, persist = _route_state(monkeypatch, _report())
+    # Exercise the real generation pipeline through the persistence route.
+    generate.side_effect = ollama_service.generate_analysis
+    merge = Mock(
+        side_effect=AssertionError("Invalid atomic replacement must never merge")
+    )
+    final_plan = Mock(
+        side_effect=AssertionError("Final review must never be planned")
+    )
+    monkeypatch.setattr(ollama_service, "merge_correction_patch_set", merge)
+    monkeypatch.setattr(ollama_service, "_plan_final_proposition_review", final_plan)
+
+    with pytest.raises(AISemanticGroundingError) as caught:
+        await _call_route(session)
+    assert caught.value.details["failure_kind"] == "correction_patch_schema_invalid"
+    assert caught.value.details["reason"] == "replacement_not_atomic"
+    assert client.patch_calls == 1
+    assert len(client.review_payloads) == 1  # Initial review only.
+    merge.assert_not_called()
+    final_plan.assert_not_called()
+    persist.assert_not_awaited()
+    session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
