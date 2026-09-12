@@ -184,6 +184,67 @@ def test_multiple_list_deletes_keep_original_occurrence_ancestry():
     assert not plan.review_segments
 
 
+def test_exhausted_bear_case_item_preserves_later_item_lineage_and_verdict():
+    report = _candidate(bear_case=[
+        "First surviving risk.",
+        "Deleted first proposition. Deleted second proposition.",
+        "Later blocked risk.",
+    ])
+    deleted_ids = ["bear_case[1].segment_0", "bear_case[1].segment_1"]
+    merged, plan = _correct_and_plan(
+        report,
+        [_delete(target_id) for target_id in deleted_ids],
+        blockers={"bear_case[2].segment_0"},
+    )
+
+    assert merged.report.bear_case == [
+        "First surviving risk.", "Later blocked risk.",
+    ]
+    assert plan.initial_segment_ids_by_final_segment["bear_case[1].segment_0"] == (
+        "bear_case[2].segment_0",
+    )
+    assert not _carried_by_segment(plan)["bear_case[1].segment_0"].passed
+    assert set(plan.deleted_initial_segment_ids) == set(deleted_ids)
+    assert not plan.review_segments
+    assert not plan.changed_segment_ids
+    assert not plan.new_segment_ids
+    assert not plan.unreconciled_segment_ids
+
+
+def test_exhausted_key_risk_item_preserves_later_object_lineage_and_verdict():
+    report = _candidate(key_risks=[
+        {"risk": "First surviving risk.", "severity": "Low"},
+        {
+            "risk": "Deleted first proposition. Deleted second proposition.",
+            "severity": "High",
+        },
+        {"risk": "Later blocked risk.", "severity": "Medium"},
+    ])
+    deleted_ids = [
+        "key_risks[1].risk.segment_0", "key_risks[1].risk.segment_1",
+    ]
+    merged, plan = _correct_and_plan(
+        report,
+        [_delete(target_id) for target_id in deleted_ids],
+        blockers={"key_risks[2].risk.segment_0"},
+    )
+
+    assert [risk.model_dump() for risk in merged.report.key_risks] == [
+        {"risk": "First surviving risk.", "severity": "Low"},
+        {"risk": "Later blocked risk.", "severity": "Medium"},
+    ]
+    final_id = "key_risks[1].risk.segment_0"
+    assert plan.initial_segment_ids_by_final_segment[final_id] == (
+        "key_risks[2].risk.segment_0",
+    )
+    assert not _carried_by_segment(plan)[final_id].passed
+    assert set(plan.deleted_initial_segment_ids) == set(deleted_ids)
+    assert not plan.review_segments
+    assert not plan.changed_segment_ids
+    assert not plan.new_segment_ids
+    assert not plan.unreconciled_segment_ids
+
+
 def test_delete_that_recombines_neighbors_requires_fresh_review():
     report = _candidate(
         market_reaction_analysis="First fact, because disputed. Final fact.",

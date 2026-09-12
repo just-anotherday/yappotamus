@@ -5130,8 +5130,12 @@ def test_phase_b_delete_required_list_item_fails_without_mutating_primary():
     assert report.model_dump(mode="python") == original
 
 
-def _assert_parent_invariant_rejection(monkeypatch, payload, patches, parent, reason):
+def _assert_parent_invariant_rejection(
+    monkeypatch, payload, patches, parent, reason, registry_transform=None,
+):
     report, registry = _phase_b_report_and_registry(payload)
+    if registry_transform is not None:
+        registry = registry_transform(report, registry)
     original = report.model_dump(mode="python")
     original_indices = list(report.article_indices_used)
     required = [patch["target_id"] for patch in patches]
@@ -5191,6 +5195,197 @@ def test_parent_invariant_preserves_partial_list_delete_and_full_validation(monk
     assert len(validated_payloads) == 1
 
 
+def test_exhaustive_bear_case_segment_deletes_remove_item_when_sibling_survives():
+    payload = _report()
+    exhausted = "Unsupported first proposition. Unsupported second proposition."
+    survivor = "Execution risk remains conditional."
+    payload["bear_case"] = [survivor, exhausted]
+    report, registry = _phase_b_report_and_registry(payload)
+    original = report.model_dump(mode="python")
+    source_path = "bear_case[1]"
+    target_ids = [
+        target.patch_target_id
+        for target in registry.targets
+        if target.source_path == source_path
+    ]
+
+    assert len(target_ids) == 2
+    assert all(registry.get(target_id).target_strategy == "text_segment" for target_id in target_ids)
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        target_ids,
+        {"patches": [
+            _phase_b_patch(target_id, operation="DELETE", replacement=None)
+            for target_id in target_ids
+        ]},
+    )
+
+    assert merged.report.bear_case == [survivor]
+    assert report.model_dump(mode="python") == original
+
+
+def test_exhaustive_key_risk_segment_deletes_remove_entire_object():
+    payload = _report()
+    survivor = {"risk": "A separate risk remains.", "severity": "Low"}
+    exhausted = {
+        "risk": "Unsupported first risk. Unsupported second risk.",
+        "severity": "High",
+    }
+    payload["key_risks"] = [survivor, exhausted]
+    report, registry = _phase_b_report_and_registry(payload)
+    target_ids = [
+        target.patch_target_id
+        for target in registry.targets
+        if target.source_path == "key_risks[1].risk"
+    ]
+
+    assert len(target_ids) == 2
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        target_ids,
+        {"patches": [
+            _phase_b_patch(target_id, operation="DELETE", replacement=None)
+            for target_id in target_ids
+        ]},
+    )
+
+    assert [risk.model_dump() for risk in merged.report.key_risks] == [survivor]
+
+
+def test_partial_bear_case_segment_delete_does_not_remove_container():
+    payload = _report()
+    payload["bear_case"] = [
+        "A separate risk remains.",
+        "Unsupported first proposition. Untouched second proposition.",
+    ]
+    report, registry = _phase_b_report_and_registry(payload)
+    target_id = "bear_case[1].segment_0"
+
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        [target_id],
+        {"patches": [_phase_b_patch(
+            target_id, operation="DELETE", replacement=None,
+        )]},
+    )
+
+    assert merged.report.bear_case == [
+        "A separate risk remains.", "Untouched second proposition.",
+    ]
+
+
+def test_mixed_bear_case_delete_replace_does_not_remove_container():
+    payload = _report()
+    payload["bear_case"] = [
+        "A separate risk remains.",
+        "Unsupported first proposition. Unsupported second proposition.",
+    ]
+    report, registry = _phase_b_report_and_registry(payload)
+    target_ids = ["bear_case[1].segment_0", "bear_case[1].segment_1"]
+
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        target_ids,
+        {"patches": [
+            _phase_b_patch(target_ids[0], operation="DELETE", replacement=None),
+            _phase_b_patch(target_ids[1], replacement="Revised risk remains."),
+        ]},
+    )
+
+    assert merged.report.bear_case == [
+        "A separate risk remains.", "Revised risk remains.",
+    ]
+
+
+def test_unpatched_bear_case_segment_prevents_container_delete():
+    payload = _report()
+    payload["bear_case"] = [
+        "A separate risk remains.",
+        "Unsupported first proposition. Unsupported second proposition. Untouched third proposition.",
+    ]
+    report, registry = _phase_b_report_and_registry(payload)
+    target_ids = ["bear_case[1].segment_0", "bear_case[1].segment_1"]
+
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        target_ids,
+        {"patches": [
+            _phase_b_patch(target_id, operation="DELETE", replacement=None)
+            for target_id in target_ids
+        ]},
+    )
+
+    assert merged.report.bear_case == [
+        "A separate risk remains.", "Untouched third proposition.",
+    ]
+
+
+def test_exhaustive_segment_deletes_fail_closed_when_bear_case_would_be_empty():
+    payload = _report()
+    payload["bear_case"] = [
+        "Unsupported first proposition. Unsupported second proposition.",
+        "Unsupported third proposition. Unsupported fourth proposition.",
+    ]
+    report, registry = _phase_b_report_and_registry(payload)
+    original = report.model_dump(mode="python")
+    target_ids = [
+        target.patch_target_id
+        for target in registry.targets
+        if target.source_path.startswith("bear_case[")
+    ]
+
+    with pytest.raises(AISemanticGroundingError) as caught:
+        ollama_service.merge_correction_patch_set(
+            report,
+            registry,
+            target_ids,
+            {"patches": [
+                _phase_b_patch(target_id, operation="DELETE", replacement=None)
+                for target_id in target_ids
+            ]},
+        )
+
+    assert caught.value.details["reason"] == "required_parent_empty_list"
+    assert report.model_dump(mode="python") == original
+
+
+def test_exhaustive_segment_deletes_allow_key_risks_to_become_empty():
+    payload = _report()
+    payload["key_risks"] = [
+        {
+            "risk": "Unsupported first risk. Unsupported second risk.",
+            "severity": "High",
+        },
+        {
+            "risk": "Unsupported third risk. Unsupported fourth risk.",
+            "severity": "Low",
+        },
+    ]
+    report, registry = _phase_b_report_and_registry(payload)
+    target_ids = [
+        target.patch_target_id
+        for target in registry.targets
+        if target.source_path.startswith("key_risks[")
+    ]
+
+    merged = ollama_service.merge_correction_patch_set(
+        report,
+        registry,
+        target_ids,
+        {"patches": [
+            _phase_b_patch(target_id, operation="DELETE", replacement=None)
+            for target_id in target_ids
+        ]},
+    )
+
+    assert merged.report.key_risks == []
+
+
 @pytest.mark.parametrize("parent", [
     "news_summary", "bull_case", "bear_case", "actionable_insights", "key_catalysts", "key_risks",
     "technical_analysis.support_levels", "technical_analysis.resistance_levels",
@@ -5207,12 +5402,25 @@ def test_parent_invariant_rejects_blank_surviving_item(monkeypatch, parent):
     else:
         payload[parent] = [text]
         source = f"{parent}[0]"
-    patches = [
-        _phase_b_patch(f"{source}.segment_{index}", operation="DELETE", replacement=None)
-        for index in range(2)
-    ]
+    target_id = f"{source}.segment_0"
+
+    def incomplete_registry(report, registry):
+        original_target = registry.get(target_id)
+        forged_target = original_target.model_copy(update={
+            "source_start": 0,
+            "source_end": len(text),
+            "original_target_text": text,
+            "target_strategy": "text_segment",
+        })
+        return CorrectionTargetRegistry(targets=[
+            target for target in registry.targets
+            if target.source_path != source
+        ] + [forged_target])
+
+    patches = [_phase_b_patch(target_id, operation="DELETE", replacement=None)]
     _assert_parent_invariant_rejection(
         monkeypatch, payload, patches, parent, "required_parent_blank_item",
+        registry_transform=incomplete_registry,
     )
 
 
