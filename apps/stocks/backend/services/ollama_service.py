@@ -2607,9 +2607,23 @@ def _delete_correction_text_span(
     *,
     source_origins: Optional[List[Optional[str]]] = None,
 ) -> str:
-    """Delete one span and clean only whitespace duplicated at its seam."""
+    """Delete one span and preserve a connector-led clause's sentence seam."""
 
     left, right = source[:start], source[end:]
+    deleted = source[start:end].strip()
+    left_content = left.rstrip(" \t")
+    connector_led = bool(re.match(
+        r"^(?:indicating|suggesting|reflecting|leading\s+to|resulting\s+in)\b",
+        deleted,
+        flags=re.IGNORECASE,
+    ))
+    terminal = re.search(r"([.!?])$", deleted)
+    if connector_led and terminal is not None and left_content.endswith(","):
+        left = (
+            left_content[:-1]
+            + terminal.group(1)
+            + left[len(left_content):]
+        )
     if not left:
         right = right.lstrip(" \t")
     elif not right:
