@@ -2127,6 +2127,12 @@ _CORRECTION_NON_ATOMIC_REPLACE_EXAMPLES = (
     "Moving-average-based trend assessment is limited because MA50 and MA200 were not supplied.",
     "The trend is bullish, but support remains at $140.",
 )
+_CORRECTION_TARGET_NO_OP_RULE = (
+    "REPLACE must not normalize equal to this exact original_proposition. Invalid REPLACE "
+    "examples: repeat original_proposition verbatim; change only whitespace; add or remove "
+    "only its terminal period. Produce materially different supported content, or use DELETE "
+    "only if authorized for this target."
+)
 
 
 _CORRECTION_ATOMIC_REPLACE_GUIDANCE = (
@@ -2139,9 +2145,12 @@ _CORRECTION_ATOMIC_REPLACE_GUIDANCE = (
     "reflecting, if, while, and but can create additional backend coverage segments, as can "
     "sentence boundaries. These are boundary warnings, not a global ban on English words: "
     "the final replacement must produce exactly one backend coverage segment under the "
-    "production segmenter. Use DELETE when a safe atomic replacement cannot be constructed, "
-    "but only when DELETE is authorized for this target and the complete patch set preserves "
-    "the supplied parent constraints and whole-report invariants."
+    "production segmenter. A REPLACE must materially change original_proposition after backend "
+    "normalization: never repeat it verbatim, return a whitespace-only variant, or add or remove "
+    "only a terminal period. If no supported replacement is available, use DELETE only when DELETE "
+    "is authorized for this target and the complete patch set preserves the supplied parent constraints "
+    "and whole-report invariants. "
+    "Use DELETE when a safe atomic replacement cannot be constructed."
 )
 
 
@@ -2319,6 +2328,7 @@ def build_patch_correction_prompt(
             "target_id": target_id,
             "section": target.section,
             "original_proposition": target.original_target_text,
+            "replacement_no_op_rule": _CORRECTION_TARGET_NO_OP_RULE,
             "violating_rules": target_rules,
             "repair_instruction": _patch_repair_instruction(target_rules),
             "read_only_previous_context": target.previous_context,

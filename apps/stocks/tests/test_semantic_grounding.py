@@ -5026,6 +5026,40 @@ def test_patch_guidance_is_target_local_and_explicitly_atomic():
     )
 
 
+def test_patch_guidance_prohibits_normalized_no_op_replacements():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+    prompt = ollama_service.build_patch_correction_prompt(
+        [target_id],
+        registry,
+        [_phase_c_violation(target_id, section="technical_analysis")],
+        _request(),
+    )
+    payload = json.loads(prompt.split("Correction request (JSON):\n", 1)[1])
+    target = payload["targets"][0]
+    original = target["original_proposition"]
+
+    assert original == registry.get(target_id).original_target_text
+    target_keys = list(target)
+    assert target_keys[target_keys.index("original_proposition") + 1] == (
+        "replacement_no_op_rule"
+    )
+    target_rule = " ".join(target["replacement_no_op_rule"].split())
+    assert "must not normalize equal to this exact original_proposition" in target_rule
+    assert "repeat original_proposition verbatim" in target_rule
+    assert "change only whitespace" in target_rule
+    assert "add or remove only its terminal period" in target_rule
+    for rendered in (prompt, ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT):
+        normalized = " ".join(rendered.split())
+        assert "materially change original_proposition after backend normalization" in normalized
+        assert "never repeat it verbatim" in normalized
+        assert "whitespace-only variant" in normalized
+        assert "only a terminal period" in normalized
+        assert "use DELETE only when DELETE is authorized for this target" in normalized
+    assert "backend rewrite" not in prompt.lower()
+    assert "retry" not in prompt.lower()
+
+
 def test_atomic_target_delete_preserves_surviving_trend_parent():
     payload = _report()
     payload["technical_analysis"]["trend"] = "MA50 was not supplied. Unsupported trend claim."
