@@ -191,6 +191,55 @@ def test_post_market_unrecognized_failure_does_not_open_shared_cooldown(monkeypa
     assert yfinance_fallback._yfinance_cooldown_status() == (False, None)
 
 
+def test_fetch_all_classifies_caught_provider_errors_as_failures(monkeypatch, caplog):
+    monkeypatch.setattr(post_market_service, "configure_yfinance_cache", lambda _yf: True)
+
+    class BrokenTicker:
+        def __init__(self, _ticker):
+            raise RuntimeError("ordinary provider failure")
+
+    monkeypatch.setattr(post_market_service.yf, "Ticker", BrokenTicker)
+
+    with caplog.at_level("INFO"):
+        PostMarketService().fetch_all(["AAPL", "MSFT"])
+
+    assert "requested=2 valid=0 missing=0 failures=2" in caplog.text
+
+
+def test_fetch_all_distinguishes_valid_missing_and_failed_provider_results(monkeypatch, caplog):
+    monkeypatch.setattr(post_market_service, "configure_yfinance_cache", lambda _yf: True)
+    monkeypatch.setattr(post_market_service, "datetime", SaturdayDateTime)
+
+    class ControlledTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
+
+        @property
+        def info(self):
+            if self.ticker == "FAILED":
+                raise RuntimeError("ordinary provider failure")
+            if self.ticker == "MISSING":
+                return {"regularMarketPrice": 100.0}
+            return {"regularMarketPrice": 100.0, "postMarketPrice": 101.25}
+
+    monkeypatch.setattr(post_market_service.yf, "Ticker", ControlledTicker)
+    service = PostMarketService()
+    service._post_market_prices["MISSING"] = {"post_market_price": 99.0}
+    service._post_market_prices["FAILED"] = {"post_market_price": 98.0}
+
+    with caplog.at_level("INFO"):
+        assert service.fetch_all(["VALID", "MISSING", "FAILED"]) is None
+
+    assert "requested=3 valid=1 missing=1 failures=1" in caplog.text
+    assert service.get_post_market_price("VALID") == {
+        "post_market_price": 101.25,
+        "post_market_change": 1.25,
+        "post_market_change_percent": 1.25,
+    }
+    assert service.get_post_market_price("MISSING") is None
+    assert service.get_post_market_price("FAILED") == {"post_market_price": 98.0}
+
+
 def test_queued_post_market_task_checks_cooldown_when_it_starts(monkeypatch):
     ticker_calls = []
     inflight_started = threading.Event()
