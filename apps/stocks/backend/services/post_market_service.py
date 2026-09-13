@@ -107,7 +107,14 @@ class PostMarketService:
         minutes = now_et.hour * 60 + now_et.minute
         market_open = 9 * 60 + 30
         market_close = 16 * 60
-        quote_key = "preMarketPrice" if minutes < market_open else "postMarketPrice" if minutes >= market_close else None
+        if now_et.weekday() >= 5:
+            quote_key = "postMarketPrice"
+        else:
+            quote_key = (
+                "preMarketPrice" if minutes < market_open
+                else "postMarketPrice" if minutes >= market_close
+                else None
+            )
         extended_price = cls._valid_price(info.get(quote_key)) if quote_key else None
 
         # Extended-hours quotes can move sharply, but metadata/malformed values should
