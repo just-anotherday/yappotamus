@@ -267,6 +267,49 @@ def test_delete_that_recombines_neighbors_requires_fresh_review():
     assert not plan.new_segment_ids
 
 
+def test_spy_connector_delete_does_not_mutate_passing_left_survivor():
+    report = _candidate(
+        technical_analysis={
+            "trend": (
+                "SPY is trading near the upper end of its 52-week range "
+                "($629.28 - $779.37) at $765.16, indicating a strong long-term "
+                "uptrend. However, the recent 4-day slide and loss of short-term "
+                "trend support suggest that short-term momentum is weakening."
+            ),
+            "support_levels": [],
+            "resistance_levels": [],
+            "breakout_level": "N/A",
+            "breakdown_level": "N/A",
+        },
+    )
+    target_prefix = "technical_analysis.trend.segment_"
+    merged, plan = _correct_and_plan(
+        report,
+        [
+            _delete(f"{target_prefix}1"),
+            _replace(
+                f"{target_prefix}2",
+                "SPY and IWM lost short-term trend support.",
+            ),
+        ],
+        blockers={f"{target_prefix}1"},
+    )
+
+    assert merged.report.technical_analysis.trend == (
+        "SPY is trading near the upper end of its 52-week range "
+        "($629.28 - $779.37) at $765.16. "
+        "SPY and IWM lost short-term trend support."
+    )
+    assert plan.initial_segment_ids_by_final_segment[f"{target_prefix}0"] == (
+        f"{target_prefix}0",
+    )
+    assert _carried_by_segment(plan)[f"{target_prefix}0"].passed
+    assert [segment.coverage_segment_id for segment in plan.review_segments] == [
+        f"{target_prefix}1",
+    ]
+    assert plan.changed_segment_ids == (f"{target_prefix}1",)
+
+
 def test_replacement_is_reviewed_and_untouched_sibling_is_carried():
     report = _candidate(
         market_reaction_analysis="Disputed claim. Surviving fact.",
