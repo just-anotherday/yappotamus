@@ -4031,9 +4031,38 @@ def _derive_structured_market_support(
     if (price.current_price is not None and any(cue in text for cue in ("trading at", "is at", "current price"))
             and _number_is_present_in_text(float(price.current_price), proposition)):
         return ["current_price"]
-    if (price.daily_change_percent is not None and "daily change" in text
-            and _number_is_present_in_text(float(price.daily_change_percent), proposition)):
-        return ["daily_change_percent"]
+    if price.daily_change_percent is not None:
+        daily_change = float(price.daily_change_percent)
+        exact_signed_change = _number_is_present_in_text(daily_change, proposition)
+        exact_magnitude = _number_is_present_in_text(abs(daily_change), proposition)
+        positive_cue = bool(re.search(
+            r"\bdaily\s+(?:gain|increase)\b|\b(?:rose|gained|increased|up)\b[^.!?]*"
+            r"\b(?:today|on\s+the\s+day)\b",
+            text,
+        ))
+        negative_cue = bool(re.search(
+            r"\bdaily\s+(?:loss|decrease)\b|\b(?:fell|lost|declined|decreased|down)\b[^.!?]*"
+            r"\b(?:today|on\s+the\s+day)\b",
+            text,
+        ))
+        polarity_matches = (
+            daily_change > 0 and positive_cue and not negative_cue
+            or daily_change < 0 and negative_cue and not positive_cue
+        )
+        if (
+            "daily change" in text and exact_signed_change
+            or exact_magnitude and polarity_matches
+        ):
+            fields = ["daily_change_percent"]
+            if (
+                price.current_price is not None
+                and re.search(r"\bto\s+\$?[\d,.]+\b", text)
+                and _number_is_present_in_text(
+                    float(price.current_price), proposition.rstrip(".!?")
+                )
+            ):
+                fields.append("current_price")
+            return fields
     if (price.beta is not None and "beta" in text
             and _number_is_present_in_text(float(price.beta), proposition)):
         return ["beta"]
