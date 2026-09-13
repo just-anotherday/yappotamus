@@ -130,6 +130,7 @@ class PostMarketService:
         now_et: datetime | None = None,
         correlation_id: str = "none",
         on_cooldown_skip: Callable[[], None] | None = None,
+        on_provider_failure: Callable[[], None] | None = None,
     ) -> tuple[float | None, float | None]:
         """Fetch extended-hours and regular-market prices for a single ticker.
 
@@ -156,6 +157,8 @@ class PostMarketService:
             effective_now = now_et or datetime.now(tz=ZoneInfo("US/Eastern"))
             return self._extract_extended_hours_prices(info, effective_now)
         except Exception as e:
+            if on_provider_failure is not None:
+                on_provider_failure()
             failure_class = _record_yfinance_outage_failure(e)
             logger.warning(
                 "[PostMarket] event=provider_attempt correlation_id=%s symbol=%s "
@@ -174,16 +177,24 @@ class PostMarketService:
         updated = failed = missing = cooldown_skips = 0
 
         def fetch(ticker: str):
+            provider_failed = False
+
             def record_cooldown_skip() -> None:
                 nonlocal cooldown_skips
                 with self._lock:
                     cooldown_skips += 1
 
-            return ticker, self._get_post_market_data_for_ticker(
+            def record_provider_failure() -> None:
+                nonlocal provider_failed
+                provider_failed = True
+
+            result = self._get_post_market_data_for_ticker(
                 ticker,
                 correlation_id=correlation_id,
                 on_cooldown_skip=record_cooldown_skip,
+                on_provider_failure=record_provider_failure,
             )
+            return ticker, result, provider_failed
 
         with ThreadPoolExecutor(max_workers=polling_settings.PM_MAX_CONCURRENCY, thread_name_prefix="extended-hours") as executor:
             futures = {executor.submit(fetch, ticker): ticker for ticker in tickers}
@@ -191,7 +202,10 @@ class PostMarketService:
                 ticker = futures[future]
                 definitive = False
                 try:
-                    ticker, (pm_price, last_price) = future.result()
+                    ticker, (pm_price, last_price), provider_failed = future.result()
+                    if provider_failed:
+                        failed += 1
+                        continue
                     definitive = last_price is not None
                 except Exception as e:
                     failed += 1
