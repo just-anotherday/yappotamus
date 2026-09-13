@@ -4484,6 +4484,77 @@ def test_backend_derived_market_support_rescues_exact_facts(proposition, configu
 
 
 @pytest.mark.parametrize(
+    ("proposition", "daily_change"),
+    [
+        ("AMD recorded a 3% daily gain", 3.0),
+        ("AMD recorded a 3% daily increase", 3.0),
+        ("AMD recorded a 3% daily loss", -3.0),
+        ("AMD recorded a 3% daily decrease", -3.0),
+        ("AMD rose 3% today", 3.0),
+        ("AMD increased 3% today", 3.0),
+        ("AMD was up 3% today", 3.0),
+        ("AMD fell 3% today", -3.0),
+        ("AMD declined 3% today", -3.0),
+        ("AMD decreased 3% today", -3.0),
+        ("AMD was down 3% today", -3.0),
+    ],
+)
+def test_backend_derived_daily_movement_supports_common_polarized_phrases(
+    proposition, daily_change,
+):
+    request = _request()
+    request.price_data.daily_change_percent = daily_change
+
+    finding, violations = _market_finding_and_violations(proposition, request)
+
+    assert finding.backend_derived_market_fields == ["daily_change_percent"]
+    assert not any(item.rule == "unsupported_company_specific_claim" for item in violations)
+
+
+@pytest.mark.parametrize(
+    ("proposition", "daily_change"),
+    [
+        ("AMD recorded a 3% daily gain", -3.0),
+        ("AMD recorded a 3% daily increase", -3.0),
+        ("AMD recorded a 3% daily loss", 3.0),
+        ("AMD recorded a 3% daily decrease", 3.0),
+        ("AMD rose 3% today", -3.0),
+        ("AMD increased 3% today", -3.0),
+        ("AMD was up 3% today", -3.0),
+        ("AMD fell 3% today", 3.0),
+        ("AMD declined 3% today", 3.0),
+        ("AMD decreased 3% today", 3.0),
+        ("AMD was down 3% today", 3.0),
+    ],
+)
+def test_backend_derived_daily_movement_rejects_opposite_polarity(
+    proposition, daily_change,
+):
+    request = _request()
+    request.price_data.daily_change_percent = daily_change
+
+    finding, violations = _market_finding_and_violations(proposition, request)
+
+    assert finding.backend_derived_market_fields == []
+    assert any(item.rule == "unsupported_company_specific_claim" for item in violations)
+
+
+def test_backend_derived_daily_movement_composes_with_current_price():
+    request = _request()
+    request.price_data.daily_change_percent = 2.04
+    request.price_data.current_price = 151.21
+    proposition = "The stock's daily increase was +2.04% to $151.21."
+
+    finding, violations = _market_finding_and_violations(proposition, request)
+
+    assert finding.backend_derived_market_fields == [
+        "daily_change_percent",
+        "current_price",
+    ]
+    assert not any(item.rule == "unsupported_company_specific_claim" for item in violations)
+
+
+@pytest.mark.parametrize(
     "proposition",
     [
         "AMD's beta of 2.489 means its shares will decline",
