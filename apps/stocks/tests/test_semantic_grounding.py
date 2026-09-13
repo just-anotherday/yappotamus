@@ -4448,6 +4448,20 @@ def test_moving_average_supported_downtrend_is_not_blocked_by_52_week_rule():
     assert ollama_service._deterministic_grounding_violations(request, result, [1]) == []
 
 
+def test_amd_missing_moving_average_repair_is_not_reblocked_by_52_week_context():
+    request = _request()
+    repaired = "Moving-average-based trend assessment is limited without supplied MA50 and MA200 values."
+    result = _technical_trend_result(
+        "AMD is trading within its supplied 52-week range. " + repaired
+    )
+
+    assert ollama_service._derive_structured_market_support(repaired, request) == [
+        "moving_average_50",
+        "moving_average_200",
+    ]
+    assert ollama_service._deterministic_grounding_violations(request, result, [1]) == []
+
+
 def _market_finding_and_violations(proposition, request, *, market_fields=None):
     claim = GroundingClaimFinding(**_claim_finding(
         proposition,
