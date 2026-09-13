@@ -3519,6 +3519,10 @@ def _deterministic_grounding_violations(
             target_registry,
             lambda target: (
                 target.source_path == "technical_analysis.trend"
+                and not _is_exact_missing_moving_average_fact(
+                    target.original_target_text,
+                    request,
+                )
                 and bool(
                     re.search(
                         r"\b(?:strong\s+)?(?:uptrend|downtrend|trend|momentum)\b"
@@ -3953,6 +3957,32 @@ def _is_fn_compatible_missing_input_limitation(proposition: str) -> bool:
     return permitted and not forbidden
 
 
+def _is_exact_missing_moving_average_fact(
+    proposition: str,
+    request: FinancialAnalysisRequest,
+) -> bool:
+    """Recognize only an explicit request-local absence statement for both MAs."""
+
+    text = proposition.lower()
+    price = request.price_data
+    return (
+        price.moving_average_50 is None
+        and price.moving_average_200 is None
+        and ("50-day" in text or "ma50" in text)
+        and ("200-day" in text or "ma200" in text)
+        and any(
+            cue in text
+            for cue in (
+                "not supplied",
+                "missing",
+                "not provided",
+                "absent",
+                "without supplied",
+            )
+        )
+    )
+
+
 def _derive_structured_market_support(
     proposition: str,
     request: FinancialAnalysisRequest,
@@ -3961,19 +3991,11 @@ def _derive_structured_market_support(
 
     text = proposition.lower()
     price = request.price_data
-    missing_mas = price.moving_average_50 is None and price.moving_average_200 is None
-    names_both_missing_mas = (
-        ("50-day" in text or "ma50" in text)
-        and ("200-day" in text or "ma200" in text)
-    )
-    states_missing_mas = any(
-        cue in text for cue in ("not supplied", "missing", "not provided", "absent")
-    )
     # This is an exact absence fact, not a general exception for technical or
     # price-data limitations. Evaluate it before the general causal-language
     # guard so a narrow "limited because MA50 and MA200..." statement remains
     # eligible for deterministic support.
-    if missing_mas and names_both_missing_mas and states_missing_mas:
+    if _is_exact_missing_moving_average_fact(proposition, request):
         return ["moving_average_50", "moving_average_200"]
     forbidden = (
         "because", "prove", "proves", "indicates", "indicating", "means", "will ", "would ",
