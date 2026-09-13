@@ -55,6 +55,23 @@ def test_extracts_pre_market_price_before_open():
     assert regular == 100.0
 
 
+@pytest.mark.parametrize("hour", [8, 12, 17])
+def test_weekend_uses_last_post_market_quote_regardless_of_clock_time(hour):
+    info = {
+        "regularMarketPrice": 100.0,
+        "preMarketPrice": 99.5,
+        "postMarketPrice": 101.25,
+    }
+
+    extended, regular = PostMarketService._extract_extended_hours_prices(
+        info,
+        datetime(2026, 9, 12, hour, 0, tzinfo=ET),
+    )
+
+    assert extended == 101.25
+    assert regular == 100.0
+
+
 def test_rejects_implausible_metadata_like_price():
     info = {"regularMarketPrice": 682.21, "postMarketPrice": 2}
 
