@@ -6262,6 +6262,50 @@ async def test_phase_c_generation_uses_one_request_local_schema_call(caplog):
 
 
 @pytest.mark.asyncio
+async def test_phase_c_model_like_no_op_response_is_rejected_after_one_call():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "technical_analysis.trend.segment_0"
+    target = registry.get(target_id)
+    assert target is not None
+    raw_response = json.dumps({"patches": [{
+        "target_id": target_id,
+        "operation": "REPLACE",
+        "replacement": target.original_target_text,
+        "article_indices_used": [],
+    }]})
+
+    parsed = ollama_service.parse_correction_patch_set(raw_response)
+    assert parsed.patches[0].target_id == target_id
+    assert parsed.patches[0].replacement == target.original_target_text
+
+    class ModelLikeNoOpClient:
+        def __init__(self):
+            self.calls = []
+
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return raw_response
+
+    client = ModelLikeNoOpClient()
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        await ollama_service.generate_correction_patch_set(
+            client,
+            _request(),
+            registry,
+            [_phase_c_violation(target_id, section="technical_analysis")],
+            [_phase_c_claim(target_id, section="technical_analysis")],
+            provider="ollama",
+            model="test-model",
+        )
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["max_attempts"] == 1
+    assert exc_info.value.details["failure_kind"] == "correction_patch_schema_invalid"
+    assert exc_info.value.details["reason"] == "replacement_no_op"
+    assert exc_info.value.details["target_id"] == target_id
+
+
+@pytest.mark.asyncio
 async def test_phase_c_zero_or_unmappable_targets_make_no_provider_call():
     _, registry = _phase_b_report_and_registry()
 
@@ -6727,6 +6771,113 @@ def test_required_no_op_replace_is_rejected_before_merge(replacement):
         )
     assert exc_info.value.details["reason"] == "replacement_no_op"
     assert exc_info.value.details["no_op_patch_rejections"] == 1
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        pytest.param(
+            "the stock remains above recent support.",
+            id="case-only",
+        ),
+        pytest.param(
+            "The stock remains above recent support!",
+            id="non-period-punctuation",
+        ),
+        pytest.param(
+            "The stock remains above recent support。",
+            id="unicode-full-stop",
+        ),
+    ],
+)
+def test_no_op_normalization_preserves_case_and_nonperiod_punctuation(replacement):
+    original = "The stock remains above recent support."
+    report = _report_with_market_segments(original)
+    registry = ollama_service.build_correction_target_registry(
+        ollama_service._build_reviewable_claim_units(report)
+    )
+    target_id = "market_reaction_analysis.segment_0"
+
+    validated = ollama_service.validate_correction_patch_set(
+        {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+        registry,
+        [target_id],
+    )
+
+    # This documents representation-level identity only. Final semantic review
+    # remains responsible for deciding whether the replacement repairs a claim.
+    assert validated.patches[0].replacement == replacement
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        pytest.param(
+            "The stock remains above support.",
+            "The stock remains above support.",
+            id="exact",
+        ),
+        pytest.param(
+            "The stock remains above support",
+            "The stock remains above support.",
+            id="terminal-ascii-period",
+        ),
+        pytest.param(
+            "The stock\r\nremains above support.",
+            "The stock remains above support.",
+            id="crlf",
+        ),
+        pytest.param(
+            "The stock\rremains above support.",
+            "The stock remains above support.",
+            id="cr",
+        ),
+        pytest.param(
+            "The stock remains above support.",
+            "\t The   stock\tremains above support.  ",
+            id="tabs-multiple-and-edge-whitespace",
+        ),
+    ],
+)
+def test_no_op_normalization_rejects_representation_only_changes(
+    original,
+    replacement,
+):
+    report = _report_with_market_segments(original)
+    registry = ollama_service.build_correction_target_registry(
+        ollama_service._build_reviewable_claim_units(report)
+    )
+    target_id = "market_reaction_analysis.segment_0"
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+            registry,
+            [target_id],
+        )
+
+    assert exc_info.value.details["reason"] == "replacement_no_op"
+    assert exc_info.value.details["target_id"] == target_id
+
+
+def test_nested_list_target_no_op_uses_exact_registry_identity():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "key_risks[0].risk.segment_0"
+    target = registry.get(target_id)
+    assert target is not None
+    assert target.source_path == "key_risks[0].risk"
+    assert ollama_service.lookup_correction_target(registry, target_id) is target
+    replacement = f"  {target.original_target_text.rstrip('.')}  "
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(target_id, replacement=replacement)]},
+            registry,
+            [target_id],
+        )
+
+    assert exc_info.value.details["reason"] == "replacement_no_op"
+    assert exc_info.value.details["target_id"] == target_id
 
 
 def test_genuine_replace_is_accepted_and_marked_changed():
