@@ -3470,6 +3470,51 @@ def _historical_range_violation(
     )
 
 
+_HISTORICAL_RANGE_CONTEXT_RE = re.compile(r"\b52(?:-|\s)?week\b", re.IGNORECASE)
+_HISTORICAL_RANGE_ANAPHORA_RE = re.compile(
+    r"\b(?:price\s+position|(?:the|this|that|historical|supplied)\s+range|range-bound)\b",
+    re.IGNORECASE,
+)
+_HISTORICAL_RANGE_DERIVATION_CONNECTOR_RE = re.compile(
+    r"^(?:suggesting|indicating|therefore|which\s+could|leading\s+to|"
+    r"resulting\s+in|reflecting)\b",
+    re.IGNORECASE,
+)
+
+
+def _target_derives_from_historical_range(
+    target: CorrectionPatchTarget,
+    trend_targets: List[CorrectionPatchTarget],
+    trend_text: str,
+) -> bool:
+    """Associate a trend inference with its bounded historical-range evidence."""
+
+    target_text = target.original_target_text
+    if _HISTORICAL_RANGE_CONTEXT_RE.search(target_text):
+        return True
+    if _HISTORICAL_RANGE_ANAPHORA_RE.search(target_text):
+        return True
+    if not _HISTORICAL_RANGE_DERIVATION_CONNECTOR_RE.match(target_text.strip()):
+        return False
+
+    ordered_targets = sorted(trend_targets, key=lambda item: item.source_start)
+    try:
+        target_index = ordered_targets.index(target)
+    except ValueError:
+        return False
+    if target_index == 0:
+        return False
+    previous = ordered_targets[target_index - 1]
+    if not _HISTORICAL_RANGE_CONTEXT_RE.search(previous.original_target_text):
+        return False
+
+    # The segmenter leaves connector punctuation in the gap. A sentence-ending
+    # delimiter proves the prior range observation is only a sibling, not the
+    # connector's immediately governing clause.
+    intervening_text = trend_text[previous.source_end:target.source_start]
+    return not bool(re.search(r"[.!?]", intervening_text))
+
+
 def _enrich_deterministic_patch_targets(
     violations: List[GroundingViolation],
     registry: CorrectionTargetRegistry,
@@ -3515,10 +3560,19 @@ def _deterministic_grounding_violations(
         for value in (price.moving_average_50, price.moving_average_200)
     )
     if uses_52_week_context and not independent_trend_signal:
+        all_trend_targets = _deterministic_targets(
+            target_registry,
+            lambda target: target.source_path == "technical_analysis.trend",
+        )
         trend_targets = _deterministic_targets(
             target_registry,
             lambda target: (
                 target.source_path == "technical_analysis.trend"
+                and _target_derives_from_historical_range(
+                    target,
+                    all_trend_targets,
+                    technical.trend,
+                )
                 and not _is_exact_missing_moving_average_fact(
                     target.original_target_text,
                     request,

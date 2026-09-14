@@ -4362,6 +4362,94 @@ def test_52_week_low_cannot_independently_support_downtrend():
     assert [item.rule for item in violations] == ["historical_range_not_technical_level"]
 
 
+@pytest.mark.parametrize(
+    "historical_sibling",
+    [
+        "The stock is within its 52-week range. ",
+        "",
+    ],
+)
+def test_amd_daily_momentum_interpretation_is_independent_of_historical_sibling(
+    historical_sibling,
+):
+    request = _request()
+    request.price_data.daily_change_percent = -4.3
+    daily_interpretation = (
+        "The recent 4.3% daily decline suggests short-term bearish momentum."
+    )
+    result = _technical_trend_result(historical_sibling + daily_interpretation)
+    review_units = ollama_service._build_reviewable_claim_units(result)
+    coverage_segments = ollama_service._build_review_coverage_segments(review_units)
+    daily_segment = next(
+        segment for segment in coverage_segments
+        if segment.review_unit_id == "technical_analysis.trend"
+        and next(
+            unit for unit in review_units
+            if unit.review_unit_id == segment.review_unit_id
+        ).candidate_text[segment.source_start:segment.source_end] == daily_interpretation
+    )
+    reviewer_finding = GroundingClaimFinding(
+        review_unit_id=daily_segment.review_unit_id,
+        coverage_segment_id=daily_segment.coverage_segment_id,
+        atomic_ordinal=0,
+        claim_role="interpretation",
+        atomic_proposition=daily_interpretation,
+        classification="supported_interpretation",
+        supporting_article_indices=[],
+        supporting_market_data_fields=["daily_change_percent"],
+        rule="structured_market_data_support",
+    )
+
+    assert ollama_service._validate_reviewer_finding_metadata(
+        [reviewer_finding],
+        request,
+        [next(
+            unit for unit in review_units
+            if unit.review_unit_id == daily_segment.review_unit_id
+        )],
+        [daily_segment],
+    ) == []
+    violations = ollama_service._deterministic_grounding_violations(
+        request, result, [1]
+    )
+    assert not any(
+        item.rule == "historical_range_not_technical_level"
+        and item.coverage_segment_id == daily_segment.coverage_segment_id
+        for item in violations
+    )
+
+
+def test_connector_associates_range_observation_with_unsupported_uptrend():
+    result = _technical_trend_result(
+        "The stock is trading below its 52-week high and above its 52-week low, "
+        "indicating a strong uptrend."
+    )
+    trend_unit = next(
+        unit for unit in ollama_service._build_reviewable_claim_units(result)
+        if unit.review_unit_id == "technical_analysis.trend"
+    )
+    segments = ollama_service._build_review_coverage_segments([trend_unit])
+
+    assert [
+        trend_unit.candidate_text[segment.source_start:segment.source_end]
+        for segment in segments
+    ] == [
+        "The stock is trading below its 52-week high and above its 52-week low",
+        "indicating a strong uptrend.",
+    ]
+    violations = ollama_service._deterministic_grounding_violations(
+        _request(), result, [1]
+    )
+    assert [
+        (item.rule, item.coverage_segment_id) for item in violations
+    ] == [
+        (
+            "historical_range_not_technical_level",
+            "technical_analysis.trend.segment_1",
+        )
+    ]
+
+
 def test_descriptive_52_week_fact_remains_allowed():
     result = _technical_trend_result("The 52-week high is $584.73.")
 
