@@ -1471,6 +1471,7 @@ class CorrectionPropositionLineage:
 
     initial_segment_ids_by_final_segment: Mapping[str, Tuple[str, ...]]
     unchanged_final_segment_ids: Tuple[str, ...]
+    dependency_invalidated_final_segment_ids: Tuple[str, ...]
     unreconciled_final_segment_ids: Tuple[str, ...]
     deleted_initial_segment_ids: Tuple[str, ...]
 
@@ -1533,6 +1534,7 @@ class FinalPropositionReviewPlan:
     changed_segment_ids: Tuple[str, ...]
     new_segment_ids: Tuple[str, ...]
     evidence_changed_segment_ids: Tuple[str, ...]
+    dependency_invalidated_segment_ids: Tuple[str, ...]
     unreconciled_segment_ids: Tuple[str, ...]
     initial_segment_ids_by_final_segment: Mapping[str, Tuple[str, ...]]
     deleted_initial_segment_ids: Tuple[str, ...]
@@ -1761,6 +1763,7 @@ def _plan_final_proposition_review(
     changed: List[str] = []
     new: List[str] = []
     evidence_changed: List[str] = []
+    dependency_invalidated: List[str] = []
     unreconciled: List[str] = []
     ancestry: Dict[str, Tuple[str, ...]] = {}
     unchanged_ids = set(
@@ -1768,6 +1771,10 @@ def _plan_final_proposition_review(
     )
     unproven_ids = set(
         proposition_lineage.unreconciled_final_segment_ids if proposition_lineage else ()
+    )
+    dependency_invalidated_ids = set(
+        proposition_lineage.dependency_invalidated_final_segment_ids
+        if proposition_lineage else ()
     )
     for segment in final_segments:
         segment_id = segment.coverage_segment_id
@@ -1801,7 +1808,9 @@ def _plan_final_proposition_review(
                 segment_id in unchanged_ids if proposition_lineage is not None
                 else segment_id not in touched
             )
-            if (
+            if segment_id in dependency_invalidated_ids:
+                dependency_invalidated.append(segment_id)
+            elif (
                 not source_unchanged
                 or identity.normalized_text != original.normalized_text
                 or identity.section != original.section
@@ -1828,6 +1837,7 @@ def _plan_final_proposition_review(
         changed_segment_ids=tuple(changed),
         new_segment_ids=tuple(new),
         evidence_changed_segment_ids=tuple(evidence_changed),
+        dependency_invalidated_segment_ids=tuple(dependency_invalidated),
         unreconciled_segment_ids=tuple(unreconciled),
         initial_segment_ids_by_final_segment=MappingProxyType(ancestry),
         deleted_initial_segment_ids=(
@@ -2993,7 +3003,7 @@ def _finish_correction_proposition_lineage(
     }
 
     def _adjacent_deleted_dependency(segment_id: str, text: str) -> bool:
-        """Invalidate only connector-led survivors next to a deleted source segment.
+        """Invalidate bounded dependent survivors next to deleted source segments.
 
         Exact text lineage alone is insufficient when segmentation separates a
         dependent clause from the clause that gives it meaning.  Keep ordinary
@@ -3009,12 +3019,30 @@ def _finish_correction_proposition_lineage(
             r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
             normalized,
         )
-        return bool(connector_led and (
+        if connector_led and (
             f"{prefix}.segment_{ordinal - 1}" in deleted
             or f"{prefix}.segment_{ordinal + 1}" in deleted
-        ))
+        ):
+            return True
+        return False
+
+    def _trailing_dependency_continuation_deleted(segment_id: str, text: str) -> bool:
+        """Return whether a trailing dependency lost its immediate continuation."""
+        match = re.match(r"^(.*)\.segment_(\d+)$", segment_id)
+        if match is None:
+            return False
+        prefix, ordinal = match.group(1), int(match.group(2))
+        normalized = _normalize_review_proposition_text(text).lower()
+        # ``especially`` is a trailing dependency only when its immediately
+        # following source segment supplied the continuation and was deleted.
+        # Complete uses (for example, "especially in Europe") never match.
+        return bool(
+            re.search(r"\bespecially\s*$", normalized)
+            and f"{prefix}.segment_{ordinal + 1}" in deleted
+        )
     ancestry: Dict[str, Tuple[str, ...]] = {}
     unchanged: List[str] = []
+    dependency_invalidated: List[str] = []
     unreconciled: List[str] = []
     for segment in coverage_segments:
         unit = units[segment.review_unit_id]
@@ -3028,7 +3056,18 @@ def _finish_correction_proposition_lineage(
         ancestry[segment.coverage_segment_id] = origin_ids
         if not aligned or not origin_ids:
             unreconciled.append(segment.coverage_segment_id)
-        elif (
+        else:
+            dependency_invalidated_context = (
+                len(origin_ids) == 1
+                and origin_ids[0] not in touched
+                and _trailing_dependency_continuation_deleted(
+                    origin_ids[0],
+                    unit.candidate_text[segment.source_start:segment.source_end],
+                )
+            )
+            if dependency_invalidated_context:
+                dependency_invalidated.append(segment.coverage_segment_id)
+            elif (
             len(origin_ids) == 1
             and origin_ids[0] not in touched
             and not _adjacent_deleted_dependency(
@@ -3038,12 +3077,13 @@ def _finish_correction_proposition_lineage(
             and _normalize_review_proposition_text(
                 unit.candidate_text[segment.source_start:segment.source_end]
             ) == _normalize_review_proposition_text(original_texts[origin_ids[0]])
-        ):
-            unchanged.append(segment.coverage_segment_id)
+            ):
+                unchanged.append(segment.coverage_segment_id)
     surviving_origins = {origin for origins in ancestry.values() for origin in origins}
     return CorrectionPropositionLineage(
         initial_segment_ids_by_final_segment=MappingProxyType(ancestry),
         unchanged_final_segment_ids=tuple(unchanged),
+        dependency_invalidated_final_segment_ids=tuple(dependency_invalidated),
         unreconciled_final_segment_ids=tuple(unreconciled),
         deleted_initial_segment_ids=tuple(sorted(
             patch.target_id for patch in parsed.patches
@@ -5077,13 +5117,15 @@ def _log_final_review_reconciliation(
 ) -> None:
     carried_passes = sum(entry.passed for entry in plan.carried_entries)
     carried_blockers = sum(not entry.passed for entry in plan.carried_entries)
+    dependency_invalidated = getattr(plan, "dependency_invalidated_segment_ids", ())
     summary = _summarize_grounding_delta([], final_review.violations, plan)
     logger.info(
         "[AI][GroundingReconciliation] initial_review_units=%d "
         "changed_review_units=%d new_review_units=%d carried_forward_units=%d "
         "final_review_units=%d carried_forward_passes=%d "
         "carried_forward_blockers=%d final_genuine_new_findings=%d "
-        "evidence_changed_review_units=%d unreconciled_review_units=%d "
+        "evidence_changed_review_units=%d dependency_invalidated_review_units=%d "
+        "unreconciled_review_units=%d "
         "deleted_initial_units=%d final_blocker_count=%d",
         len(initial_ledger.entries_by_fingerprint),
         len(plan.changed_segment_ids),
@@ -5094,6 +5136,7 @@ def _log_final_review_reconciliation(
         carried_blockers,
         summary["new_count"],
         len(plan.evidence_changed_segment_ids),
+        len(dependency_invalidated),
         len(plan.unreconciled_segment_ids),
         len(plan.deleted_initial_segment_ids),
         summary["final_blocker_count"],
@@ -5111,6 +5154,8 @@ def _log_final_review_reconciliation(
             reason = "unreconciled"
         elif segment_id in plan.evidence_changed_segment_ids:
             reason = "evidence_changed"
+        elif segment_id in dependency_invalidated:
+            reason = "dependency_invalidated"
         elif segment_id in plan.changed_segment_ids:
             reason = "changed"
         else:
