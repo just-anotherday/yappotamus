@@ -81,6 +81,88 @@ def test_connector_led_survivor_adjacent_to_deleted_segment_is_re_reviewed(survi
     assert f"{prefix}1" not in _carried_by_segment(plan)
 
 
+def test_trailing_especially_survivor_loses_carried_pass_after_continuation_delete():
+    report = _candidate(market_reaction_analysis=(
+        "Selling could drive the stock lower in the next 1-7 days, especially "
+        "if demand weakens."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+    merged, plan = _correct_and_plan(report, [_delete(f"{prefix}1")])
+
+    assert merged.report.market_reaction_analysis.endswith(", especially")
+    assert plan.initial_segment_ids_by_final_segment[f"{prefix}0"] == (
+        f"{prefix}0",
+    )
+    assert plan.final_identities_by_segment_id[f"{prefix}0"].fingerprint == (
+        plan.initial_identities_by_segment_id[f"{prefix}0"].fingerprint
+    )
+    assert f"{prefix}0" in plan.dependency_invalidated_segment_ids
+    assert f"{prefix}0" not in _carried_by_segment(plan)
+    assert not plan.new_segment_ids
+    assert [segment.coverage_segment_id for segment in plan.review_segments] == [
+        f"{prefix}0",
+    ]
+
+
+def test_spcx_shaped_trailing_especially_survivor_is_re_reviewed():
+    report = _candidate(outlook={
+        "short_term": (
+            "Bearish — The imminent expiration of insider lockups and the potential "
+            "for up to $48 billion in selling pressure could drive the stock lower "
+            "in the next 1-7 days, especially if the broader tech market remains volatile."
+        ),
+        "medium_term": "Neutral outlook.",
+        "long_term": "Neutral outlook.",
+    })
+    prefix = "outlook.short_term.segment_"
+    merged, plan = _correct_and_plan(report, [_delete(f"{prefix}1")])
+
+    assert merged.report.outlook.short_term.endswith(", especially")
+    assert f"{prefix}0" in plan.dependency_invalidated_segment_ids
+    assert f"{prefix}0" not in _carried_by_segment(plan)
+
+
+def test_complete_especially_phrase_carries_when_unrelated_neighbor_is_deleted():
+    report = _candidate(market_reaction_analysis=(
+        "Demand is strong, especially in Europe. Unrelated claim is deleted."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+    _, plan = _correct_and_plan(report, [_delete(f"{prefix}1")])
+
+    assert f"{prefix}0" in _carried_by_segment(plan)
+    assert not plan.dependency_invalidated_segment_ids
+
+
+def test_trailing_especially_carries_when_its_continuation_is_not_deleted():
+    report = _candidate(market_reaction_analysis=(
+        "Selling could drive the stock lower, especially if demand weakens. "
+        "Unrelated claim is deleted."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+    _, plan = _correct_and_plan(report, [_delete(f"{prefix}2")])
+
+    assert f"{prefix}0" in _carried_by_segment(plan)
+    assert f"{prefix}0" not in plan.dependency_invalidated_segment_ids
+
+
+def test_dependency_invalidated_survivor_rejection_remains_fail_closed():
+    report = _candidate(market_reaction_analysis=(
+        "Selling could drive the stock lower, especially if demand weakens."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+    merged, plan = _correct_and_plan(report, [_delete(f"{prefix}1")])
+    request = _request()
+    reviewed = _synthetic_review_for_report(
+        request,
+        merged.report,
+        blocking_segment_ids={f"{prefix}0"},
+    )
+
+    final = ollama_service._assemble_reconciled_final_review(plan, reviewed)
+    assert not final.valid
+    assert final.violations[0].coverage_segment_id == f"{prefix}0"
+
+
 def test_independent_survivor_adjacent_to_delete_still_carries_forward():
     report = _candidate(market_reaction_analysis="Revenue increased 15%. Management raised guidance.")
     prefix = "market_reaction_analysis.segment_"
