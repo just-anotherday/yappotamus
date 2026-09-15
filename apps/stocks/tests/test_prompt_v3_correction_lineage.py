@@ -92,9 +92,49 @@ def test_independent_survivor_adjacent_to_delete_still_carries_forward():
 def test_delete_reconstruction_removes_terminal_comma_seam():
     source = "The range is known. remove this, trailing text."
     start = source.index("remove this")
-    end = source.index("trailing")
+    end = start + len("remove this")
     repaired = ollama_service._delete_correction_text_span(source, start, end)
-    assert ". ," not in repaired
+    assert source[end] == ","  # The right survivor owns the comma.
+    assert repaired == "The range is known. trailing text."
+
+
+@pytest.mark.parametrize("prefix", [
+    "The stock rose",
+    "The stock is near its 52-week range ($149.85 - $584.73)",
+])
+@pytest.mark.parametrize("adjacent", [False, True])
+def test_delete_preserves_owned_comma_at_local_boundary(prefix, adjacent):
+    deleted = "indicating strength, suggesting momentum" if adjacent else "indicating strength"
+    source = f"{prefix}, {deleted}, but volatility remains."
+    report = _candidate(market_reaction_analysis=source)
+    segments = [segment for segment in ollama_service._build_review_coverage_segments(
+        ollama_service._build_reviewable_claim_units(report)
+    ) if segment.review_unit_id == "market_reaction_analysis"]
+    targets = segments[1:-1]
+    for target in targets:
+        assert source[target.source_end] == ","
+        assert source[:target.source_start].rstrip().endswith(",")
+    merged, plan = _correct_and_plan(report, [
+        _delete(target.coverage_segment_id) for target in targets
+    ])
+    assert merged.report.market_reaction_analysis == f"{prefix}, but volatility remains."
+    assert not plan.unreconciled_segment_ids
+    assert merged.proposition_lineage.initial_segment_ids_by_final_segment[
+        "market_reaction_analysis.segment_0"
+    ] == ("market_reaction_analysis.segment_0",)
+
+
+def test_delete_boundary_leaves_unrelated_punctuation_and_origins_untouched():
+    prefix = 'Values (1,000, 2,000), "a, b", and odd , , punctuation remain, '
+    suffix = ', but lists (a, b, c) remain.'
+    source = prefix + "remove this" + suffix
+    origins = [str(index) for index in range(len(source))]
+    repaired = ollama_service._delete_correction_text_span(
+        source, len(prefix), len(prefix) + len("remove this"), source_origins=origins,
+    )
+    assert repaired == prefix + suffix[2:]
+    assert origins == ([str(index) for index in range(len(prefix))]
+                       + [str(index) for index in range(len(prefix) + len("remove this") + 2, len(source))])
 
 
 @pytest.mark.parametrize("deleted_ordinal", [0, 1])
