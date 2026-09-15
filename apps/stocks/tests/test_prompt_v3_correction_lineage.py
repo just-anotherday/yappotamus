@@ -69,6 +69,34 @@ def _carried_by_segment(plan):
     }
 
 
+@pytest.mark.parametrize("survivor", ["indicating a volatile", "if AI demand remains strong."])
+def test_connector_led_survivor_adjacent_to_deleted_segment_is_re_reviewed(survivor):
+    report = _candidate(market_reaction_analysis=(
+        f"Stable opening. {survivor} Deleted governing clause. Independent tail."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+    merged, plan = _correct_and_plan(report, [_delete(f"{prefix}2")])
+    # The connector-led segment keeps its bytes but loses its governing neighbor.
+    assert f"{prefix}1" in plan.changed_segment_ids
+    assert f"{prefix}1" not in _carried_by_segment(plan)
+
+
+def test_independent_survivor_adjacent_to_delete_still_carries_forward():
+    report = _candidate(market_reaction_analysis="Revenue increased 15%. Management raised guidance.")
+    prefix = "market_reaction_analysis.segment_"
+    merged, plan = _correct_and_plan(report, [_delete(f"{prefix}1")])
+    assert f"{prefix}0" in _carried_by_segment(plan)
+    assert f"{prefix}0" not in plan.changed_segment_ids
+
+
+def test_delete_reconstruction_removes_terminal_comma_seam():
+    source = "The range is known. remove this, trailing text."
+    start = source.index("remove this")
+    end = source.index("trailing")
+    repaired = ollama_service._delete_correction_text_span(source, start, end)
+    assert ". ," not in repaired
+
+
 @pytest.mark.parametrize("deleted_ordinal", [0, 1])
 def test_sentence_delete_preserves_exact_survivor_verdicts_after_renumbering(
     deleted_ordinal,
