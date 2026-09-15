@@ -2624,6 +2624,8 @@ def _delete_correction_text_span(
             + terminal.group(1)
             + left[len(left_content):]
         )
+    if re.search(r"[.!?]\s*$", left) and re.match(r"^\s*,", right):
+        right = re.sub(r"^\s*,\s*", " ", right)
     if not left:
         right = right.lstrip(" \t")
     elif not right:
@@ -2985,6 +2987,31 @@ def _finish_correction_proposition_lineage(
 ) -> CorrectionPropositionLineage:
     units = {unit.review_unit_id: unit for unit in review_units}
     touched = {patch.target_id for patch in parsed.patches}
+    deleted = {
+        patch.target_id for patch in parsed.patches if patch.operation == "DELETE"
+    }
+
+    def _adjacent_deleted_dependency(segment_id: str, text: str) -> bool:
+        """Invalidate only connector-led survivors next to a deleted source segment.
+
+        Exact text lineage alone is insufficient when segmentation separates a
+        dependent clause from the clause that gives it meaning.  Keep ordinary
+        unchanged siblings stable; this intentionally covers only the bounded
+        connector-led shape produced by correction reconstruction.
+        """
+        match = re.match(r"^(.*)\.segment_(\d+)$", segment_id)
+        if match is None:
+            return False
+        prefix, ordinal = match.group(1), int(match.group(2))
+        normalized = _normalize_review_proposition_text(text).lower()
+        connector_led = re.match(
+            r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
+            normalized,
+        )
+        return bool(connector_led and (
+            f"{prefix}.segment_{ordinal - 1}" in deleted
+            or f"{prefix}.segment_{ordinal + 1}" in deleted
+        ))
     ancestry: Dict[str, Tuple[str, ...]] = {}
     unchanged: List[str] = []
     unreconciled: List[str] = []
@@ -3003,6 +3030,10 @@ def _finish_correction_proposition_lineage(
         elif (
             len(origin_ids) == 1
             and origin_ids[0] not in touched
+            and not _adjacent_deleted_dependency(
+                origin_ids[0],
+                unit.candidate_text[segment.source_start:segment.source_end],
+            )
             and _normalize_review_proposition_text(
                 unit.candidate_text[segment.source_start:segment.source_end]
             ) == _normalize_review_proposition_text(original_texts[origin_ids[0]])
