@@ -2624,7 +2624,8 @@ def _delete_correction_text_span(
             + terminal.group(1)
             + left[len(left_content):]
         )
-    if re.search(r"[.!?]\s*$", left) and re.match(r"^\s*,", right):
+    # Keep the left survivor's punctuation when DELETE exposes a second comma.
+    if re.search(r"[.!?,]\s*$", left) and re.match(r"^\s*,", right):
         right = re.sub(r"^\s*,\s*", " ", right)
     if not left:
         right = right.lstrip(" \t")
