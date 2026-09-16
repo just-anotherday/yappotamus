@@ -4731,6 +4731,27 @@ def test_current_price_numeric_grounding_requires_price_in_comparison(value, sup
     assert bool(violations) is not supported
 
 
+@pytest.mark.parametrize(
+    "proposition,supported",
+    [
+        ("AMD trades at $123.45, below its 52-week high", True),
+        ("AMD trades at $123.46, below its 52-week high", False),
+        ("The current price of $123.45 is below its 52-week high", True),
+        ("The current price of $123.46 is below its 52-week high", False),
+    ],
+)
+def test_current_price_comparison_grounds_the_value_bound_to_accepted_phrase(
+    proposition, supported,
+):
+    request = _request()
+    request.price_data.current_price = 123.45
+    finding, violations = _market_finding_and_violations(proposition, request)
+    assert finding.backend_derived_market_fields == (
+        ["current_price", "fifty_two_week_high"] if supported else []
+    )
+    assert bool(violations) is not supported
+
+
 def test_current_price_numeric_grounding_grouping_and_sentence_hyphen():
     request = _request()
     request.price_data.current_price = 1123.45

@@ -4109,6 +4109,23 @@ def _is_exact_missing_moving_average_fact(
     )
 
 
+_CURRENT_PRICE_ASSERTION_CUE = (
+    r"(?:\bcurrent\s+price(?:\s+(?:is|of))?(?:\s+at)?|"
+    r"\b(?:trades?|trading|is)\s+at)"
+)
+
+
+def _has_current_price_assertion(text: str, *, movement: bool = False) -> bool:
+    """Return whether text explicitly assigns a numeric value to current price."""
+
+    cue = r"\bto" if movement else _CURRENT_PRICE_ASSERTION_CUE
+    return bool(re.search(
+        rf"{cue}\s+\(?\s*(?:[+\-−]\s*)?(?:USD\s+|\$\s*)?\d",
+        text,
+        re.IGNORECASE,
+    ))
+
+
 def _current_price_is_present_in_text(
     value: float, text: str, *, movement: bool = False,
 ) -> bool:
@@ -4120,10 +4137,7 @@ def _current_price_is_present_in_text(
     token to the price cue so another value in the same segment cannot rescue
     an incorrect price. USD and bare values follow the existing price prompt.
     """
-    cue = (
-        r"\bto" if movement else
-        r"(?:\bcurrent\s+price(?:\s+(?:is|of))?(?:\s+at)?|\b(?:trading|is)\s+at)"
-    )
+    cue = r"\bto" if movement else _CURRENT_PRICE_ASSERTION_CUE
     sign = r"[-−]\s*" if value < 0 else r"(?:\+\s*)?"
     magnitude = abs(value)
     variants = {f"{magnitude:g}", f"{magnitude:.2f}", f"{magnitude:,.2f}"}
@@ -4199,7 +4213,7 @@ def _derive_structured_market_support(
         comparison_fields.extend(["current_price", "fifty_two_week_low"])
     if comparison_fields:
         # A correct relative comparison cannot rescue a wrong quoted price.
-        if re.search(r"\bat\s+\$?[\d,.]+", text) and not _current_price_is_present_in_text(
+        if _has_current_price_assertion(proposition) and not _current_price_is_present_in_text(
             float(price.current_price), proposition,
         ):
             return []
