@@ -4109,6 +4109,33 @@ def _is_exact_missing_moving_average_fact(
     )
 
 
+def _current_price_is_present_in_text(
+    value: float, text: str, *, movement: bool = False,
+) -> bool:
+    """Match a price assertion, not an unrelated number or a percentage.
+
+    Keep the shared numeric matcher unchanged for article levels, percentages
+    and ratios. Here a dot is continuation only when followed by a digit;
+    ordinary sentence punctuation never changes the numeric core. Bind the
+    token to the price cue so another value in the same segment cannot rescue
+    an incorrect price. USD and bare values follow the existing price prompt.
+    """
+    cue = (
+        r"\bto" if movement else
+        r"(?:\bcurrent\s+price(?:\s+(?:is|of))?(?:\s+at)?|\b(?:trading|is)\s+at)"
+    )
+    sign = r"[-−]\s*" if value < 0 else r"(?:\+\s*)?"
+    magnitude = abs(value)
+    variants = {f"{magnitude:g}", f"{magnitude:.2f}", f"{magnitude:,.2f}"}
+    number = "(?:" + "|".join(re.escape(item) for item in sorted(variants)) + ")"
+    return bool(re.search(
+        rf"{cue}\s+\(?\s*{sign}(?:USD\s+|\$\s*)?{number}"
+        r"(?![\w%]|\.\d|,\d)"
+        r"(?!\s*(?:%|percent\b|per\s+cent\b|thousand\b|million\b|billion\b|trillion\b|EUR\b|GBP\b|JPY\b|euros?\b|pounds?\b|yen\b))",
+        text, re.IGNORECASE,
+    ))
+
+
 def _derive_structured_market_support(
     proposition: str,
     request: FinancialAnalysisRequest,
@@ -4171,6 +4198,11 @@ def _derive_structured_market_support(
     ):
         comparison_fields.extend(["current_price", "fifty_two_week_low"])
     if comparison_fields:
+        # A correct relative comparison cannot rescue a wrong quoted price.
+        if re.search(r"\bat\s+\$?[\d,.]+", text) and not _current_price_is_present_in_text(
+            float(price.current_price), proposition,
+        ):
+            return []
         return _order_preserving_dedupe(comparison_fields)
     has_range = (
         price.fifty_two_week_low is not None
@@ -4183,7 +4215,7 @@ def _derive_structured_market_support(
     # A compound price-within-range statement is accepted only after all three
     # components are verified.  Never let current price alone rescue it.
     if has_range and any(cue in text for cue in ("trading at", "is at", "current price")):
-        if price.current_price is not None and _number_is_present_in_text(float(price.current_price), proposition):
+        if price.current_price is not None and _current_price_is_present_in_text(float(price.current_price), proposition):
             return ["current_price", "fifty_two_week_low", "fifty_two_week_high"]
         return []
     if has_range:
@@ -4191,7 +4223,7 @@ def _derive_structured_market_support(
     if "52-week" in text and "range" in text:
         return []
     if (price.current_price is not None and any(cue in text for cue in ("trading at", "is at", "current price"))
-            and _number_is_present_in_text(float(price.current_price), proposition)):
+            and _current_price_is_present_in_text(float(price.current_price), proposition)):
         return ["current_price"]
     if price.daily_change_percent is not None:
         daily_change = float(price.daily_change_percent)
@@ -4218,11 +4250,14 @@ def _derive_structured_market_support(
             fields = ["daily_change_percent"]
             if (
                 price.current_price is not None
-                and re.search(r"\bto\s+\$?[\d,.]+\b", text)
-                and _number_is_present_in_text(
-                    float(price.current_price), proposition.rstrip(".!?")
-                )
+                and re.search(r"\bto\s+\(?\s*(?:[+−\-$\d]|USD\b)", proposition, re.IGNORECASE)
             ):
+                # Keep percentage support, but never use it to validate a
+                # compound proposition with an incompatible monetary price.
+                if not _current_price_is_present_in_text(
+                    float(price.current_price), proposition, movement=True,
+                ):
+                    return []
                 fields.append("current_price")
             return fields
     if (price.beta is not None and "beta" in text

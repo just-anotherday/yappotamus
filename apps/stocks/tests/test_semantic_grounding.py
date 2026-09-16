@@ -4641,6 +4641,104 @@ def test_backend_derived_daily_movement_rejects_opposite_polarity(
     assert any(item.rule == "unsupported_company_specific_claim" for item in violations)
 
 
+@pytest.mark.parametrize(
+    "price_text,supported",
+    [
+        ("$123.45", True), ("$123.45.", True),
+        ("$123.45,", True), ("$123.45;", True), ("($123.45)", True),
+        ("123.45.", True), ("USD 123.45.", True),
+        ("+$123.45", True), ("+123.45", True),
+        ("$123.46.", False), ("$123", False), ("$123.4501", False),
+        ("$1123.45", False), ("-$123.45", False), ("$-123.45", False),
+        ("−$123.45", False), ("123.45%", False), ("$123.45%", False),
+        ("123.45 percent", False), ("EUR 123.45", False), ("123.45 EUR", False),
+        ("$123.45 million", False), ("$123.45.01", False),
+        ("$123.45,000", False),
+    ],
+)
+def test_current_price_numeric_grounding_contract(price_text, supported):
+    request = _request()
+    request.price_data.current_price = 123.45
+    proposition = f"The current price is {price_text}"
+    assert ollama_service._current_price_is_present_in_text(123.45, proposition) is supported
+    assert ollama_service._derive_structured_market_support(proposition, request) == (
+        ["current_price"] if supported else []
+    )
+    finding, violations = _market_finding_and_violations(proposition, request)
+    assert finding.backend_derived_market_fields == (["current_price"] if supported else [])
+    assert bool(violations) is not supported
+
+    # Exercise the live reviewer's directly_supported classification and the
+    # actual candidate span, rather than only the helper's fallback override.
+    units = [unit for unit in ollama_service._build_reviewable_claim_units(
+        _technical_trend_result(proposition)
+    ) if unit.review_unit_id == "technical_analysis.trend"]
+    segments = ollama_service._build_review_coverage_segments(units)
+    assert len(segments) == 1
+    claim = GroundingClaimFinding(
+        review_unit_id=units[0].review_unit_id,
+        coverage_segment_id=segments[0].coverage_segment_id,
+        atomic_ordinal=0, claim_role="fact", atomic_proposition=proposition,
+        classification="directly_supported", supporting_article_indices=[],
+        supporting_market_data_fields=["current_price"],
+        rule="unsupported_numeric_precision",
+    )
+    contradictions = ollama_service._validate_reviewer_finding_metadata(
+        [claim], request, units, segments,
+    )
+    normalized = ollama_service._normalize_claim_findings([claim], [], units)
+    blockers = ollama_service._evidence_contract_contradictions_to_violations(
+        contradictions, normalized,
+    )
+    assert bool(blockers) is not supported
+
+
+@pytest.mark.parametrize("price_text", ["-$123.45", "123.45%", "$123.46"])
+def test_current_price_numeric_grounding_does_not_borrow_other_numbers(price_text):
+    request = _request()
+    request.price_data.current_price = 123.45
+    assert ollama_service._derive_structured_market_support(
+        f"The current price is {price_text}, previously $123.45", request,
+    ) == []
+
+
+@pytest.mark.parametrize("price_text,supported", [
+    ("$123.45.", True), ("123.45%", False), ("-$123.45", False),
+])
+def test_current_price_numeric_grounding_preserves_movement_percent(price_text, supported):
+    request = _request()
+    request.price_data.current_price = 123.45
+    request.price_data.daily_change_percent = 2.04
+    fields = ollama_service._derive_structured_market_support(
+        f"The stock's daily increase was +2.04% to {price_text}", request,
+    )
+    assert fields == (["daily_change_percent", "current_price"] if supported else [])
+    _, violations = _market_finding_and_violations(
+        f"The stock's daily increase was +2.04% to {price_text}", request,
+    )
+    assert bool(violations) is not supported
+
+
+@pytest.mark.parametrize("value,supported", [("123.45", True), ("123.46", False)])
+def test_current_price_numeric_grounding_requires_price_in_comparison(value, supported):
+    request = _request()
+    request.price_data.current_price = 123.45
+    proposition = f"AMD is trading at ${value}, below its 52-week high."
+    finding, violations = _market_finding_and_violations(proposition, request)
+    assert finding.backend_derived_market_fields == (
+        ["current_price", "fifty_two_week_high"] if supported else []
+    )
+    assert bool(violations) is not supported
+
+
+def test_current_price_numeric_grounding_grouping_and_sentence_hyphen():
+    request = _request()
+    request.price_data.current_price = 1123.45
+    assert ollama_service._derive_structured_market_support(
+        "Snapshot - the current price is $1,123.45.", request,
+    ) == ["current_price"]
+
+
 def test_backend_derived_daily_movement_composes_with_current_price():
     request = _request()
     request.price_data.daily_change_percent = 2.04
