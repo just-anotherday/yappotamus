@@ -4143,9 +4143,9 @@ def _current_price_assertion_patterns(ticker: Optional[str] = None) -> Tuple[str
         r"(?:trades?|trading)\s+at)"
     )
     return (
-        rf"{_CURRENT_PRICE_ASSERTION_CUE}\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}",
-        rf"\b{subject}\s+{trading_predicate}\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}",
-        rf"(?:^|(?<=[.!?])\s+)trading\s+at\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}",
+        rf"{_CURRENT_PRICE_ASSERTION_CUE}\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}\)?",
+        rf"\b{subject}\s+{trading_predicate}\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}\)?",
+        rf"(?:^|(?<=[.!?])\s+)trading\s+at\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}\)?",
     )
 
 
@@ -4303,6 +4303,9 @@ def _derive_structured_market_support(
     )
     if any(term in text for term in forbidden):
         return []
+    price_assertions = _parse_current_price_assertions(
+        proposition, ticker=request.ticker,
+    )
     below_high_comparisons = _parse_range_comparisons(
         proposition,
         ticker=request.ticker,
@@ -4328,14 +4331,27 @@ def _derive_structured_market_support(
                 assertion=below_high_comparisons[-1].assertion,
             ))
     comparisons = below_high_comparisons + above_low_comparisons
-    if price.current_price is not None and any(
-        item.assertion is not None
-        and not _asserted_price_matches(
-            float(price.current_price), item.assertion, proposition,
-        )
-        for item in comparisons
-    ):
-        return []
+    if price.current_price is not None:
+        owned_assertions = {
+            (item.assertion.source_start, item.assertion.source_end): item.assertion
+            for item in comparisons
+            if item.assertion is not None
+        }
+        remaining_assertions = [
+            assertion for assertion in price_assertions
+            if (assertion.source_start, assertion.source_end) not in owned_assertions
+        ]
+        assertions_to_validate = [
+            *owned_assertions.values(),
+            *remaining_assertions,
+        ]
+        if any(
+            not _asserted_price_matches(
+                float(price.current_price), assertion, proposition,
+            )
+            for assertion in assertions_to_validate
+        ):
+            return []
     comparison_fields: List[str] = []
     below_high = bool(below_high_comparisons)
     above_low = bool(above_low_comparisons)
@@ -4365,9 +4381,6 @@ def _derive_structured_market_support(
     )
     # A compound price-within-range statement is accepted only after all three
     # components are verified.  Never let current price alone rescue it.
-    price_assertions = _parse_current_price_assertions(
-        proposition, ticker=request.ticker,
-    )
     if has_range and price_assertions:
         if price.current_price is not None and _current_price_is_present_in_text(
             float(price.current_price), proposition, ticker=request.ticker,

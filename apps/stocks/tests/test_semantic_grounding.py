@@ -4794,6 +4794,37 @@ def test_current_price_numeric_grounding_requires_price_in_comparison(value, sup
             "at $123.45, below its 52-week high.",
             ["current_price", "fifty_two_week_high"],
         ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while volume is "
+            "123.46.",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while the current "
+            "price is $123.46.",
+            [],
+        ),
+        (
+            "The current price is $123.46, while AMD trades at $123.45, below "
+            "its 52-week high.",
+            [],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while AMD trades "
+            "at $123.46.",
+            [],
+        ),
+        (
+            "AMD trades at $123.46, below its 52-week high, while the current "
+            "price is $123.45.",
+            [],
+        ),
+        ("The current price is $123.45, while the current price is $123.46.", []),
+        (
+            "AMD trades at ($123.45), below its 52-week high",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        ("AMD trades at ($123.46), below its 52-week high", []),
     ],
 )
 def test_current_price_comparison_grounds_the_value_bound_to_accepted_phrase(
