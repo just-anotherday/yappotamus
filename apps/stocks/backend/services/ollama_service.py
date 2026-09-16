@@ -4109,25 +4109,114 @@ def _is_exact_missing_moving_average_fact(
     )
 
 
-_CURRENT_PRICE_ASSERTION_CUE = (
-    r"(?:\bcurrent\s+price(?:\s+(?:is|of))?(?:\s+at)?|"
-    r"\b(?:trades?|trading|is)\s+at)"
+_CURRENT_PRICE_ASSERTION_CUE = r"\bcurrent\s+price(?:\s+(?:is|of))?(?:\s+at)?"
+_CURRENT_PRICE_VALUE_TOKEN = (
+    r"(?:[+\-−]\s*)?(?:USD\s+|\$\s*)?\d[\d,]*(?:\.\d+)?"
 )
 
 
-def _has_current_price_assertion(text: str, *, movement: bool = False) -> bool:
-    """Return whether text explicitly assigns a numeric value to current price."""
+@dataclass(frozen=True)
+class _CurrentPriceAssertion:
+    value_text: str
+    source_start: int
+    source_end: int
 
-    cue = r"\bto" if movement else _CURRENT_PRICE_ASSERTION_CUE
-    return bool(re.search(
-        rf"{cue}\s+\(?\s*(?:[+\-−]\s*)?(?:USD\s+|\$\s*)?\d",
-        text,
+
+@dataclass(frozen=True)
+class _RangeComparison:
+    relation: str
+    target: str
+    assertion: Optional[_CurrentPriceAssertion]
+
+
+def _current_price_assertion_patterns(ticker: Optional[str] = None) -> Tuple[str, ...]:
+    """Return the shared grammar for an explicit current-price assignment."""
+
+    subjects = [
+        r"(?:the\s+)?(?:stock|shares?|(?:stock|share)\s+price|price)",
+    ]
+    if ticker:
+        subjects.append(re.escape(ticker))
+    subject = "(?:" + "|".join(subjects) + ")"
+    trading_predicate = (
+        r"(?:(?:is|are)\s+(?:currently\s+)?(?:trading\s+)?at|"
+        r"(?:trades?|trading)\s+at)"
+    )
+    return (
+        rf"{_CURRENT_PRICE_ASSERTION_CUE}\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}",
+        rf"\b{subject}\s+{trading_predicate}\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}",
+        rf"(?:^|(?<=[.!?])\s+)trading\s+at\s+\(?\s*{_CURRENT_PRICE_VALUE_TOKEN}",
+    )
+
+
+def _parse_current_price_assertions(
+    text: str,
+    *,
+    ticker: Optional[str] = None,
+    movement: bool = False,
+) -> List[_CurrentPriceAssertion]:
+    """Parse explicit price assignments and retain their associated value spans."""
+
+    patterns = (
+        (rf"\bto\s+\(?\s*(?P<value>{_CURRENT_PRICE_VALUE_TOKEN})",)
+        if movement else _current_price_assertion_patterns(ticker)
+    )
+    assertions: List[_CurrentPriceAssertion] = []
+    seen_spans = set()
+    for pattern in patterns:
+        capture_pattern = (
+            pattern if movement else pattern.replace(
+                _CURRENT_PRICE_VALUE_TOKEN,
+                rf"(?P<value>{_CURRENT_PRICE_VALUE_TOKEN})",
+                1,
+            )
+        )
+        for match in re.finditer(capture_pattern, text, re.IGNORECASE):
+            span = match.span("value")
+            if span in seen_spans:
+                continue
+            seen_spans.add(span)
+            assertions.append(_CurrentPriceAssertion(
+                value_text=match.group("value"),
+                source_start=span[0],
+                source_end=span[1],
+            ))
+    return sorted(assertions, key=lambda item: item.source_start)
+
+
+def _asserted_price_matches(
+    value: float,
+    assertion: _CurrentPriceAssertion,
+    text: str,
+) -> bool:
+    """Match one parsed assertion without consulting any other sentence number."""
+
+    sign = r"[-−]\s*" if value < 0 else r"(?:\+\s*)?"
+    magnitude = abs(value)
+    variants = {f"{magnitude:g}", f"{magnitude:.2f}", f"{magnitude:,.2f}"}
+    number = "(?:" + "|".join(re.escape(item) for item in sorted(variants)) + ")"
+    if not re.fullmatch(
+        rf"{sign}(?:USD\s+|\$\s*)?{number}",
+        assertion.value_text,
         re.IGNORECASE,
-    ))
+    ):
+        return False
+    suffix = text[assertion.source_end:]
+    return not re.match(
+        r"(?:[\w%]|\.\d|,\d|\s*(?:%|percent\b|per\s+cent\b|thousand\b|"
+        r"million\b|billion\b|trillion\b|EUR\b|GBP\b|JPY\b|euros?\b|"
+        r"pounds?\b|yen\b))",
+        suffix,
+        re.IGNORECASE,
+    )
 
 
 def _current_price_is_present_in_text(
-    value: float, text: str, *, movement: bool = False,
+    value: float,
+    text: str,
+    *,
+    ticker: Optional[str] = None,
+    movement: bool = False,
 ) -> bool:
     """Match a price assertion, not an unrelated number or a percentage.
 
@@ -4137,17 +4226,59 @@ def _current_price_is_present_in_text(
     token to the price cue so another value in the same segment cannot rescue
     an incorrect price. USD and bare values follow the existing price prompt.
     """
-    cue = r"\bto" if movement else _CURRENT_PRICE_ASSERTION_CUE
-    sign = r"[-−]\s*" if value < 0 else r"(?:\+\s*)?"
-    magnitude = abs(value)
-    variants = {f"{magnitude:g}", f"{magnitude:.2f}", f"{magnitude:,.2f}"}
-    number = "(?:" + "|".join(re.escape(item) for item in sorted(variants)) + ")"
-    return bool(re.search(
-        rf"{cue}\s+\(?\s*{sign}(?:USD\s+|\$\s*)?{number}"
-        r"(?![\w%]|\.\d|,\d)"
-        r"(?!\s*(?:%|percent\b|per\s+cent\b|thousand\b|million\b|billion\b|trillion\b|EUR\b|GBP\b|JPY\b|euros?\b|pounds?\b|yen\b))",
-        text, re.IGNORECASE,
-    ))
+    assertions = _parse_current_price_assertions(
+        text, ticker=ticker, movement=movement,
+    )
+    return bool(assertions) and all(
+        _asserted_price_matches(value, assertion, text)
+        for assertion in assertions
+    )
+
+
+def _parse_range_comparisons(
+    proposition: str,
+    *,
+    ticker: str,
+    relation: str,
+    target: str,
+) -> List[_RangeComparison]:
+    """Parse 52-week comparisons and retain each clause-local asserted price."""
+
+    assertion_pattern = "(?:" + "|".join(
+        _current_price_assertion_patterns(ticker)
+    ) + ")"
+    implicit_subject = (
+        rf"(?:the\s+)?(?:current|stock|share)\s+price|(?:the\s+)?price|"
+        rf"(?:the\s+)?(?:stock|shares)|{re.escape(ticker)}"
+    )
+    implicit_verb = r"(?:(?:is|are)\s+(?:currently\s+)?(?:trading\s+)?|trades?\s+)"
+    matches = re.finditer(
+        rf"(?:(?P<assertion>{assertion_pattern})\s*,?\s*(?:is\s+)?|"
+        rf"(?:{implicit_subject})\s+{implicit_verb})"
+        rf"(?:well\s+)?{relation}\s+(?:its\s+|the\s+)?"
+        rf"52(?:-|\s)?week\s+{target}\b",
+        proposition,
+        re.IGNORECASE,
+    )
+    comparisons: List[_RangeComparison] = []
+    for match in matches:
+        assertion_text = match.group("assertion")
+        assertion = None
+        if assertion_text:
+            parsed = _parse_current_price_assertions(assertion_text, ticker=ticker)
+            if parsed:
+                offset = match.start("assertion")
+                assertion = _CurrentPriceAssertion(
+                    value_text=parsed[0].value_text,
+                    source_start=offset + parsed[0].source_start,
+                    source_end=offset + parsed[0].source_end,
+                )
+        comparisons.append(_RangeComparison(
+            relation=relation,
+            target=target,
+            assertion=assertion,
+        ))
+    return comparisons
 
 
 def _derive_structured_market_support(
@@ -4172,31 +4303,42 @@ def _derive_structured_market_support(
     )
     if any(term in text for term in forbidden):
         return []
-    subject = (
-        rf"(?:the\s+)?(?:current|stock|share)\s+price"
-        rf"(?:\s+of\s+\$?[\d,.]+)?|(?:the\s+)?price|"
-        rf"(?:the\s+)?(?:stock|shares)|"
-        rf"{re.escape(request.ticker.lower())}"
+    below_high_comparisons = _parse_range_comparisons(
+        proposition,
+        ticker=request.ticker,
+        relation="below",
+        target="high",
     )
-    descriptive_verb = r"(?:(?:is|are)\s+(?:currently\s+)?(?:trading\s+)?|trades?\s+)"
-    optional_current_value = r"(?:at\s+\$?[\d,.]+\s*,?\s*)?"
-    below_high = bool(re.search(
-        rf"(?:{subject})\s+{descriptive_verb}{optional_current_value}(?:well\s+)?below\s+"
-        r"(?:its\s+|the\s+)?52(?:-|\s)?week\s+high\b",
-        text,
-    ))
-    above_low = bool(re.search(
-        rf"(?:{subject})\s+{descriptive_verb}{optional_current_value}(?:well\s+)?above\s+"
-        r"(?:its\s+|the\s+)?52(?:-|\s)?week\s+low\b",
-        text,
-    ))
-    if below_high and not above_low:
-        above_low = bool(re.search(
+    above_low_comparisons = _parse_range_comparisons(
+        proposition,
+        ticker=request.ticker,
+        relation="above",
+        target="low",
+    )
+    if below_high_comparisons and not above_low_comparisons:
+        chained_above_low = re.search(
             r"\band\s+(?:well\s+)?above\s+(?:its\s+|the\s+)?"
             r"52(?:-|\s)?week\s+low\b",
             text,
-        ))
+        )
+        if chained_above_low:
+            above_low_comparisons.append(_RangeComparison(
+                relation="above",
+                target="low",
+                assertion=below_high_comparisons[-1].assertion,
+            ))
+    comparisons = below_high_comparisons + above_low_comparisons
+    if price.current_price is not None and any(
+        item.assertion is not None
+        and not _asserted_price_matches(
+            float(price.current_price), item.assertion, proposition,
+        )
+        for item in comparisons
+    ):
+        return []
     comparison_fields: List[str] = []
+    below_high = bool(below_high_comparisons)
+    above_low = bool(above_low_comparisons)
     if (
         below_high
         and price.current_price is not None
@@ -4212,11 +4354,6 @@ def _derive_structured_market_support(
     ):
         comparison_fields.extend(["current_price", "fifty_two_week_low"])
     if comparison_fields:
-        # A correct relative comparison cannot rescue a wrong quoted price.
-        if _has_current_price_assertion(proposition) and not _current_price_is_present_in_text(
-            float(price.current_price), proposition,
-        ):
-            return []
         return _order_preserving_dedupe(comparison_fields)
     has_range = (
         price.fifty_two_week_low is not None
@@ -4228,16 +4365,23 @@ def _derive_structured_market_support(
     )
     # A compound price-within-range statement is accepted only after all three
     # components are verified.  Never let current price alone rescue it.
-    if has_range and any(cue in text for cue in ("trading at", "is at", "current price")):
-        if price.current_price is not None and _current_price_is_present_in_text(float(price.current_price), proposition):
+    price_assertions = _parse_current_price_assertions(
+        proposition, ticker=request.ticker,
+    )
+    if has_range and price_assertions:
+        if price.current_price is not None and _current_price_is_present_in_text(
+            float(price.current_price), proposition, ticker=request.ticker,
+        ):
             return ["current_price", "fifty_two_week_low", "fifty_two_week_high"]
         return []
     if has_range:
         return ["fifty_two_week_low", "fifty_two_week_high"]
     if "52-week" in text and "range" in text:
         return []
-    if (price.current_price is not None and any(cue in text for cue in ("trading at", "is at", "current price"))
-            and _current_price_is_present_in_text(float(price.current_price), proposition)):
+    if (price.current_price is not None and price_assertions
+            and _current_price_is_present_in_text(
+                float(price.current_price), proposition, ticker=request.ticker,
+            )):
         return ["current_price"]
     if price.daily_change_percent is not None:
         daily_change = float(price.daily_change_percent)

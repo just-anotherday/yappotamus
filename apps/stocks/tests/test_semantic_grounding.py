@@ -4732,24 +4732,80 @@ def test_current_price_numeric_grounding_requires_price_in_comparison(value, sup
 
 
 @pytest.mark.parametrize(
-    "proposition,supported",
+    "proposition,expected_fields",
     [
-        ("AMD trades at $123.45, below its 52-week high", True),
-        ("AMD trades at $123.46, below its 52-week high", False),
-        ("The current price of $123.45 is below its 52-week high", True),
-        ("The current price of $123.46 is below its 52-week high", False),
+        (
+            "AMD trades at $123.45, below its 52-week high",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        ("AMD trades at $123.46, below its 52-week high", []),
+        (
+            "The current price of $123.45 is below its 52-week high",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        ("The current price of $123.46 is below its 52-week high", []),
+        (
+            "AMD trades at $123.46, below its 52-week high, while the moving "
+            "average is at $123.45.",
+            [],
+        ),
+        (
+            "The current price of $123.46 is below its 52-week high, while "
+            "volume is at 123.45.",
+            [],
+        ),
+        ("The 52-week high is at $123.45.", []),
+        (
+            "The moving average is at $123.45 while AMD trades at $123.46, "
+            "below its 52-week high.",
+            [],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while the moving "
+            "average is at $150.00.",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        (
+            "AMD trades at USD 123.45, below its 52-week high.",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high and above its "
+            "52-week low.",
+            ["current_price", "fifty_two_week_high", "fifty_two_week_low"],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while AMD trades "
+            "at $123.46, above its 52-week low.",
+            [],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while AMD trades "
+            "at $123.45, above its 52-week low.",
+            ["current_price", "fifty_two_week_high", "fifty_two_week_low"],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while AMD trades "
+            "at $123.46, below its 52-week high.",
+            [],
+        ),
+        (
+            "AMD trades at $123.45, below its 52-week high, while AMD trades "
+            "at $123.45, below its 52-week high.",
+            ["current_price", "fifty_two_week_high"],
+        ),
     ],
 )
 def test_current_price_comparison_grounds_the_value_bound_to_accepted_phrase(
-    proposition, supported,
+    proposition, expected_fields,
 ):
     request = _request()
     request.price_data.current_price = 123.45
+    request.price_data.fifty_two_week_high = 200.0
+    request.price_data.fifty_two_week_low = 100.0
     finding, violations = _market_finding_and_violations(proposition, request)
-    assert finding.backend_derived_market_fields == (
-        ["current_price", "fifty_two_week_high"] if supported else []
-    )
-    assert bool(violations) is not supported
+    assert finding.backend_derived_market_fields == expected_fields
+    assert bool(violations) == (not bool(expected_fields))
 
 
 def test_current_price_numeric_grounding_grouping_and_sentence_hyphen():
