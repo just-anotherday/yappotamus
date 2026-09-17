@@ -4132,6 +4132,147 @@ def test_fn_input_context_supports_missing_fundamentals_limitation():
     assert ollama_service._validate_reviewer_finding_metadata([claim], _request()) == []
 
 
+def _fundamentals_absence_claim(
+    proposition,
+    *,
+    classification="directly_supported",
+    input_context=None,
+    article_indices=None,
+):
+    return GroundingClaimFinding(
+        review_unit_id="executive_summary",
+        coverage_segment_id="executive_summary.segment_0",
+        atomic_ordinal=0,
+        claim_role="fact" if classification == "directly_supported" else "interpretation",
+        atomic_proposition=proposition,
+        classification=classification,
+        supporting_article_indices=article_indices or [],
+        supporting_market_data_fields=[],
+        supporting_input_context=(
+            ["fundamentals_not_supplied"] if input_context is None else input_context
+        ),
+        rule=(
+            "selected_article_support"
+            if classification == "directly_supported"
+            else "causal_mechanism_grounding"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "proposition",
+    [
+        "Fundamentals were not supplied.",
+        "Fundamental data was not provided.",
+        "No fundamental metrics were supplied.",
+        "Fundamentals are unavailable in the supplied inputs.",
+    ],
+)
+def test_fn_input_context_directly_supports_bounded_plain_absence_facts(
+    proposition,
+):
+    claim = _fundamentals_absence_claim(proposition)
+
+    assert ollama_service._validate_reviewer_finding_metadata([claim], _request()) == []
+
+
+@pytest.mark.parametrize(
+    "proposition",
+    [
+        "Fundamentals were supplied.",
+        "Fundamentals were provided.",
+        "Fundamentals are available.",
+        "Fundamentals were supplied, limiting assessment.",
+    ],
+)
+def test_fn_input_context_does_not_support_affirmative_fundamentals_state(proposition):
+    claim = _fundamentals_absence_claim(
+        proposition,
+        classification="supported_interpretation",
+    )
+
+    contradictions = ollama_service._validate_reviewer_finding_metadata(
+        [claim], _request()
+    )
+
+    assert [item.code for item in contradictions] == ["interpretation_support_required"]
+    assert claim.backend_derived_input_context == []
+
+
+@pytest.mark.parametrize(
+    "proposition",
+    [
+        "The company has poor fundamentals.",
+        "The company's fundamentals are weak.",
+        "Revenue is declining.",
+        "The stock is overvalued.",
+        "Profitability is deteriorating.",
+    ],
+)
+def test_fn_input_context_does_not_support_substantive_financial_claims(proposition):
+    claim = _fundamentals_absence_claim(
+        proposition,
+        classification="supported_interpretation",
+    )
+
+    contradictions = ollama_service._validate_reviewer_finding_metadata(
+        [claim], _request()
+    )
+
+    assert [item.code for item in contradictions] == ["interpretation_support_required"]
+    assert claim.backend_derived_input_context == []
+
+
+def test_plain_fundamentals_absence_requires_authoritative_request_context(monkeypatch):
+    claim = _fundamentals_absence_claim(
+        "Fundamentals were not supplied.",
+        input_context=[],
+    )
+    monkeypatch.setattr(
+        ollama_service,
+        "derive_available_input_context",
+        lambda request: [],
+    )
+
+    contradictions = ollama_service._validate_reviewer_finding_metadata(
+        [claim], _request()
+    )
+
+    assert [item.code for item in contradictions] == ["direct_support_articles_required"]
+    assert claim.backend_derived_input_context == []
+
+
+def test_structured_fundamentals_absence_does_not_suppress_article_financial_support():
+    claim = _fundamentals_absence_claim(
+        "AMD is preparing an investment-grade bond sale of up to $5B.",
+        input_context=[],
+        article_indices=[1],
+    )
+
+    assert ollama_service._validate_reviewer_finding_metadata([claim], _request()) == []
+    assert claim.backend_derived_input_context == []
+
+
+def test_fn_fallback_directly_supports_plain_absence_without_provider_context():
+    claim = _fundamentals_absence_claim(
+        "Fundamentals were not supplied.",
+        input_context=[],
+    )
+
+    assert ollama_service._validate_reviewer_finding_metadata([claim], _request()) == []
+    assert claim.supporting_input_context == []
+    assert claim.backend_derived_input_context == ["fundamentals_not_supplied"]
+
+
+def test_fn_input_context_supports_polarity_safe_assessment_limitation():
+    claim = _fundamentals_absence_claim(
+        "Fundamental analysis is limited because fundamentals were not supplied.",
+        classification="supported_interpretation",
+    )
+
+    assert ollama_service._validate_reviewer_finding_metadata([claim], _request()) == []
+
+
 def test_fn_input_context_accepts_executive_summary_assessment_limitation():
     claim = GroundingClaimFinding(
         review_unit_id="executive_summary", coverage_segment_id="executive_summary.segment_0",
