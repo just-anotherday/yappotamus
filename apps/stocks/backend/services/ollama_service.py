@@ -4201,7 +4201,10 @@ def _asserted_price_matches(
         re.IGNORECASE,
     ):
         return False
-    suffix = text[assertion.source_end:]
+    suffix_start = assertion.source_end
+    while suffix_start < len(text) and text[suffix_start] == ")":
+        suffix_start += 1
+    suffix = text[suffix_start:]
     return not re.match(
         r"(?:[\w%]|\.\d|,\d|\s*(?:%|percent\b|per\s+cent\b|thousand\b|"
         r"million\b|billion\b|trillion\b|EUR\b|GBP\b|JPY\b|euros?\b|"

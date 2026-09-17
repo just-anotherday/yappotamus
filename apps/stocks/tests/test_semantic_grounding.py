@@ -4839,6 +4839,54 @@ def test_current_price_comparison_grounds_the_value_bound_to_accepted_phrase(
     assert bool(violations) == (not bool(expected_fields))
 
 
+@pytest.mark.parametrize(
+    "proposition,expected_fields",
+    [
+        ("The current price is ($123.45).", ["current_price"]),
+        (
+            "AMD trades at ($123.45), below its 52-week high",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        ("The current price is $123.45.", ["current_price"]),
+        (
+            "AMD trades at $123.45, below its 52-week high",
+            ["current_price", "fifty_two_week_high"],
+        ),
+        ("The current price is ($123.45)%", []),
+        ("The current price is ($123.45) million", []),
+        ("The current price is ($123.45) EUR", []),
+        ("AMD trades at ($123.45)%, below its 52-week high", []),
+        ("AMD trades at ($123.45) million, below its 52-week high", []),
+        ("AMD trades at ($123.45) EUR, below its 52-week high", []),
+        ("The current price is ($123.46).", []),
+        ("The current price is ($123.45), while volume is 123.46.", ["current_price"]),
+        ("The current price is ($123.45)%, while volume is 123.45.", []),
+        (
+            "AMD trades at ($123.45), below its 52-week high, while the "
+            "current price is $123.46.",
+            [],
+        ),
+        (
+            "AMD trades at ($123.45)%, below its 52-week high, while the "
+            "current price is $123.45.",
+            [],
+        ),
+    ],
+)
+def test_parenthesized_current_price_suffix_validation(
+    proposition, expected_fields,
+):
+    request = _request()
+    request.price_data.current_price = 123.45
+    request.price_data.fifty_two_week_high = 200.0
+    request.price_data.fifty_two_week_low = 100.0
+
+    finding, violations = _market_finding_and_violations(proposition, request)
+
+    assert finding.backend_derived_market_fields == expected_fields
+    assert bool(violations) == (not bool(expected_fields))
+
+
 def test_current_price_numeric_grounding_grouping_and_sentence_hyphen():
     request = _request()
     request.price_data.current_price = 1123.45
