@@ -4062,25 +4062,57 @@ def _normalize_reviewer_metadata(
     ]
 
 
+_FN_ABSENCE_SUBJECT = (
+    r"(?:(?:detailed\s+)?fundamentals?|fundamental\s+"
+    r"(?:data|metrics|information))"
+)
+
+
+def _has_explicit_fundamentals_absence(proposition: str) -> bool:
+    """Recognize a bounded fundamentals subject with explicit negative polarity."""
+
+    subject = _FN_ABSENCE_SUBJECT
+    patterns = (
+        rf"\b{subject}\s+(?:(?:was|were|is|are)\s+"
+        rf"(?:not\s+(?:supplied|provided|included|available)|unavailable|missing)"
+        rf"|(?:has|have)\s+not\s+been\s+(?:supplied|provided|included|available))\b",
+        rf"\bno\s+{subject}\s+(?:(?:was|were|is|are)\s+)?"
+        rf"(?:supplied|provided|included|available)\b",
+        rf"\bmissing\s+{subject}\b",
+        rf"\b(?:lack\s+of|without)\s+(?:supplied\s+)?{subject}\b",
+        rf"\bsupplied\s+inputs\s+do\s+not\s+include\s+{subject}\b",
+    )
+    return any(re.search(pattern, proposition, re.IGNORECASE) for pattern in patterns)
+
+
 def _is_fn_compatible_missing_input_limitation(proposition: str) -> bool:
-    """Allow only narrow assessment limits caused by absent supplied fundamentals."""
+    """Allow only explicit fundamentals absence facts and their assessment limits."""
 
     text = proposition.lower()
-    absent_input = ("supplied" in text or "lack" in text or "without" in text)
-    assessment_limit = any(
-        term in text
-        for term in ("assess", "assessment", "limit", "cannot be fully assessed")
+    explicit_absence = _has_explicit_fundamentals_absence(proposition)
+    assessment_limit = bool(
+        re.search(r"\b(?:assess(?:ed|ment)?|limit(?:ed|ation|s)?)\b", text)
     )
-    input_class = any(
-        term in text
-        for term in ("fundamental", "valuation ratio", "earnings", "revenue", "profit", "income")
+    # Preserve the established limitation wording while keeping plain absence
+    # facts bound to an explicit fundamentals/fundamental-data subject.
+    detailed_financial_data_limitation = bool(
+        assessment_limit
+        and re.search(
+            r"\b(?:lack\s+of|without)\s+(?:supplied\s+)?"
+            r"(?:detailed\s+)?financial\s+data\b",
+            text,
+        )
     )
-    permitted = absent_input and input_class and (assessment_limit or "do not include" in text)
-    forbidden = any(
-        word in text
-        for word in ("fall", "expensive", "overvalued", "risk", "downside", "decline", "weak profitability")
+    forbidden = bool(
+        re.search(
+            r"\b(?:fall(?:s|ing)?|fell|expensive|overvalued|risk(?:s|y)?|"
+            r"downside|declin(?:e|es|ed|ing)|deteriorat(?:e|es|ed|ing))\b"
+            r"|\b(?:poor|weak|strong|healthy|sound)\s+fundamentals?\b"
+            r"|\bweak\s+profitability\b",
+            text,
+        )
     )
-    return permitted and not forbidden
+    return (explicit_absence or detailed_financial_data_limitation) and not forbidden
 
 
 def _is_exact_missing_moving_average_fact(
@@ -4540,6 +4572,16 @@ def _validate_reviewer_finding_metadata(
             # provider's empty `i` evidence while recording this narrow,
             # deterministic fallback separately for diagnostics and correction.
             claim.backend_derived_input_context = ["fundamentals_not_supplied"]
+        trusted_fundamentals_absence_support = (
+            (
+                "fundamentals_not_supplied" in input_context
+                or "fundamentals_not_supplied"
+                in claim.backend_derived_input_context
+            )
+            and _is_fn_compatible_missing_input_limitation(
+                claim.atomic_proposition
+            )
+        )
         non_positive = [index for index in indices if index <= 0]
         if non_positive:
             raise ReviewerMetadataError(
@@ -4576,7 +4618,11 @@ def _validate_reviewer_finding_metadata(
             )
 
         if claim.classification == "directly_supported":
-            if not indices and not claim.backend_derived_market_fields:
+            if (
+                not indices
+                and not claim.backend_derived_market_fields
+                and not trusted_fundamentals_absence_support
+            ):
                 record_evidence_contract(
                     "direct_support_articles_required",
                     finding_ordinal,
