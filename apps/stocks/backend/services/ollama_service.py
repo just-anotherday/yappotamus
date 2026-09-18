@@ -2651,6 +2651,45 @@ def _delete_correction_text_span(
     return left + right
 
 
+def _replace_correction_text_span(
+    source: str,
+    baseline_source: str,
+    start: int,
+    end: int,
+    replacement: str,
+    *,
+    replacement_origin: str,
+    source_origins: Optional[List[Optional[str]]] = None,
+) -> str:
+    """Replace one span while reconciling a patch-produced terminal seam.
+
+    Descending patch application can let a later connector DELETE turn the
+    comma immediately after this span into a terminal before this REPLACE is
+    applied.  When the replacement supplies the identical terminal, keep the
+    replacement-owned character and remove only that reconstructed boundary
+    duplicate.  Original punctuation and non-identical terminals are outside
+    this narrowly scoped ownership rule.
+    """
+
+    suffix_start = end
+    if (
+        replacement
+        and replacement[-1] in ".!?"
+        and end < len(source)
+        and source[end] == replacement[-1]
+        and end < len(baseline_source)
+        and baseline_source[end] != source[end]
+    ):
+        suffix_start += 1
+    if source_origins is not None:
+        source_origins[:] = (
+            source_origins[:start]
+            + [replacement_origin] * len(replacement)
+            + source_origins[suffix_start:]
+        )
+    return source[:start] + replacement + source[suffix_start:]
+
+
 def _exhausted_text_segment_container_deletes(
     payload: Dict[str, Any],
     parsed: CorrectionPatchSet,
@@ -2781,6 +2820,7 @@ def _build_correction_candidate_payload(
                     reason="overlapping_targets",
                 )
         source = _resolve_correction_source_value(payload, source_path)
+        baseline_source = source
         source_origins = (
             source_lineage[source_path][1] if source_lineage is not None else None
         )
@@ -2790,14 +2830,14 @@ def _build_correction_candidate_payload(
             reverse=True,
         ):
             if patch.operation == "REPLACE":
-                if source_origins is not None:
-                    source_origins[target.source_start:target.source_end] = (
-                        [target.patch_target_id] * len(patch.replacement or "")
-                    )
-                source = (
-                    source[:target.source_start]
-                    + (patch.replacement or "")
-                    + source[target.source_end:]
+                source = _replace_correction_text_span(
+                    source,
+                    baseline_source,
+                    target.source_start,
+                    target.source_end,
+                    patch.replacement or "",
+                    replacement_origin=target.patch_target_id,
+                    source_origins=source_origins,
                 )
             else:
                 source = _delete_correction_text_span(
