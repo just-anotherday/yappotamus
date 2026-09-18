@@ -180,6 +180,141 @@ def test_delete_reconstruction_removes_terminal_comma_seam():
     assert repaired == "The range is known. trailing text."
 
 
+_MOVING_AVERAGE_SOURCE = (
+    "The stock is trading above its 50-day and 200-day moving averages, "
+    "suggesting a bullish trend."
+)
+_MOVING_AVERAGE_REPLACEMENT = (
+    "Moving-average-based trend assessment is limited without supplied MA50 "
+    "and MA200 values."
+)
+
+
+def test_adjacent_replace_delete_owns_one_terminal_at_end_of_field():
+    report = _candidate(market_reaction_analysis=_MOVING_AVERAGE_SOURCE)
+    prefix = "market_reaction_analysis.segment_"
+
+    merged, plan = _correct_and_plan(report, [
+        _replace(f"{prefix}0", _MOVING_AVERAGE_REPLACEMENT),
+        _delete(f"{prefix}1"),
+    ])
+
+    assert merged.report.market_reaction_analysis == _MOVING_AVERAGE_REPLACEMENT
+    assert not merged.report.market_reaction_analysis.endswith("..")
+    assert plan.initial_segment_ids_by_final_segment[f"{prefix}0"] == (
+        f"{prefix}0",
+    )
+    assert f"{prefix}0" in plan.changed_segment_ids
+    assert f"{prefix}0" not in _carried_by_segment(plan)
+    assert [segment.coverage_segment_id for segment in plan.review_segments] == [
+        f"{prefix}0",
+    ]
+
+
+def test_adjacent_replace_delete_owns_one_terminal_mid_field():
+    source = _MOVING_AVERAGE_SOURCE + " However, the 30-day return is down 1.98%."
+    report = _candidate(market_reaction_analysis=source)
+    prefix = "market_reaction_analysis.segment_"
+
+    merged, plan = _correct_and_plan(report, [
+        _replace(f"{prefix}0", _MOVING_AVERAGE_REPLACEMENT),
+        _delete(f"{prefix}1"),
+    ])
+
+    assert merged.report.market_reaction_analysis == (
+        _MOVING_AVERAGE_REPLACEMENT
+        + " However, the 30-day return is down 1.98%."
+    )
+    assert ".." not in merged.report.market_reaction_analysis
+    assert plan.initial_segment_ids_by_final_segment[f"{prefix}1"] == (
+        f"{prefix}2",
+    )
+    assert f"{prefix}1" in _carried_by_segment(plan)
+
+
+def test_individual_replace_and_delete_do_not_create_duplicate_terminal():
+    report = _candidate(market_reaction_analysis=_MOVING_AVERAGE_SOURCE)
+    prefix = "market_reaction_analysis.segment_"
+
+    replaced, _ = _correct_and_plan(report, [
+        _replace(f"{prefix}0", _MOVING_AVERAGE_REPLACEMENT),
+    ])
+    deleted, _ = _correct_and_plan(report, [_delete(f"{prefix}1")])
+
+    assert ".." not in replaced.report.market_reaction_analysis
+    assert deleted.report.market_reaction_analysis == (
+        "The stock is trading above its 50-day and 200-day moving averages."
+    )
+
+
+def test_adjacent_patch_terminal_prefers_replacement_origin_and_preserves_suffix():
+    baseline = "Original, deleted. Tail."
+    source = "Original. Tail."
+    origins = ["original"] * len("Original") + [None, None] + ["tail"] * len("Tail.")
+
+    repaired = ollama_service._replace_correction_text_span(
+        source,
+        baseline,
+        0,
+        len("Original"),
+        "Corrected.",
+        replacement_origin="replacement.segment_0",
+        source_origins=origins,
+    )
+
+    assert repaired == "Corrected. Tail."
+    assert origins == (
+        ["replacement.segment_0"] * len("Corrected.")
+        + [None]
+        + ["tail"] * len("Tail.")
+    )
+
+
+def test_adjacent_terminal_repair_does_not_rewrite_unrelated_punctuation():
+    controls = (
+        ' Controls preserve 545.09, ellipsis..., abbreviation e.g., version v2.0, '
+        'quoted "done.", and parenthesized (done.).'
+    )
+    report = _candidate(
+        market_reaction_analysis=_MOVING_AVERAGE_SOURCE + controls,
+    )
+    prefix = "market_reaction_analysis.segment_"
+
+    merged, _ = _correct_and_plan(report, [
+        _replace(f"{prefix}0", _MOVING_AVERAGE_REPLACEMENT),
+        _delete(f"{prefix}1"),
+    ])
+
+    assert merged.report.market_reaction_analysis == _MOVING_AVERAGE_REPLACEMENT + controls
+
+
+@pytest.mark.parametrize(
+    ("replacement_terminal", "deleted_terminal", "expected_terminals"),
+    [("!", ".", "!."), ("?", ".", "?."), (".", "!", ".!"), (".", "?", ".?")],
+)
+def test_adjacent_patch_does_not_merge_nonidentical_terminals(
+    replacement_terminal,
+    deleted_terminal,
+    expected_terminals,
+):
+    source = (
+        "The stock is trading above its moving averages, "
+        f"suggesting a bullish trend{deleted_terminal}"
+    )
+    replacement = "Moving-average data is unavailable" + replacement_terminal
+    report = _candidate(market_reaction_analysis=source)
+    prefix = "market_reaction_analysis.segment_"
+
+    merged, _ = _correct_and_plan(report, [
+        _replace(f"{prefix}0", replacement),
+        _delete(f"{prefix}1"),
+    ])
+
+    assert merged.report.market_reaction_analysis == (
+        "Moving-average data is unavailable" + expected_terminals
+    )
+
+
 @pytest.mark.parametrize("prefix", [
     "The stock rose",
     "The stock is near its 52-week range ($149.85 - $584.73)",
