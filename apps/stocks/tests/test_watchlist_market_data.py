@@ -939,6 +939,10 @@ async def test_identity_only_etf_is_unavailable_and_never_cached_as_fresh(monkey
         }
 
     monkeypatch.setattr(hybrid_data_service, "_yf_async", identity_only)
+    async def unavailable_quote(_ticker):
+        return None
+
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", unavailable_quote)
 
     result = await hybrid_data_service.get_hybrid_stock_price("SPY")
 
@@ -946,6 +950,136 @@ async def test_identity_only_etf_is_unavailable_and_never_cached_as_fresh(monkey
     assert result["data_status"] == "unavailable"
     assert result["fund_assets"] is None
     assert "SPY" not in hybrid_data_service._cache
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("yf_price", [None, 0, -1, True, float("nan"), float("inf")])
+@pytest.mark.parametrize("fund_assets", [None, 12_000_000])
+async def test_etf_quote_fallback_preserves_identity_and_fundamentals(monkeypatch, caplog, yf_price, fund_assets):
+    from backend.services.market_data_errors import require_usable_analysis_snapshot
+
+    calls = []
+
+    async def yahoo(ticker):
+        calls.append("yf")
+        return {"ticker": ticker, "security_type": "ETF", "current_price": yf_price,
+                "fund_assets": fund_assets, "data_status": "unavailable"}
+
+    async def finnhub(ticker):
+        calls.append("fh")
+        return {"ticker": ticker, "security_type": "STOCK", "current_price": 760.95,
+                "company_name": "Wrong company", "market_cap": 999, "forward_pe": 20,
+                "debt_to_equity": 10, "sector": "Technology", "fund_assets": 999}
+
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yahoo)
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub)
+    with caplog.at_level("INFO"):
+        result = await hybrid_data_service.get_hybrid_stock_price("SPY")
+    assert calls == ["yf", "fh"]
+    require_usable_analysis_snapshot("SPY", result)
+    assert result["current_price"] == 760.95
+    assert result["security_type"] == "ETF"
+    assert result["company_name"] != "Wrong company"
+    assert result["fund_assets"] == fund_assets
+    for field in ("market_cap", "etf_market_cap", "forward_pe", "debt_to_equity", "sector",
+                  "previous_close", "open_price", "day_low", "day_high"):
+        assert result.get(field) is None
+    assert result["data_source"] == "fh"
+    assert result["data_status"] == "partial"
+    assert "selected_provider=yf fallback_provider=fh success=true" in caplog.text
+    assert hybrid_data_service._cache["SPY"][0]["current_price"] == 760.95
+    assert (await hybrid_data_service.get_hybrid_stock_price("SPY"))["current_price"] == 760.95
+    assert calls == ["yf", "fh"]
+    assert hybrid_data_service._CACHE_TTL == 300
+    assert hybrid_data_service._STALE_CACHE_TTL == 3600
+    stored, timestamp = hybrid_data_service._cache["SPY"]
+    monkeypatch.setattr(hybrid_data_service.time, "time", lambda: timestamp + 301)
+    assert hybrid_data_service._cache_get("SPY") is None
+    assert hybrid_data_service._cache_get_stale("SPY")["current_price"] == 760.95
+    monkeypatch.setattr(hybrid_data_service.time, "time", lambda: timestamp + 3601)
+    assert hybrid_data_service._cache_get_stale("SPY") is None
+
+
+@pytest.mark.asyncio
+async def test_etf_valid_yfinance_quote_short_circuits_finnhub(monkeypatch):
+    async def yahoo(_ticker):
+        return {"security_type": "ETF", "current_price": 500, "fund_assets": 1000, "data_source": "yf"}
+
+    async def unexpected(_ticker):
+        pytest.fail("Finnhub must not supersede a usable ETF quote")
+
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yahoo)
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", unexpected)
+    result = await hybrid_data_service.get_hybrid_stock_price("SPY")
+    assert result["current_price"] == 500
+    assert result["security_type"] == "ETF"
+    assert result["fund_assets"] == 1000
+    assert result["data_source"] == "yf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("yf_failure", ["none", "exception", "timeout"])
+async def test_etf_quote_fallback_after_yfinance_failure(monkeypatch, yf_failure):
+    from backend.services.market_data_errors import require_usable_analysis_snapshot
+
+    async def yahoo(_ticker):
+        if yf_failure == "exception":
+            raise RuntimeError("provider unavailable")
+        if yf_failure == "timeout":
+            await asyncio.Event().wait()
+        return None
+
+    async def finnhub(_ticker):
+        return {"security_type": "STOCK", "current_price": 501, "previous_close": 500,
+                "open_price": 499, "day_high": 502, "day_low": 498,
+                "change": 1, "change_percent": 0.2}
+
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yahoo)
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub)
+    monkeypatch.setattr(hybrid_data_service, "_PROVIDER_TIMEOUT_S", 0.1)
+    result = await hybrid_data_service.get_hybrid_stock_price("SPY")
+    require_usable_analysis_snapshot("SPY", result)
+    assert result["security_type"] == "ETF"
+    assert result["fund_assets"] is None
+    assert "current_price" not in result["missing_fields"]
+    for field, value in (await finnhub("SPY")).items():
+        if field != "security_type":
+            assert result[field] == value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fh_price", [None, 0, -1, True, float("nan"), float("inf"), "exception", "timeout"])
+async def test_etf_quote_exhaustion_is_not_collection_success(monkeypatch, caplog, fh_price):
+    from backend.services.market_data_errors import MarketDataUnavailableError, require_usable_analysis_snapshot
+
+    calls = []
+
+    async def yahoo(ticker):
+        calls.append("yf")
+        return hybrid_data_service.create_error_fallback(ticker, "yf")
+
+    async def finnhub(_ticker):
+        calls.append("fh")
+        if fh_price == "exception":
+            raise RuntimeError("provider unavailable")
+        if fh_price == "timeout":
+            await asyncio.Event().wait()
+        return {"security_type": "STOCK", "current_price": fh_price}
+
+    monkeypatch.setattr(hybrid_data_service, "_yf_async", yahoo)
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", finnhub)
+    monkeypatch.setattr(hybrid_data_service, "_PROVIDER_TIMEOUT_S", 0.1)
+    with caplog.at_level("INFO"):
+        result = await hybrid_data_service.get_hybrid_stock_price("SPY")
+    with pytest.raises(MarketDataUnavailableError):
+        require_usable_analysis_snapshot("SPY", result)
+    assert result["security_type"] == "ETF"
+    assert result["current_price"] is None
+    assert result["data_status"] == "unavailable"
+    assert "SPY" not in hybrid_data_service._cache
+    assert "fallback_provider=fh success=false" in caplog.text
+    assert "failure_reason=providers_exhausted" in caplog.text
+    assert calls == ["yf", "fh"]
 
 
 @pytest.mark.asyncio
