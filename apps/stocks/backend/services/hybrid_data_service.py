@@ -4,7 +4,8 @@ Hybrid Data Service — Finnhub primary, yfinance enrichment for missing fundame
 
 Strategy:
   1. Try Finnhub first (real-time quotes, company profiles)
-  2. If Finnhub returns no data or the symbol is a known ETF/index → full yfinance fallback
+  2. Known ETFs prefer yfinance, with a bounded Finnhub quote-only fallback
+     (ordinary equities fall back to yfinance when Finnhub has no usable price)
   3. For Finnhub-served stocks: enrich missing fundamental fields via yfinance in background
   4. Every result tagged with `data_source: "fh"` or `"yf"` + `yf_enriched_fields` list
      so the frontend can display source badges per field.
@@ -569,7 +570,7 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
         logger.debug("[Hybrid] Cache hit for %s.", ticker_upper)
         return cached.copy()
 
-    # ETFs / indices → skip Finnhub, go straight to yfinance
+    # Known ETFs prefer Yahoo metadata, but can recover prices from Finnhub.
     if ticker_upper in KNOWN_NON_STOCK_SYMBOLS:
         logger.debug("[Hybrid] %s is an ETF/index → routing to yfinance.", ticker_upper)
         data, failure = await run_provider_attempt(
@@ -577,14 +578,37 @@ async def _collect_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
             provider="yf",
             timeout_s=_PROVIDER_TIMEOUT_S,
             operation=lambda: _yf_singleflight(ticker_upper),
-            result_is_usable=_has_usable_etf_financial_data,
+            result_is_usable=_has_usable_finnhub_quote,
         )
-        if failure is not None:
-            logger.info("[Hybrid] %s returned no usable ETF financial fields (reason=%s).", ticker_upper, failure)
-            return create_error_fallback(ticker_upper, "yf")
-        if data:
+        if failure is None:
             data["provider_status"] = {"finnhub": "degraded", "yfinance": "healthy"}
-        return data
+            return data
+
+        quote, quote_failure = await run_provider_attempt(
+            ticker=ticker_upper,
+            provider="fh",
+            timeout_s=_PROVIDER_TIMEOUT_S,
+            operation=lambda: finnhub_get_stock_price(ticker_upper),
+            result_is_usable=_has_usable_finnhub_quote,
+        )
+        # Retain Yahoo's ETF metadata; never import Finnhub stock identity or
+        # fundamentals. Only these existing quote fields are interchangeable.
+        result = dict(data) if isinstance(data, dict) else create_error_fallback(ticker_upper, "yf")
+        result["security_type"] = "ETF"
+        result["provider_status"] = {"finnhub": "unavailable", "yfinance": "unavailable"}
+        if quote_failure is not None:
+            result["current_price"] = None
+            result["data_status"] = "unavailable"
+            return result
+
+        for field in ("current_price", "previous_close", "open_price", "day_high", "day_low", "change", "change_percent"):
+            result[field] = quote.get(field)
+        result["data_source"] = "fh"
+        result["data_status"] = "partial"
+        result["provider_status"]["finnhub"] = "healthy"
+        # Recompute missing fields now that quote fields have recovered.
+        result.pop("missing_fields", None)
+        return result
 
     # Try Finnhub
     try:
@@ -718,7 +742,7 @@ async def _refresh_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
         data = None
         failure_reason = type(exc).__name__
     else:
-        failure_reason = None if data is not None else "providers_exhausted"
+        failure_reason = None if _has_usable_finnhub_quote(data) else "providers_exhausted"
 
     if data is not None:
         normalized = normalize_market_data_payload(
@@ -744,6 +768,8 @@ async def _refresh_hybrid_stock_price(ticker: str) -> Optional[Dict[str, Any]]:
         if normalized.get("data_status") != "stale" and _is_cacheable_financial_data(normalized):
             _cache_set(ticker_upper, normalized)
         fallback_provider = None
+        if selected_provider == "yf" and normalized.get("provider_status", {}).get("finnhub") in {"healthy", "unavailable"}:
+            fallback_provider = "fh"
         if selected_provider == "fh":
             if normalized.get("data_source") == "yf":
                 fallback_provider = "yf"

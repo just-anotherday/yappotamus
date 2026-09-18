@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import math
 import re
 import time
 import uuid
@@ -198,6 +199,13 @@ def log_collection_result(
         payload and payload.get("market_session") == "after_hours"
     )
     price_source = payload.get("price_source") if payload else None
+    price = payload.get("current_price") if payload else None
+    success = (
+        isinstance(price, (int, float))
+        and not isinstance(price, bool)
+        and math.isfinite(float(price))
+        and price > 0
+    )
     logger.info(
         "[MarketData] event=collection_result correlation_id=%s symbol=%s selected_provider=%s "
         "fallback_provider=%s success=%s duration_ms=%.1f cache_state=%s "
@@ -208,7 +216,7 @@ def log_collection_result(
         ticker,
         selected_provider,
         fallback_provider or "none",
-        str(payload is not None).lower(),
+        str(success).lower(),
         (time.monotonic() - started) * 1000,
         cache_state,
         str(fresh_cache_used).lower(),
