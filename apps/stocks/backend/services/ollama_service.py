@@ -2615,6 +2615,8 @@ def _delete_correction_text_span(
     start: int,
     end: int,
     *,
+    exposes_sentence_boundary: bool = False,
+    predecessor_deleted: bool = False,
     source_origins: Optional[List[Optional[str]]] = None,
 ) -> str:
     """Delete one span and preserve a connector-led clause's sentence seam."""
@@ -2623,12 +2625,23 @@ def _delete_correction_text_span(
     deleted = source[start:end].strip()
     left_content = left.rstrip(" \t")
     connector_led = bool(re.match(
-        r"^(?:indicating|suggesting|reflecting|leading\s+to|resulting\s+in)\b",
+        r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
         deleted,
         flags=re.IGNORECASE,
     ))
     terminal = re.search(r"([.!?])$", deleted)
-    if connector_led and terminal is not None and left_content.endswith(","):
+    if exposes_sentence_boundary and left_content.endswith(","):
+        # The deleted connector owned the comma.  The following known coverage
+        # segment is an independent sentence, so the reconstructed parent owns
+        # one terminal and one separator instead.
+        left = left_content[:-1] + ". "
+        right = re.sub(r"^\s*,\s*", "", right)
+    elif (
+        not predecessor_deleted
+        and connector_led
+        and terminal is not None
+        and left_content.endswith(",")
+    ):
         left = (
             left_content[:-1]
             + terminal.group(1)
@@ -2658,6 +2671,7 @@ def _replace_correction_text_span(
     end: int,
     replacement: str,
     *,
+    source_target_text: str = "",
     replacement_origin: str,
     source_origins: Optional[List[Optional[str]]] = None,
 ) -> str:
@@ -2670,6 +2684,20 @@ def _replace_correction_text_span(
     duplicate.  Original punctuation and non-identical terminals are outside
     this narrowly scoped ownership rule.
     """
+
+    source_connector_led = bool(re.match(
+        r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
+        source_target_text.strip(),
+        flags=re.IGNORECASE,
+    ))
+    if (
+        source_connector_led
+        and replacement.rstrip().endswith((".", "!", "?"))
+        and source[max(0, start - 2):start] == ", "
+    ):
+        # This comma belonged to the source connector relation, not either
+        # proposition.  A sentence-level replacement removes that relation.
+        source = source[:start - 2] + ". " + source[start:]
 
     suffix_start = end
     if (
@@ -2688,6 +2716,77 @@ def _replace_correction_text_span(
             + source_origins[suffix_start:]
         )
     return source[:start] + replacement + source[suffix_start:]
+
+
+def _connector_predecessor_is_deleted(
+    target: CorrectionPatchTarget,
+    path_patches: List[Tuple[CorrectionPatch, CorrectionPatchTarget]],
+    source_targets: List[CorrectionPatchTarget],
+) -> bool:
+    patches_by_id = {patch.target_id: patch for patch, _ in path_patches}
+    predecessors = [
+        candidate for candidate in source_targets
+        if candidate.source_end <= target.source_start
+    ]
+    return bool(
+        predecessors
+        and (patch := patches_by_id.get(predecessors[-1].patch_target_id)) is not None
+        and patch.operation == "DELETE"
+    )
+
+
+def _delete_exposes_connector_sentence_boundary(
+    target: CorrectionPatchTarget,
+    path_patches: List[Tuple[CorrectionPatch, CorrectionPatchTarget]],
+    source_targets: List[CorrectionPatchTarget],
+    baseline_source: str,
+) -> bool:
+    """Return whether a deleted connector now borders a known sentence segment."""
+
+    if not (
+        re.match(
+            r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
+            target.original_target_text.strip(),
+            flags=re.IGNORECASE,
+        )
+        and baseline_source[max(0, target.source_start - 2):target.source_start] == ", "
+    ):
+        return False
+
+    patches_by_id = {patch.target_id: patch for patch, _ in path_patches}
+    if _connector_predecessor_is_deleted(target, path_patches, source_targets):
+        return False
+    for successor_index, successor in enumerate(source_targets):
+        if successor.source_start < target.source_end:
+            continue
+        patch = patches_by_id.get(successor.patch_target_id)
+        if patch is not None and patch.operation == "DELETE":
+            continue
+        text = patch.replacement if patch is not None else successor.original_target_text
+        if not text or re.match(
+            r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
+            text.strip(), flags=re.IGNORECASE,
+        ):
+            return False
+        if text.rstrip().endswith((".", "!", "?")):
+            return True
+        if successor_index + 1 >= len(source_targets):
+            return False
+        following = source_targets[successor_index + 1]
+        following_patch = patches_by_id.get(following.patch_target_id)
+        return bool(
+            following_patch is not None
+            and following_patch.operation == "REPLACE"
+            and following_patch.replacement
+            and following_patch.replacement.rstrip().endswith((".", "!", "?"))
+            and re.match(
+                r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
+                following.original_target_text.strip(), flags=re.IGNORECASE,
+            )
+            and baseline_source[max(0, following.source_start - 2):following.source_start]
+            == ", "
+        )
+    return False
 
 
 def _exhausted_text_segment_container_deletes(
@@ -2781,6 +2880,9 @@ def _build_correction_candidate_payload(
     payload["article_indices_used"] = list(primary.article_indices_used)
 
     patches_by_path: Dict[str, List[Tuple[CorrectionPatch, CorrectionPatchTarget]]] = {}
+    targets_by_path: Dict[str, List[CorrectionPatchTarget]] = {}
+    for target in registry.targets:
+        targets_by_path.setdefault(target.source_path, []).append(target)
     container_deletes = _exhausted_text_segment_container_deletes(
         payload, parsed, registry,
     )
@@ -2821,6 +2923,9 @@ def _build_correction_candidate_payload(
                 )
         source = _resolve_correction_source_value(payload, source_path)
         baseline_source = source
+        source_targets = sorted(
+            targets_by_path[source_path], key=lambda target: target.source_start,
+        )
         source_origins = (
             source_lineage[source_path][1] if source_lineage is not None else None
         )
@@ -2836,12 +2941,19 @@ def _build_correction_candidate_payload(
                     target.source_start,
                     target.source_end,
                     patch.replacement or "",
+                    source_target_text=target.original_target_text,
                     replacement_origin=target.patch_target_id,
                     source_origins=source_origins,
                 )
             else:
                 source = _delete_correction_text_span(
                     source, target.source_start, target.source_end,
+                    exposes_sentence_boundary=_delete_exposes_connector_sentence_boundary(
+                        target, path_patches, source_targets, baseline_source,
+                    ),
+                    predecessor_deleted=_connector_predecessor_is_deleted(
+                        target, path_patches, source_targets,
+                    ),
                     source_origins=source_origins,
                 )
         _set_correction_source_value(payload, source_path, source)

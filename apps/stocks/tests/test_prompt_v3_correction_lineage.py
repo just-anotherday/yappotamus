@@ -244,6 +244,84 @@ def test_delete_reconstruction_removes_terminal_comma_seam():
     assert repaired == "The range is known. trailing text."
 
 
+def test_delete_chain_replaces_exposed_connector_comma_with_sentence_boundary():
+    report = _candidate(market_reaction_analysis=(
+        "The range is known, indicating range-bound trading, but upward-biased. "
+        "The recent gains suggest short-term bullish momentum."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+
+    merged, plan = _correct_and_plan(report, [
+        _delete(f"{prefix}1"),
+        _delete(f"{prefix}2"),
+    ])
+
+    assert merged.report.market_reaction_analysis == (
+        "The range is known. The recent gains suggest short-term bullish momentum."
+    )
+    assert ", The recent" not in merged.report.market_reaction_analysis
+    assert plan.initial_segment_ids_by_final_segment[f"{prefix}1"] == (
+        f"{prefix}3",
+    )
+
+
+def test_connector_replace_replaces_owned_comma_with_sentence_boundary():
+    report = _candidate(market_reaction_analysis=(
+        "The recent gains suggest short-term bullish momentum, while moving averages "
+        "confirm the trend."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+
+    merged, _ = _correct_and_plan(report, [
+        _replace(
+            f"{prefix}1",
+            "Moving-average-based trend assessment is limited without supplied MA50 "
+            "and MA200 values.",
+        ),
+    ])
+
+    assert merged.report.market_reaction_analysis == (
+        "The recent gains suggest short-term bullish momentum. "
+        "Moving-average-based trend assessment is limited without supplied MA50 and "
+        "MA200 values."
+    )
+
+
+def test_combined_report_141_connector_topology_reconciles_each_boundary_once():
+    report = _candidate(market_reaction_analysis=(
+        "The range is known, indicating range-bound trading, but upward-biased. "
+        "The recent gains suggest short-term bullish momentum, while moving averages "
+        "confirm the trend."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+
+    merged, plan = _correct_and_plan(report, [
+        _delete(f"{prefix}1"),
+        _delete(f"{prefix}2"),
+        _replace(
+            f"{prefix}4",
+            "Moving-average-based trend assessment is limited without supplied MA50 "
+            "and MA200 values.",
+        ),
+    ])
+
+    assert merged.report.market_reaction_analysis == (
+        "The range is known. The recent gains suggest short-term bullish momentum. "
+        "Moving-average-based trend assessment is limited without supplied MA50 and "
+        "MA200 values."
+    )
+    assert ", The recent" not in merged.report.market_reaction_analysis
+    assert ", Moving-average" not in merged.report.market_reaction_analysis
+    assert ".." not in merged.report.market_reaction_analysis
+    assert [segment.coverage_segment_id for segment in plan.review_segments] == [
+        f"{prefix}2",
+    ]
+    assert plan.initial_segment_ids_by_final_segment[f"{prefix}1"] == (
+        f"{prefix}3",
+    )
+    assert f"{prefix}2" in plan.changed_segment_ids
+
+
 _MOVING_AVERAGE_SOURCE = (
     "The stock is trading above its 50-day and 200-day moving averages, "
     "suggesting a bullish trend."
@@ -594,7 +672,7 @@ def test_exhausted_key_risk_item_preserves_later_object_lineage_and_verdict():
     assert not plan.unreconciled_segment_ids
 
 
-def test_delete_that_recombines_neighbors_requires_fresh_review():
+def test_connector_delete_restores_sentence_boundary_without_recombining_neighbors():
     report = _candidate(
         market_reaction_analysis="First fact, because disputed. Final fact.",
     )
@@ -603,16 +681,16 @@ def test_delete_that_recombines_neighbors_requires_fresh_review():
         [_delete("market_reaction_analysis.segment_1")],
     )
 
-    assert merged.report.market_reaction_analysis == "First fact, Final fact."
-    assert [segment.coverage_segment_id for segment in plan.review_segments] == [
-        "market_reaction_analysis.segment_0",
-    ]
+    assert merged.report.market_reaction_analysis == "First fact. Final fact."
+    assert not plan.review_segments
     assert plan.initial_segment_ids_by_final_segment["market_reaction_analysis.segment_0"] == (
         "market_reaction_analysis.segment_0",
+    )
+    assert plan.initial_segment_ids_by_final_segment["market_reaction_analysis.segment_1"] == (
         "market_reaction_analysis.segment_2",
     )
-    assert plan.changed_segment_ids == ("market_reaction_analysis.segment_0",)
-    assert "market_reaction_analysis.segment_0" not in _carried_by_segment(plan)
+    assert not plan.changed_segment_ids
+    assert "market_reaction_analysis.segment_0" in _carried_by_segment(plan)
     assert not plan.new_segment_ids
 
 
