@@ -2943,6 +2943,145 @@ def _relationship_violations(request, proposition, rule, role="interpretation", 
     )
 
 
+def _percentage_relation_violations(article_summary, proposition):
+    request = _relationship_request(article_summary)
+    unit = ReviewableClaimUnit(
+        review_unit_id="bear_case[0]",
+        section="bear_case",
+        candidate_text=proposition,
+    )
+    segment = ollama_service._build_review_coverage_segments([unit])[0]
+    finding = _coverage_claim(
+        unit,
+        segment,
+        role="fact",
+        classification="directly_supported",
+        fields=[],
+        articles=[1],
+        rule="selected_article_support",
+    )
+    finding.supporting_market_data_fields = []
+    finding.atomic_proposition = proposition
+    normalized = ollama_service._normalize_claim_findings([finding], [1], [unit])
+    registry = ollama_service.build_correction_target_registry([unit], [segment])
+    return ollama_service._claim_findings_to_violations(
+        normalized,
+        ollama_service._build_article_relationship_manifest(request),
+        registry,
+    )
+
+
+@pytest.mark.parametrize(
+    ("article", "claim"),
+    [
+        (
+            "The stock retraced 41% from its post-IPO high.",
+            "The stock experienced a 41% retrace from its post-IPO high.",
+        ),
+        (
+            "The stock is trading 41% above its August low.",
+            "The stock is 41% above its August low.",
+        ),
+        (
+            "THE STOCK RETRACED 41% FROM ITS POST-IPO HIGH!",
+            "The stock experienced a 41% retrace from its post-IPO high.",
+        ),
+    ],
+)
+def test_percentage_relation_matching_article_clause_is_supported(article, claim):
+    assert not _percentage_relation_violations(article, claim)
+
+
+@pytest.mark.parametrize(
+    ("article", "claim"),
+    [
+        (
+            "The stock surged post-IPO but retraced, now trading 41% above "
+            "August lows after positive earnings.",
+            "The stock experienced a recent 41% retrace from post-IPO highs.",
+        ),
+        (
+            "The stock is trading 41% above its August low.",
+            "The stock retraced 41% from its high.",
+        ),
+        (
+            "The stock retraced 41% from its post-IPO high.",
+            "The stock is trading 41% above its August low.",
+        ),
+        (
+            "Shares rose 41% from the August low.",
+            "Shares fell 41% from the August low.",
+        ),
+        (
+            "Shares are 41% above the August low.",
+            "Shares are 41% above the IPO price.",
+        ),
+        (
+            "Revenue rose 41% year over year.",
+            "The stock price rose 41%.",
+        ),
+        (
+            "Revenue rose 41% while the stock fell 12%.",
+            "The stock rose 41%.",
+        ),
+        (
+            "The stock traded at $41.",
+            "The stock rose 41%.",
+        ),
+        (
+            "The stock rose 14%.",
+            "The stock rose 41%.",
+        ),
+    ],
+)
+def test_percentage_relation_mismatch_is_blocking(article, claim):
+    violations = _percentage_relation_violations(article, claim)
+    assert len(violations) == 1
+    assert violations[0].rule == "selected_evidence_attribution_boundary"
+    assert "percentage relation/evidence mismatch" in violations[0].issue
+
+
+def test_report_141_percentage_relation_mismatch_is_correction_eligible():
+    violations = _percentage_relation_violations(
+        "The stock surged post-IPO but retraced, now trading 41% above "
+        "August lows after positive earnings.",
+        "The stock experienced a recent 41% retrace from post-IPO highs.",
+    )
+
+    assert len(violations) == 1
+    assert violations[0].target_scope == "PROPOSITION"
+    assert violations[0].patch_target_id == "bear_case[0].segment_0"
+    assert ollama_service.derive_required_patch_targets(violations) == [
+        "bear_case[0].segment_0"
+    ]
+
+
+def test_structured_percentage_support_remains_a_distinct_path():
+    request = _relationship_request("The stock traded at $41.")
+    unit = ReviewableClaimUnit(
+        review_unit_id="bear_case[0]",
+        section="bear_case",
+        candidate_text="The stock fell 1.36%.",
+    )
+    segment = ollama_service._build_review_coverage_segments([unit])[0]
+    finding = _coverage_claim(
+        unit,
+        segment,
+        role="fact",
+        classification="supported_by_structured_market_data",
+        fields=["daily_change_percent"],
+        articles=[],
+        rule="structured_market_data_support",
+    )
+    finding.atomic_proposition = unit.candidate_text
+    normalized = ollama_service._normalize_claim_findings([finding], [1], [unit])
+
+    assert not ollama_service._claim_findings_to_violations(
+        normalized,
+        ollama_service._build_article_relationship_manifest(request),
+    )
+
+
 def test_article_relationship_event_fact_only_blocks_event_price_claim():
     request = _relationship_request("Raymond James upgraded AMD to Strong Buy.")
     manifest = ollama_service._build_article_relationship_manifest(request)

@@ -4007,6 +4007,7 @@ _EVIDENCE_COMPATIBILITY_RULES = frozenset({
 EVENT_FACT = "EVENT_FACT"
 EVENT_PRICE_LINK = "EVENT_PRICE_LINK"
 INVESTOR_MOTIVE_LINK = "INVESTOR_MOTIVE_LINK"
+PERCENTAGE_RELATION = "PERCENTAGE_RELATION"
 
 
 @dataclass(frozen=True)
@@ -4017,6 +4018,143 @@ class ArticleRelationshipEvidence:
     relationship_type: str
     source_field: str
     matched_phrase: str
+
+
+@dataclass(frozen=True)
+class PercentageRelationSignature:
+    """Finite semantics bound to one percentage-bearing evidence clause."""
+
+    percentage: str
+    subject: str
+    relation: str
+    direction: str
+    reference: Optional[str]
+
+
+@dataclass(frozen=True)
+class ArticlePercentageRelationshipEvidence:
+    article_index: int
+    relationship_type: str
+    source_field: str
+    matched_phrase: str
+    signature: PercentageRelationSignature
+
+
+_PERCENTAGE_TOKEN_RE = re.compile(r"(?<![\d.$])([+-]?\d+(?:\.\d+)?)\s*%")
+_PERCENTAGE_CLAUSE_SPLIT_RE = re.compile(
+    r"\s*(?:;|\bwhile\b|\bwhereas\b|\bbut\b)\s*", re.IGNORECASE,
+)
+
+
+def _percentage_subject(text: str, fallback: Optional[str] = None) -> Optional[str]:
+    if re.search(r"\b(?:revenue|sales?|earnings?|margin|volume)\b", text, re.IGNORECASE):
+        return "financial_metric"
+    if re.search(
+        r"\b(?:shares?|stock|share\s+price|stock\s+price|price)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return "stock_price"
+    if re.search(
+        r"\b(?:retrace|retraced|above|below|rebound|rebounded|highs?|lows?)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return "stock_price"
+    return fallback
+
+
+def _percentage_relation(
+    text: str,
+    percentage_match: re.Match[str],
+) -> Optional[Tuple[str, str]]:
+    relation_patterns = (
+        ("retrace", "down", r"\b(?:retrace|retraced|retracement|pulled\s+back|pullback)\b"),
+        ("above", "up", r"\babove\b"),
+        ("below", "down", r"\bbelow\b"),
+        ("rebound", "up", r"\b(?:rebound|rebounded)\b"),
+        ("rise", "up", r"\b(?:rose|risen|gained|increased|climbed|rallied|surged)\b"),
+        ("fall", "down", r"\b(?:fell|fallen|declined|dropped|slid|decreased)\b"),
+    )
+    candidates: List[Tuple[int, int, str, str]] = []
+    for priority, (relation, direction, pattern) in enumerate(relation_patterns):
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            distance = min(
+                abs(match.end() - percentage_match.start()),
+                abs(match.start() - percentage_match.end()),
+            )
+            candidates.append((distance, priority, relation, direction))
+    if not candidates:
+        return None
+    _, _, relation, direction = min(candidates)
+    return relation, direction
+
+
+def _percentage_reference(text: str) -> Optional[str]:
+    reference_patterns = (
+        ("post_ipo_high", r"\bpost[- ]ipo\s+highs?\b"),
+        ("august_low", r"\baugust\s+lows?\b"),
+        ("ipo_price", r"\bipo\s+price\b"),
+        ("year_over_year", r"\b(?:year[- ]over[- ]year|yoy)\b"),
+        ("high", r"\bhighs?\b"),
+        ("low", r"\blows?\b"),
+    )
+    for reference, pattern in reference_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return reference
+    return None
+
+
+def _percentage_relation_signatures(
+    text: str,
+    *,
+    fallback_subject: Optional[str] = None,
+) -> List[PercentageRelationSignature]:
+    subject = _percentage_subject(text, fallback_subject)
+    if subject is None:
+        return []
+    reference = _percentage_reference(text)
+    signatures: List[PercentageRelationSignature] = []
+    for match in _PERCENTAGE_TOKEN_RE.finditer(text):
+        relation = _percentage_relation(text, match)
+        if relation is None:
+            continue
+        relation_name, direction = relation
+        signatures.append(PercentageRelationSignature(
+            percentage=f"{float(match.group(1)):g}",
+            subject=subject,
+            relation=relation_name,
+            direction=direction,
+            reference=reference,
+        ))
+    return signatures
+
+
+def _percentage_references_compatible(
+    claim_reference: Optional[str],
+    evidence_reference: Optional[str],
+) -> bool:
+    if claim_reference == evidence_reference:
+        return True
+    # Specific evidence may support a claim that uses a less-specific noun.
+    # Generic evidence must never fabricate the claim's missing qualifier.
+    return (claim_reference, evidence_reference) in {
+        ("high", "post_ipo_high"),
+        ("low", "august_low"),
+    }
+
+
+def _percentage_signatures_compatible(
+    claim: PercentageRelationSignature,
+    evidence: PercentageRelationSignature,
+) -> bool:
+    return (
+        claim.percentage == evidence.percentage
+        and claim.subject == evidence.subject
+        and claim.relation == evidence.relation
+        and claim.direction == evidence.direction
+        and _percentage_references_compatible(claim.reference, evidence.reference)
+    )
 
 
 _ARTICLE_EVENT_PATTERN = re.compile(
@@ -4091,15 +4229,29 @@ def _article_sentences(text: str) -> List[str]:
 
 def _build_article_relationship_manifest(
     request: FinancialAnalysisRequest,
-) -> Dict[int, List[ArticleRelationshipEvidence]]:
+) -> Dict[int, List[Any]]:
     """Derive finite, explicit article relationships without model inference."""
 
-    manifest: Dict[int, List[ArticleRelationshipEvidence]] = {}
+    manifest: Dict[int, List[Any]] = {}
     for article_index, article in enumerate(request.news_articles, start=1):
-        relationships: List[ArticleRelationshipEvidence] = []
+        relationships: List[Any] = []
         for source_field, source_text in (("title", article.title), ("summary", article.summary)):
             for sentence in _article_sentences(source_text):
                 phrase = sentence[:240]
+                sentence_subject = _percentage_subject(sentence)
+                for clause in _PERCENTAGE_CLAUSE_SPLIT_RE.split(sentence):
+                    clause = clause.strip()
+                    for signature in _percentage_relation_signatures(
+                        clause,
+                        fallback_subject=sentence_subject,
+                    ):
+                        relationships.append(ArticlePercentageRelationshipEvidence(
+                            article_index,
+                            PERCENTAGE_RELATION,
+                            source_field,
+                            clause[:240],
+                            signature,
+                        ))
                 if _ARTICLE_EVENT_PATTERN.search(sentence):
                     relationships.append(ArticleRelationshipEvidence(
                         article_index, EVENT_FACT, source_field, phrase
@@ -4129,13 +4281,36 @@ def _build_article_relationship_manifest(
 
 def _selected_articles_have_relationship(
     selected_indices: List[int],
-    manifest: Dict[int, List[ArticleRelationshipEvidence]],
+    manifest: Dict[int, List[Any]],
     relationship_type: str,
 ) -> bool:
     return any(
         evidence.relationship_type == relationship_type
         for article_index in selected_indices
         for evidence in manifest.get(article_index, [])
+    )
+
+
+def _selected_articles_support_percentage_relations(
+    selected_indices: List[int],
+    manifest: Dict[int, List[Any]],
+    proposition: str,
+) -> bool:
+    claim_signatures = _percentage_relation_signatures(proposition)
+    if not claim_signatures:
+        return True
+    evidence_signatures = [
+        evidence.signature
+        for article_index in selected_indices
+        for evidence in manifest.get(article_index, [])
+        if isinstance(evidence, ArticlePercentageRelationshipEvidence)
+    ]
+    return all(
+        any(
+            _percentage_signatures_compatible(claim, evidence)
+            for evidence in evidence_signatures
+        )
+        for claim in claim_signatures
     )
 
 
@@ -5245,7 +5420,7 @@ def _log_semantic_finding_trace(
 
 def _claim_findings_to_violations(
     claims: List[NormalizedGroundingClaimFinding],
-    relationship_manifest: Optional[Dict[int, List[ArticleRelationshipEvidence]]] = None,
+    relationship_manifest: Optional[Dict[int, List[Any]]] = None,
     registry: Optional[CorrectionTargetRegistry] = None,
 ) -> List[GroundingViolation]:
     """Derive candidate violations from normalized semantic findings.
@@ -5282,6 +5457,31 @@ def _claim_findings_to_violations(
             continue
         rule = finding.rule
         selected = bool(finding.supporting_selected_indices)
+        has_structured_market_support = bool(
+            finding.supporting_market_data_fields
+            or finding.backend_derived_market_fields
+        )
+        if (
+            relationship_manifest is not None
+            and selected
+            and not has_structured_market_support
+            and not _selected_articles_support_percentage_relations(
+                finding.supporting_selected_indices,
+                relationship_manifest,
+                finding.atomic_proposition,
+            )
+        ):
+            violations.append(GroundingViolation(
+                rule="selected_evidence_attribution_boundary",
+                section=finding.section,
+                issue=(
+                    f"{finding.atomic_claim_id}: percentage relation/evidence mismatch; "
+                    "selected article evidence does not bind the same percentage, "
+                    "subject, direction, relation, and reference point."
+                ),
+                **_violation_identity_for_finding(finding, registry),
+            ))
+            continue
         compatible_technical = bool(
             (
                 set(finding.supporting_market_data_fields)
