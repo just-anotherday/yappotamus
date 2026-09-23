@@ -1133,10 +1133,26 @@ class _DeterministicPipelineClient:
                     segment["s"]: [{
                         "r": "F",
                         "p": segment["segment_text"][:120],
-                        "c": "DS",
-                        "a": [1],
-                        "m": [],
-                        "g": "AS",
+                        "c": (
+                            "SM"
+                            if segment["segment_text"].startswith("AMD shares rose 3%")
+                            else "DS"
+                        ),
+                        "a": (
+                            []
+                            if segment["segment_text"].startswith("AMD shares rose 3%")
+                            else [1]
+                        ),
+                        "m": (
+                            ["DC"]
+                            if segment["segment_text"].startswith("AMD shares rose 3%")
+                            else []
+                        ),
+                        "g": (
+                            "MD"
+                            if segment["segment_text"].startswith("AMD shares rose 3%")
+                            else "AS"
+                        ),
                     }]
                     for segment in review_payload["review_coverage_segments"]
                 }
