@@ -3041,6 +3041,16 @@ def _finish_correction_proposition_lineage(
     deleted = {
         patch.target_id for patch in parsed.patches if patch.operation == "DELETE"
     }
+    replaced = {
+        patch.target_id for patch in parsed.patches if patch.operation == "REPLACE"
+    }
+
+    def _connector_led_dependency(text: str) -> bool:
+        normalized = _normalize_review_proposition_text(text).lower()
+        return bool(re.match(
+            r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
+            normalized,
+        ))
 
     def _adjacent_deleted_dependency(segment_id: str, text: str) -> bool:
         """Invalidate bounded dependent survivors next to deleted source segments.
@@ -3054,17 +3064,24 @@ def _finish_correction_proposition_lineage(
         if match is None:
             return False
         prefix, ordinal = match.group(1), int(match.group(2))
-        normalized = _normalize_review_proposition_text(text).lower()
-        connector_led = re.match(
-            r"^(?:indicating|suggesting|reflecting|resulting|leading\s+to|if|but|and|while|although|because|therefore|which)\b",
-            normalized,
-        )
-        if connector_led and (
+        if _connector_led_dependency(text) and (
             f"{prefix}.segment_{ordinal - 1}" in deleted
             or f"{prefix}.segment_{ordinal + 1}" in deleted
         ):
             return True
         return False
+
+    def _replaced_predecessor_dependency(segment_id: str, text: str) -> bool:
+        """Invalidate a dependent survivor when its governor was replaced."""
+        match = re.match(r"^(.*)\.segment_(\d+)$", segment_id)
+        if match is None:
+            return False
+        prefix, ordinal = match.group(1), int(match.group(2))
+        return bool(
+            ordinal > 0
+            and _connector_led_dependency(text)
+            and f"{prefix}.segment_{ordinal - 1}" in replaced
+        )
 
     def _trailing_dependency_continuation_deleted(segment_id: str, text: str) -> bool:
         """Return whether a trailing dependency lost its immediate continuation."""
@@ -3111,6 +3128,10 @@ def _finish_correction_proposition_lineage(
             len(origin_ids) == 1
             and origin_ids[0] not in touched
             and not _adjacent_deleted_dependency(
+                origin_ids[0],
+                unit.candidate_text[segment.source_start:segment.source_end],
+            )
+            and not _replaced_predecessor_dependency(
                 origin_ids[0],
                 unit.candidate_text[segment.source_start:segment.source_end],
             )

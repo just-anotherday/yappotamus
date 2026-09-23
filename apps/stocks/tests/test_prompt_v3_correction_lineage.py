@@ -81,6 +81,70 @@ def test_connector_led_survivor_adjacent_to_deleted_segment_is_re_reviewed(survi
     assert f"{prefix}1" not in _carried_by_segment(plan)
 
 
+@pytest.mark.parametrize("connector", ["reflecting", "indicating"])
+def test_connector_led_survivor_after_replaced_predecessor_is_re_reviewed(connector):
+    report = _candidate(market_reaction_analysis=(
+        f"Trading volume indicated active positioning. {connector} both optimism "
+        "and valuation sensitivity."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+    merged, plan = _correct_and_plan(
+        report,
+        [_replace(f"{prefix}0", "Trading volume was 335 million shares.")],
+        blockers={f"{prefix}0"},
+    )
+
+    assert merged.report.market_reaction_analysis == (
+        f"Trading volume was 335 million shares. {connector} both optimism "
+        "and valuation sensitivity."
+    )
+    assert plan.initial_segment_ids_by_final_segment[f"{prefix}1"] == (
+        f"{prefix}1",
+    )
+    assert plan.final_identities_by_segment_id[f"{prefix}1"].fingerprint == (
+        plan.initial_identities_by_segment_id[f"{prefix}1"].fingerprint
+    )
+    assert f"{prefix}1" in plan.changed_segment_ids
+    assert f"{prefix}1" not in _carried_by_segment(plan)
+    assert [segment.coverage_segment_id for segment in plan.review_segments] == [
+        f"{prefix}0",
+        f"{prefix}1",
+    ]
+    assert len({segment.coverage_segment_id for segment in plan.review_segments}) == 2
+
+
+def test_nonadjacent_replacement_does_not_invalidate_connector_led_survivor():
+    report = _candidate(market_reaction_analysis=(
+        "Revenue improved. Margins expanded. reflecting stronger demand."
+    ))
+    prefix = "market_reaction_analysis.segment_"
+    _, plan = _correct_and_plan(report, [
+        _replace(f"{prefix}0", "Revenue improved materially."),
+    ])
+
+    assert f"{prefix}2" in _carried_by_segment(plan)
+    assert f"{prefix}2" not in plan.changed_segment_ids
+    assert f"{prefix}2" not in {
+        segment.coverage_segment_id for segment in plan.review_segments
+    }
+
+
+def test_replacement_preserves_independent_unchanged_sibling_carry():
+    report = _candidate(
+        market_reaction_analysis="Trading volume was high. Revenue increased."
+    )
+    prefix = "market_reaction_analysis.segment_"
+    _, plan = _correct_and_plan(report, [
+        _replace(f"{prefix}0", "Trading volume was elevated."),
+    ])
+
+    assert f"{prefix}1" in _carried_by_segment(plan)
+    assert f"{prefix}1" not in plan.changed_segment_ids
+    assert [segment.coverage_segment_id for segment in plan.review_segments] == [
+        f"{prefix}0",
+    ]
+
+
 def test_trailing_especially_survivor_loses_carried_pass_after_continuation_delete():
     report = _candidate(market_reaction_analysis=(
         "Selling could drive the stock lower in the next 1-7 days, especially "
