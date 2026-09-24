@@ -23,6 +23,7 @@ from backend.models.analysis import (
 )
 from backend.models.news import NewsArticle
 from backend.config.database import get_async_session
+from backend.lib.tickers import normalize_ticker
 from backend.lib.timestamps import utc_isoformat
 from backend.services.report_service import create_report
 from backend.services.ollama_service import (
@@ -217,6 +218,11 @@ async def analysis_analyze_ticker(
     Otherwise it auto-selects the most recent articles.
     """
     from sqlalchemy import select
+
+    try:
+        ticker = normalize_ticker(ticker)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Resolve the validated selection before database or provider work so
     # execution and persisted provenance use the same pipeline.
