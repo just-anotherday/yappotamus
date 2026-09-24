@@ -21,6 +21,7 @@ import type {
   AdvancedRiskMetrics,
   MarketRefreshResponse,
   UnifiedReportEntry,
+  FinancialAnalysisReport,
 } from '@/types/stock';
 
 export const fetchStock = async (ticker: string): Promise<StockData> => {
@@ -237,7 +238,7 @@ export interface ReportHistoryEntry {
   model_used: string;
   prompt_version: string;
   price_snapshot: number | null;
-  report_data: Record<string, any> | null;
+  report_data: FinancialAnalysisReport | null;
   created_at: string | null;
 }
 export interface ReportHistoryResponse {

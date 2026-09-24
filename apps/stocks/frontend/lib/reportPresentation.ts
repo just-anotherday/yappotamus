@@ -1,4 +1,5 @@
-import { formatApiTimestamp } from './formatters';
+import { formatApiTimestamp } from './formatters.ts';
+import type { NeedsMoreResearchItem, OutlookData, TechnicalAnalysisData } from '../types/stock';
 
 export const CURRENT_PROMPT_VERSION = '2.0';
 
@@ -43,4 +44,47 @@ export function formatReportDateTime(isoTimestamp: string): string {
     hour12: true,
     timeZoneName: 'short',
   }, isoTimestamp);
+}
+
+const SOURCE_SECTION_LABELS: Record<string, string> = {
+  'outlook.short_term': 'Short-Term Outlook',
+  'outlook.medium_term': 'Medium-Term Outlook',
+  'outlook.long_term': 'Long-Term Outlook',
+  technical_analysis: 'Technical Analysis',
+};
+
+export function formatResearchSourceSection(sourceSection: string): string {
+  const knownLabel = SOURCE_SECTION_LABELS[sourceSection];
+  if (knownLabel) return knownLabel;
+
+  return sourceSection
+    .replace(/\[(\d+)\]/g, (_, index: string) => ` ${Number(index) + 1}`)
+    .replace(/[._-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+export function hasTechnicalAnalysis(
+  technicalAnalysis?: TechnicalAnalysisData | null,
+): boolean {
+  return Boolean(
+    technicalAnalysis?.trend
+    || technicalAnalysis?.support_levels?.length
+    || technicalAnalysis?.resistance_levels?.length
+    || technicalAnalysis?.breakout_level
+    || technicalAnalysis?.breakdown_level,
+  );
+}
+
+export function hasOutlook(outlook?: OutlookData | null): boolean {
+  return Boolean(outlook?.short_term || outlook?.medium_term || outlook?.long_term);
+}
+
+export function hasNeedsMoreResearch(
+  items?: readonly NeedsMoreResearchItem[] | null,
+): boolean {
+  return Boolean(items?.length);
 }

@@ -318,7 +318,7 @@ export interface KeyRisk {
 }
 
 export interface TechnicalAnalysisData {
-  trend: string;
+  trend: string | null;
   support_levels: string[];
   resistance_levels: string[];
   breakout_level: string;
@@ -326,9 +326,21 @@ export interface TechnicalAnalysisData {
 }
 
 export interface OutlookData {
-  short_term: string;
-  medium_term: string;
-  long_term: string;
+  short_term: string | null;
+  medium_term: string | null;
+  long_term: string | null;
+}
+
+export interface NeedsMoreResearchItem {
+  id: string;
+  source_section: string;
+  research_question: string;
+  reason: string;
+  missing_evidence: string;
+  grounding_rule: string;
+  classification: string;
+  article_indices: number[];
+  market_fields: string[];
 }
 
 export interface ArticleReference {
@@ -348,13 +360,14 @@ export interface FinancialAnalysisReport {
   key_risks: KeyRisk[];
   bull_case?: string[];
   bear_case?: string[];
-  market_reaction_analysis: string;
-  technical_analysis: TechnicalAnalysisData;
-  outlook: OutlookData;
+  market_reaction_analysis: string | null;
+  technical_analysis: TechnicalAnalysisData | null;
+  outlook: OutlookData | null;
   actionable_insights: string[];
   portfolio_fit?: string | null;
-  executive_summary: string;
+  executive_summary: string | null;
   current_price_at_analysis?: number | null;
+  needs_more_research?: NeedsMoreResearchItem[];
 }
 
 export interface OllamaModelInfo {

@@ -3,11 +3,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { fetchCompanyReportHistory } from '@/lib/api';
 import { formatApiTimestamp } from '@/lib/formatters';
-import { formatReportDateTime } from '@/lib/reportPresentation';
+import { formatReportDateTime, hasOutlook, hasTechnicalAnalysis } from '@/lib/reportPresentation';
 import type { ReportHistoryEntry, ReportHistoryResponse } from '@/lib/api';
-import type { KeyRisk, TechnicalAnalysisData, OutlookData } from '@/types/stock';
+import type { ArticleReference, FinancialAnalysisReport, KeyRisk } from '@/types/stock';
 
 function sentimentColor(sentiment: string): string {
   const s = sentiment.toLowerCase();
@@ -26,7 +27,7 @@ function severityColor(severity: string): string {
   return '#4caf50';
 }
 
-function renderReportData(rd: Record<string, any>) {
+function renderReportData(rd: FinancialAnalysisReport) {
   const cardStyle: React.CSSProperties = {
     padding: 24,
     background: 'var(--card-bg)',
@@ -80,11 +81,13 @@ function renderReportData(rd: Record<string, any>) {
       )}
 
       {/* Technical Analysis */}
-      {rd.technical_analysis && (rd.technical_analysis as TechnicalAnalysisData).trend && (
+      {hasTechnicalAnalysis(rd.technical_analysis) && rd.technical_analysis && (
         <section>
           <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 8, color: 'var(--text-primary)' }}>📈 Technical Analysis</h3>
           <div style={cardStyle}>
-            <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: 13 }}><strong>Trend:</strong> {rd.technical_analysis.trend}</p>
+            {rd.technical_analysis.trend && (
+              <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: 13 }}><strong>Trend:</strong> {rd.technical_analysis.trend}</p>
+            )}
             {rd.technical_analysis.support_levels?.length > 0 && (
               <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: 13 }}><strong>Support:</strong> {rd.technical_analysis.support_levels.join(', ')}</p>
             )}
@@ -96,23 +99,23 @@ function renderReportData(rd: Record<string, any>) {
       )}
 
       {/* Outlook */}
-      {rd.outlook && (
+      {hasOutlook(rd.outlook) && rd.outlook && (
         <section>
           <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 8, color: 'var(--text-primary)' }}>🔭 Outlook</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-            {(rd.outlook as OutlookData).short_term && (
+            {rd.outlook.short_term && (
               <div style={{ padding: 12, background: '#e3f2fd', borderRadius: 8 }}>
                 <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#1565c0' }}>Short Term</p>
                 <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.short_term}</p>
               </div>
             )}
-            {(rd.outlook as OutlookData).medium_term && (
+            {rd.outlook.medium_term && (
               <div style={{ padding: 12, background: '#fff3e0', borderRadius: 8 }}>
                 <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#e65100' }}>Medium Term</p>
                 <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.medium_term}</p>
               </div>
             )}
-            {(rd.outlook as OutlookData).long_term && (
+            {rd.outlook.long_term && (
               <div style={{ padding: 12, background: '#e8f5e9', borderRadius: 8 }}>
                 <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#2e7d32' }}>Long Term</p>
                 <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.long_term}</p>
@@ -136,6 +139,8 @@ function renderReportData(rd: Record<string, any>) {
         </section>
       )}
 
+      <NeedsMoreResearchSection items={rd.needs_more_research} compact />
+
       {/* News Summary */}
       {rd.news_summary?.length > 0 && (
         <section>
@@ -156,7 +161,7 @@ function renderReportData(rd: Record<string, any>) {
           <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 8, color: 'var(--text-primary)' }}>📚 Source Articles ({rd.articles_used.length})</h3>
           <div style={cardStyle}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {rd.articles_used.map((a: any, i: number) => (
+              {rd.articles_used.map((a: ArticleReference, i: number) => (
                 <a key={i} href={a.url || '#'} target="_blank" rel="noopener noreferrer"
                   style={{ textDecoration: 'none', fontSize: 12, color: '#2196f3', padding: '2px 0' }}>
                   {a.title}
@@ -168,10 +173,17 @@ function renderReportData(rd: Record<string, any>) {
         </section>
       )}
 
-      {/* Fallback: if no known sections, show raw JSON preview */}
-      {!(rd.executive_summary || rd.key_catalysts || rd.key_risks || rd.technical_analysis || rd.outlook || rd.actionable_insights) && (
-        <div style={{ ...cardStyle, fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto', color: 'var(--text-secondary)' }}>
-          {JSON.stringify(rd, null, 2)}
+      {!(rd.executive_summary
+        || rd.key_catalysts?.length
+        || rd.key_risks?.length
+        || hasTechnicalAnalysis(rd.technical_analysis)
+        || hasOutlook(rd.outlook)
+        || rd.actionable_insights?.length
+        || rd.news_summary?.length
+        || rd.articles_used?.length
+        || rd.needs_more_research?.length) && (
+        <div style={{ ...cardStyle, fontSize: 13, color: 'var(--text-muted)' }}>
+          No validated analysis details are available for this report.
         </div>
       )}
     </div>
