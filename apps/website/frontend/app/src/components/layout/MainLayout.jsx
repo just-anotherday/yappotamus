@@ -9,7 +9,7 @@ const routeMeta = {
   '/': {
     title: 'Jason Yap | Portfolio',
     description:
-      'Software engineer building practical software, AI-powered tools, and interactive projects.',
+      'UCF Cybersecurity & Privacy M.S. student and Computer Science graduate building secure, practical software.',
   },
   '/projects': {
     title: 'Projects | Jason Yap',
@@ -67,12 +67,20 @@ export default function MainLayout() {
           name: 'Jason Yap',
           url: SITE_URL,
           image: `${SITE_URL}/assets/tempProfilePhoto-432.webp`,
-          jobTitle: 'Software Engineer',
+          jobTitle: 'Cybersecurity & Privacy M.S. Student and Software Engineer',
           alumniOf: {
             '@type': 'CollegeOrUniversity',
             name: 'University of Central Florida',
           },
-          knowsAbout: ['Software Engineering', 'AI', 'Backend Development', 'Game Development'],
+          knowsAbout: [
+            'Cybersecurity',
+            'Privacy',
+            'Software Engineering',
+            'Artificial Intelligence',
+            'Backend Development',
+            'Full-Stack Development',
+            'Secure System Design',
+          ],
         },
         {
           '@type': 'WebSite',

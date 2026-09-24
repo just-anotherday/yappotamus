@@ -310,8 +310,7 @@ export default function HomePage() {
         </p>
         <h1 className="text-4xl font-extrabold leading-tight text-yellow-300 md:text-6xl">Hi, I'm Jason Yap.</h1>
         <p className="mx-auto mt-5 max-w-3xl text-base text-zinc-100 md:text-lg">
-          I build practical software, AI-powered tools, and interactive projects with a focus on
-          reliability, creativity, and real-world impact.
+          M.S. Cybersecurity &amp; Privacy Student · Software Engineer · Computer Science Graduate
         </p>
       </section>
 
@@ -359,13 +358,28 @@ export default function HomePage() {
               About Me
             </h2>
             <p>
-              I recently graduated from <strong>University of Central Florida</strong> with a{' '}
-              <strong>Bachelor of Science in Computer Science</strong> in 2026. I’m looking for a
-              full-time software engineering role where I can apply my skills, grow as a developer,
-              and contribute to impactful projects.
+              I am an M.S. student in <strong>Cybersecurity &amp; Privacy</strong> at the{' '}
+              <strong>University of Central Florida</strong> and a 2026 UCF Computer Science graduate.
+              My interests span cybersecurity, artificial intelligence, software engineering, and
+              the intersection between building systems and securing them.
             </p>
             <p>
-              My background includes{' '}
+              My computer science background has given me experience developing full-stack and
+              backend applications using Python, JavaScript/TypeScript, React, REST APIs, databases,
+              and modern development tools. I have worked on projects ranging from productivity
+              applications and financial technology platforms to AI-integrated software and Unity
+              game development.
+            </p>
+            <p>
+              I am especially interested in understanding systems from both sides: how reliable and
+              scalable software is designed, and how those systems, their users, and their data can
+              be protected. My graduate studies in cybersecurity and privacy are allowing me to
+              build on my software engineering foundation while developing a deeper understanding of
+              secure system design, network and application security, privacy, and emerging security
+              challenges.
+            </p>
+            <p>
+              Before entering technology, I served in the{' '}
               <span className="relative z-[2] inline-flex rounded-md bg-yellow-300/20 px-1">
                 <button
                   type="button"
@@ -393,14 +407,20 @@ export default function HomePage() {
                   U.S. Army
                 </button>{' '}
               </span>{' '}
-              service at <em>Fort Bragg</em>, where I developed
-              leadership, resilience, and the ability to perform under pressure. Today, I’m
-              passionate about <strong>AI</strong>, <strong>backend development</strong>, and{' '}
-              <strong>building software that solves real-world problems</strong>.
+              at <em>Fort Bragg</em>. That experience strengthened my leadership, adaptability,
+              discipline, and ability to work effectively under pressure. I have also held
+              leadership roles in civilian organizations and later supported UCF senior design
+              projects as a Senior Design TA.
             </p>
             <p>
-              I’m excited to apply my technical skills and work ethic as part of a long-term team
-              where I can grow, contribute, and build meaningful software throughout my career.
+              I enjoy learning new technologies, solving technical problems, and turning ideas into
+              practical software. I value maintainable code, thoughtful system design,
+              security-conscious development, and working with others to build reliable solutions.
+            </p>
+            <p>
+              I am currently interested in opportunities across cybersecurity, software engineering,
+              backend development, AI, and related technical roles where I can continue growing while
+              contributing to meaningful and secure technology.
             </p>
           </div>
         </div>
