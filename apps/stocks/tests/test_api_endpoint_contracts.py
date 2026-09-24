@@ -13,7 +13,11 @@ from fastapi.testclient import TestClient
 from backend.auth import verify_app_access_token
 from backend.config.database import get_async_session
 from backend.main import app
-from backend.models.analysis import ArticleReference, FinancialAnalysisResponse
+from backend.models.analysis import (
+    ArticleReference,
+    FinancialAnalysisResponse,
+    NeedsMoreResearchItem,
+)
 from backend.routers import analysis as analysis_router
 from backend.routers import analysis_reports as analysis_reports_router
 from backend.services import report_service
@@ -328,6 +332,17 @@ def test_analyze_ticker_auth_and_backend_owned_persistence_are_preserved(monkeyp
             )
         ],
         executive_summary="Accepted deterministic fixture.",
+        needs_more_research=[NeedsMoreResearchItem(
+            id="research-fixture-0001",
+            source_section="market_reaction_analysis",
+            research_question="What market reaction is supported by the evidence?",
+            reason="Insufficient supporting evidence in the supplied sources.",
+            missing_evidence="A source linking the event to the price reaction.",
+            grounding_rule="event_price_impact_grounding",
+            classification="unsupported_mechanism",
+            article_indices=[1],
+            market_fields=["daily_change_percent"],
+        )],
     )
     generate = AsyncMock(return_value=accepted)
     persist = AsyncMock(return_value=77)
@@ -393,6 +408,7 @@ def test_analyze_ticker_auth_and_backend_owned_persistence_are_preserved(monkeyp
 
     assert response.status_code == 200
     assert response.json()["report_id"] == 77
+    assert response.json()["needs_more_research"][0]["research_question"].endswith("?")
     generate.assert_awaited_once()
     persist.assert_awaited_once()
     session.commit.assert_awaited_once()
@@ -415,6 +431,9 @@ def test_analyze_ticker_auth_and_backend_owned_persistence_are_preserved(monkeyp
     ]
     assert persisted["articles_count"] == 1
     assert len(persisted["report_data"]["articles_used"]) == 1
+    assert persisted["report_data"]["needs_more_research"] == response.json()[
+        "needs_more_research"
+    ]
     assert persisted["model_used"] == "fixture-model"
     assert persisted["prompt_version"] == PROMPT_V2_VERSION
     assert persisted["prompt_hash"] == "a" * 64

@@ -14,6 +14,8 @@ from backend.models.analysis import (
     CorrectionTargetRegistry,
     FinancialAnalysisLLMResponse,
     FinancialAnalysisRequest,
+    FinancialAnalysisResponse,
+    GroundingEnforcementResult,
     GroundingClaimFinding,
     GroundingViolation,
     GroundingReviewResult,
@@ -234,11 +236,17 @@ class _SequencedClient:
                         "article_indices_used": [],
                     })
                 else:
+                    authorized_indices = set(
+                        requested["trusted_article_indices_available"]
+                    )
                     patches.append({
                         "target_id": target_id,
                         "operation": "REPLACE",
                         "replacement": corrected_target.original_target_text,
-                        "article_indices_used": response["article_indices_used"],
+                        "article_indices_used": [
+                            index for index in response["article_indices_used"]
+                            if index in authorized_indices
+                        ],
                     })
             response = {"patches": patches}
         # Legacy readable fixtures are adapted only at this mock provider
@@ -908,21 +916,17 @@ async def test_three_live_failures_get_one_correction_and_citations_are_remapped
     assert "preserve planned, preparing, pending, expected, or conditional status" in (
         correction_prompt
     )
-    # Under the new conservative union policy, primary citations are preserved
-    # and corrected-only additions are appended.  The fixture primary report
-    # selects article 1 (planned-financing); the correction adds article 2
-    # (expectations).  Both appear in primary-first order.
-    assert [article.url for article in result.articles_used] == [
-        "https://trusted.example/planned-financing",
-        "https://trusted.example/expectations",
-    ]
+    # The final reviewer cites outside this changed target's correction-local
+    # boundary, so that target is removed instead of lending it a neighboring
+    # article. No unauthorized citation survives into the public report.
+    assert result.articles_used == []
     assert result.technical_analysis.resistance_levels == []
-    assert result.key_risks[0].risk == "The planned financing"
+    assert result.key_risks == []
     assert "high valuation" not in result.executive_summary
 
 
 @pytest.mark.asyncio
-async def test_second_semantic_failure_is_rejected_after_exactly_one_correction(monkeypatch):
+async def test_second_semantic_failure_returns_safe_partial_after_one_correction(monkeypatch):
     client = _SequencedClient(
         [
             _report(),
@@ -933,17 +937,19 @@ async def test_second_semantic_failure_is_rejected_after_exactly_one_correction(
     )
     await _install_client(monkeypatch, "ollama", client)
 
-    with pytest.raises(AISemanticGroundingError) as exc_info:
-        await ollama_service.generate_analysis(
-            _request(), provider="ollama", model="test-model"
-        )
+    result = await ollama_service.generate_analysis(
+        _request(), provider="ollama", model="test-model"
+    )
 
     assert len(client.calls) == 4
-    assert exc_info.value.details["failure_kind"] == "semantic_grounding_rejected"
     assert sum(
         call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
         for call in client.calls
     ) == 1
+    validated_text = json.dumps(result.model_dump(mode="json"))
+    assert "52-week high is resistance" not in validated_text
+    assert "completed debt" not in validated_text
+    assert "high valuation" not in validated_text
 
 
 @pytest.mark.asyncio
@@ -982,7 +988,7 @@ async def test_second_semantic_failure_is_rejected_after_exactly_one_correction(
         ),
     ],
 )
-async def test_genuine_final_event_or_valuation_violation_remains_blocking(
+async def test_genuine_final_event_or_valuation_violation_is_dropped(
     monkeypatch, final_review, expected_rule
 ):
     client = _SequencedClient(
@@ -995,12 +1001,12 @@ async def test_genuine_final_event_or_valuation_violation_remains_blocking(
     )
     await _install_client(monkeypatch, "ollama", client)
 
-    with pytest.raises(AISemanticGroundingError) as exc_info:
-        await ollama_service.generate_analysis(
-            _request(), provider="ollama", model="test-model"
-        )
+    result = await ollama_service.generate_analysis(
+        _request(), provider="ollama", model="test-model"
+    )
 
-    assert expected_rule in exc_info.value.details["rules"]
+    assert expected_rule not in json.dumps(result.model_dump(mode="json"))
+    assert result.needs_more_research == []
     assert len(client.calls) == 4
 
 
@@ -1166,9 +1172,8 @@ def test_correction_prompt_prohibits_new_financing_mechanics_explicitly():
 
 
 @pytest.mark.asyncio
-async def test_correction_introducing_new_financing_violations_is_rejected(monkeypatch):
-    """AMD live-failure regression: correction resolves original violations but introduces
-    NEW unsupported_financing_mechanics → final review must reject."""
+async def test_correction_introducing_new_financing_violations_is_quarantined(monkeypatch):
+    """A new known semantic failure is removed after the sole correction call."""
     # Initial report: has a technical violation (52-week high as resistance)
     initial = _report()  # uncorrected: has the technical violation
 
@@ -1221,17 +1226,16 @@ async def test_correction_introducing_new_financing_violations_is_rejected(monke
     client = _SequencedClient([initial, initial_review, bad_correction, final_review])
     await _install_client(monkeypatch, "ollama", client)
 
-    with pytest.raises(AISemanticGroundingError) as exc_info:
-        await ollama_service.generate_analysis(
-            _request(), provider="ollama", model="test-model"
-        )
+    result = await ollama_service.generate_analysis(
+        _request(), provider="ollama", model="test-model"
+    )
 
     # Exactly 4 calls: primary + initial review + ONE correction + final review
     assert len(client.calls) == 4
 
-    # Rejected with semantic_grounding_rejected
-    assert exc_info.value.details["failure_kind"] == "semantic_grounding_rejected"
-    assert "unsupported_financing_mechanics" in exc_info.value.details["rules"]
+    validated_text = json.dumps(result.model_dump(mode="json"))
+    assert "dilute existing shareholders" not in validated_text
+    assert "dilute shareholders" not in validated_text
 
     # No second correction was issued
     correction_count = sum(
@@ -2181,7 +2185,7 @@ async def test_report_84_correction_revalidates_and_remaps_the_corrected_selecte
     assert initial_selected_by_index[15] is False
     assert selected_by_index[15] is retain_resistance
     assert "[AI][PatchCorrection]" in caplog.text
-    assert f"patch_added_citation_count={3 if retain_resistance else 2}" in caplog.text
+    assert "patch_added_citation_count=0" in caplog.text
     assert f"final_citation_count={3 if retain_resistance else 2}" in caplog.text
     assert "[AI][GroundingDelta]" in caplog.text
 
@@ -2713,12 +2717,12 @@ async def test_amd_live_failure_section_scoped_correction(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_authorized_section_still_fail_closed_on_bad_correction(monkeypatch):
-    """D. Authorized section remains fail-closed.
+async def test_authorized_section_bad_correction_is_removed_without_retry(monkeypatch):
+    """D. A known bad correction is removed without a second correction.
 
     Initial violation: technical_analysis.
     Corrected technical_analysis is STILL invalid (final review rejects).
-    Expected: final reviewer rejects, no second correction, no persistence.
+    Expected: final reviewer removes the target and issues no second correction.
     """
     request = _request()
 
@@ -2760,15 +2764,16 @@ async def test_authorized_section_still_fail_closed_on_bad_correction(monkeypatc
     ])
     await _install_client(monkeypatch, "ollama", client)
 
-    with pytest.raises(AISemanticGroundingError) as exc_info:
-        await ollama_service.generate_analysis(
-            request, provider="ollama", model="test-model"
-        )
+    result = await ollama_service.generate_analysis(
+        request, provider="ollama", model="test-model"
+    )
 
     # Exactly 4 calls: primary, initial_review, correction, final_review
     # No second correction attempt.
     assert len(client.calls) == 4
-    assert exc_info.value.details["failure_kind"] == "semantic_grounding_rejected"
+    assert "52-week high is clear resistance" not in json.dumps(
+        result.model_dump(mode="json")
+    )
 
     # Only one correction prompt
     assert sum(
@@ -5664,13 +5669,27 @@ def test_phase_c_patch_prompt_isolates_targets_context_and_relevant_articles():
     payload["bull_case"] = ["UNRELATED_BULL_CASE_PROSE_MUST_NOT_APPEAR"]
     report, registry = _phase_b_report_and_registry(payload)
     target_id = "executive_summary.segment_1"
+    blocked_claim = _phase_c_claim(target_id, indices=[1])
+    passing_claim = blocked_claim.model_copy(update={
+        "atomic_ordinal": 1,
+        "atomic_claim_id": "executive_summary.atomic_1",
+        "atomic_proposition": "Passing neighbor proposition",
+        "classification": "directly_supported",
+        "supporting_article_indices": [2],
+        "supporting_selected_indices": [2],
+        "rule": "selected_article_support",
+    })
     prompt = ollama_service.build_patch_correction_prompt(
         [target_id],
         registry,
         [_phase_c_violation(target_id)],
         _request(),
-        [_phase_c_claim(target_id, indices=[1])],
+        [blocked_claim, passing_claim],
     )
+    correction_request = json.loads(
+        prompt.split("Correction request (JSON):\n", 1)[1]
+    )
+    target = correction_request["targets"][0]
 
     assert prompt.count(target_id) == 1
     assert "Invalid target proposition." in prompt
@@ -5678,9 +5697,72 @@ def test_phase_c_patch_prompt_isolates_targets_context_and_relevant_articles():
     assert "Read-only next proposition." in prompt
     assert "context is read-only" in prompt.lower()
     assert "AMD prepares a $5B bond sale" in prompt
+    assert "AMD expectations remain demanding" not in prompt
     assert "UNRELATED_BULL_CASE_PROSE_MUST_NOT_APPEAR" not in prompt
     assert "source_path" not in prompt
     assert "atomic_ordinal" not in prompt
+    assert target["rejected_atomic_findings"] == [{
+        "atomic_proposition": "Target proposition",
+        "violating_rule": "unsupported_company_specific_claim",
+        "classification": "unsupported_by_any_evidence",
+        "claim_role": "fact",
+        "reviewer_rule": "unsupported_company_specific_claim",
+        "allowed_article_indices": [1],
+        "allowed_market_data_fields": [],
+        "allowed_input_context": [],
+    }]
+    assert target["trusted_article_indices_available"] == [1]
+    assert target["trusted_market_data_fields_available"] == []
+    assert correction_request["authorized_structured_market_data"] == {}
+    assert correction_request["authorized_input_context"] == []
+
+
+def test_phase_c_prompt_lists_each_rejected_atomic_finding_for_one_target():
+    _, registry = _phase_b_report_and_registry()
+    target_id = "executive_summary.segment_0"
+    first = _phase_c_claim(target_id, indices=[1])
+    second = first.model_copy(update={
+        "atomic_ordinal": 1,
+        "atomic_claim_id": "executive_summary.atomic_1",
+        "atomic_proposition": "Second rejected atomic proposition",
+        "classification": "unsupported_mechanism",
+        "rule": "causal_mechanism_grounding",
+        "supporting_article_indices": [2],
+        "supporting_selected_indices": [2],
+        "supporting_market_data_fields": ["current_price"],
+    })
+    violations = [
+        _phase_c_violation(target_id),
+        GroundingViolation(
+            rule="causal_mechanism_grounding",
+            section="executive_summary",
+            issue="executive_summary.atomic_1: rejected mechanism.",
+            coverage_segment_id=target_id,
+            atomic_proposition=second.atomic_proposition,
+            patch_target_id=target_id,
+        ),
+    ]
+
+    prompt = ollama_service.build_patch_correction_prompt(
+        [target_id], registry, violations, _request(), [first, second]
+    )
+    request_payload = json.loads(prompt.split("Correction request (JSON):\n", 1)[1])
+    target = request_payload["targets"][0]
+
+    assert [
+        finding["atomic_proposition"]
+        for finding in target["rejected_atomic_findings"]
+    ] == ["Target proposition", "Second rejected atomic proposition"]
+    assert [
+        finding["violating_rule"]
+        for finding in target["rejected_atomic_findings"]
+    ] == ["unsupported_company_specific_claim", "causal_mechanism_grounding"]
+    assert target["trusted_article_indices_available"] == [1, 2]
+    assert target["trusted_market_data_fields_available"] == ["current_price"]
+    assert request_payload["authorized_structured_market_data"] == {
+        "current_price": 469.17
+    }
+    assert "Repair every rejected_atomic_finding" in prompt
 
 
 def test_phase_c_outlook_prompt_carries_backend_parent_invariant_per_target():
@@ -5818,6 +5900,19 @@ def test_phase_c_article_range_and_delete_attribution_are_rejected():
             article_count=40,
         )
     ) == "correction_patch_attribution_invalid"
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        ollama_service.validate_correction_patch_set(
+            {"patches": [_phase_b_patch(target_id, indices=[2])]},
+            registry,
+            [target_id],
+            article_count=40,
+            authorized_article_indices_by_target={target_id: {1}},
+        )
+    assert exc_info.value.details == {
+        "failure_kind": "correction_patch_attribution_invalid",
+        "target_id": target_id,
+        "reason": "article_index_outside_target_evidence_boundary",
+    }
     assert _patch_failure_kind(
         lambda: ollama_service.validate_correction_patch_set(
             {"patches": [_phase_b_patch(
@@ -6430,3 +6525,336 @@ def test_backend_verified_structured_support_overrides_reviewer_label_only():
 
     causal = "The current price is below the 52-week high, proving bullish momentum."
     assert ollama_service._derive_structured_market_support(causal, request) == []
+
+
+# ---------------------------------------------------------------------------
+# Backend-owned PASS / RESEARCH_CANDIDATE / DROP disposition contract
+# ---------------------------------------------------------------------------
+
+def _disposition_claim(
+    *,
+    unit="market_reaction_analysis",
+    segment="market_reaction_analysis.segment_0",
+    ordinal=0,
+    role="interpretation",
+    proposition="Investors appear worried about selling pressure.",
+    classification="unsupported_by_any_evidence",
+    rule="unsupported_company_specific_claim",
+    selected=None,
+    unselected=None,
+    market_fields=None,
+    backend_market_fields=None,
+):
+    return NormalizedGroundingClaimFinding(
+        review_unit_id=unit,
+        coverage_segment_id=segment,
+        atomic_ordinal=ordinal,
+        claim_role=role,
+        atomic_proposition=proposition,
+        classification=classification,
+        supporting_article_indices=sorted(set((selected or []) + (unselected or []))),
+        supporting_market_data_fields=market_fields or [],
+        supporting_input_context=[],
+        backend_derived_input_context=[],
+        backend_derived_market_fields=backend_market_fields or [],
+        rule=rule,
+        section=unit.split(".", 1)[0].split("[", 1)[0],
+        atomic_claim_id=f"{unit}.atomic_{ordinal}",
+        supporting_selected_indices=selected or [],
+        supporting_unselected_indices=unselected or [],
+    )
+
+
+def _disposition_violation(claim, *, rule=None, issue_id=None):
+    return GroundingViolation(
+        rule=rule or claim.rule,
+        section=claim.section,
+        issue=f"{issue_id or claim.atomic_claim_id}: rejected by grounding.",
+        coverage_segment_id=claim.coverage_segment_id,
+        atomic_proposition=claim.atomic_proposition,
+        patch_target_id=claim.coverage_segment_id,
+    )
+
+
+def _partial_report(review):
+    return ollama_service._build_partial_semantic_success(
+        _request(),
+        FinancialAnalysisLLMResponse.model_validate(_report(corrected=True)),
+        [1, 2],
+        review,
+    )
+
+
+def test_disposition_passes_direct_support_and_supported_interpretation():
+    direct = _disposition_claim(
+        role="fact", classification="directly_supported",
+        rule="selected_article_support", selected=[1],
+    )
+    interpretation = _disposition_claim(
+        ordinal=1, classification="supported_interpretation",
+        rule="selected_article_support", selected=[1],
+    )
+
+    assert ollama_service._semantic_claim_disposition(direct, []) == "PASS"
+    assert ollama_service._semantic_claim_disposition(interpretation, []) == "PASS"
+
+
+def test_disposition_maps_insufficient_interpretation_to_research_and_hard_failures_to_drop():
+    research = _disposition_claim()
+    contradicted = _disposition_claim(
+        classification="event_status_mismatch", rule="event_status_preservation"
+    )
+    numeric = _disposition_claim(
+        role="fact", proposition="Revenue increased exactly 43.127%.",
+        rule="unsupported_numeric_precision",
+    )
+
+    assert ollama_service._semantic_claim_disposition(
+        research, [_disposition_violation(research)]
+    ) == "RESEARCH_CANDIDATE"
+    assert ollama_service._semantic_claim_disposition(
+        contradicted, [_disposition_violation(contradicted)]
+    ) == "DROP"
+    assert ollama_service._semantic_claim_disposition(
+        numeric, [_disposition_violation(numeric)]
+    ) == "DROP"
+    assert ollama_service._semantic_claim_disposition(
+        None, [_disposition_violation(research)]
+    ) == "DROP"
+
+
+def test_disposition_table_covers_every_rule_deterministically():
+    all_rules = set(GroundingViolation.model_fields["rule"].annotation.__args__)
+
+    assert (
+        set(ollama_service._RESEARCH_CANDIDATE_RULES)
+        | set(ollama_service._DROP_ONLY_RULES)
+    ) == all_rules
+    assert not (
+        set(ollama_service._RESEARCH_CANDIDATE_RULES)
+        & set(ollama_service._DROP_ONLY_RULES)
+    )
+
+
+def test_research_item_is_neutral_and_keeps_only_claim_local_evidence():
+    claim = _disposition_claim(
+        selected=[1], unselected=[2], market_fields=["current_price"],
+        backend_market_fields=["daily_change_percent"],
+    )
+    item = ollama_service._research_item(
+        claim, [_disposition_violation(claim)]
+    )
+    serialized = item.model_dump_json()
+
+    assert item.article_indices == [1]
+    assert item.market_fields == ["current_price", "daily_change_percent"]
+    assert "selling pressure" not in serialized.lower()
+    assert item.research_question.endswith("?")
+    assert "Insufficient" in item.reason
+
+
+def test_multiple_atomics_in_one_segment_receive_independent_dispositions():
+    passing = _disposition_claim(
+        role="fact", proposition="The selected article describes a planned sale.",
+        classification="directly_supported", rule="selected_article_support",
+        selected=[1],
+    )
+    research = _disposition_claim(ordinal=1)
+
+    assert ollama_service._semantic_claim_disposition(passing, []) == "PASS"
+    assert ollama_service._semantic_claim_disposition(
+        research, [_disposition_violation(research)]
+    ) == "RESEARCH_CANDIDATE"
+
+
+def test_partial_success_removes_failed_segment_preserves_neighbor_and_separates_research():
+    payload = _report(corrected=True)
+    payload["market_reaction_analysis"] = (
+        "The selected article describes demanding expectations. "
+        "Investors appear worried about selling pressure."
+    )
+    result = FinancialAnalysisLLMResponse.model_validate(payload)
+    units = ollama_service._build_reviewable_claim_units(result)
+    segments = ollama_service._build_review_coverage_segments(units)
+    market_segments = [
+        segment for segment in segments
+        if segment.review_unit_id == "market_reaction_analysis"
+    ]
+    passing = _disposition_claim(
+        segment=market_segments[0].coverage_segment_id,
+        role="fact", proposition="The article describes demanding expectations.",
+        classification="directly_supported", rule="selected_article_support",
+        selected=[2],
+    )
+    research = _disposition_claim(
+        segment=market_segments[1].coverage_segment_id,
+        ordinal=1,
+    )
+    review = GroundingEnforcementResult(
+        valid=False,
+        claims=[passing, research],
+        violations=[_disposition_violation(research)],
+    )
+
+    partial = ollama_service._build_partial_semantic_success(
+        _request(), result, [1, 2], review
+    )
+    validated = partial.model_dump(mode="json", exclude={"needs_more_research"})
+
+    assert partial.market_reaction_analysis == (
+        "The selected article describes demanding expectations."
+    )
+    assert "selling pressure" not in json.dumps(validated).lower()
+    assert len(partial.needs_more_research) == 1
+    assert "selling pressure" not in partial.needs_more_research[0].model_dump_json().lower()
+
+
+def test_partial_success_drops_numeric_precision_without_creating_research():
+    bad = _disposition_claim(
+        unit="executive_summary", segment="executive_summary.segment_0",
+        role="fact", proposition="Revenue increased exactly 43.127%.",
+        rule="unsupported_numeric_precision",
+    )
+    good = _disposition_claim(
+        unit="news_summary[0]", segment="news_summary[0].segment_0",
+        role="fact", proposition="AMD is preparing a bond sale.",
+        classification="directly_supported", rule="selected_article_support",
+        selected=[1],
+    )
+    review = GroundingEnforcementResult(
+        valid=False, claims=[bad, good],
+        violations=[_disposition_violation(bad)],
+    )
+
+    partial = _partial_report(review)
+
+    assert partial.executive_summary is None
+    assert partial.needs_more_research == []
+    assert "43.127" not in partial.model_dump_json()
+
+
+def test_generalized_incident_preserves_grounded_content_and_quarantines_three_claims():
+    payload = _report(corrected=True)
+    payload["market_reaction_analysis"] = (
+        "The selected article describes demanding expectations. "
+        "Investors appear worried about selling pressure."
+    )
+    payload["key_catalysts"] = ["This creates a durable long-term catalyst."]
+    payload["outlook"]["short_term"] = "Neutral — the short-term outlook is neutral."
+    result = FinancialAnalysisLLMResponse.model_validate(payload)
+    passing_market = _disposition_claim(
+        segment="market_reaction_analysis.segment_0", role="fact",
+        proposition="The article describes demanding expectations.",
+        classification="directly_supported", rule="selected_article_support",
+        selected=[2],
+    )
+    selling_pressure = _disposition_claim(
+        segment="market_reaction_analysis.segment_1", ordinal=1,
+    )
+    long_term = _disposition_claim(
+        unit="key_catalysts[0]", segment="key_catalysts[0].segment_0",
+        proposition="This creates a durable long-term catalyst.",
+    )
+    short_term = _disposition_claim(
+        unit="outlook.short_term", segment="outlook.short_term.segment_0",
+        proposition="The short-term outlook is neutral.",
+    )
+    passing_news = _disposition_claim(
+        unit="news_summary[0]", segment="news_summary[0].segment_0",
+        ordinal=1, role="fact", proposition="AMD is preparing a bond sale.",
+        classification="directly_supported", rule="selected_article_support",
+        selected=[1],
+    )
+    blocked = [selling_pressure, long_term, short_term]
+    review = GroundingEnforcementResult(
+        valid=False,
+        claims=[passing_market, *blocked, passing_news],
+        violations=[_disposition_violation(claim) for claim in blocked],
+    )
+
+    partial = ollama_service._build_partial_semantic_success(
+        _request(), result, [1, 2], review
+    )
+    serialized = partial.model_dump_json().lower()
+
+    assert partial.market_reaction_analysis == (
+        "The selected article describes demanding expectations."
+    )
+    assert partial.key_catalysts == []
+    assert partial.outlook.short_term is None
+    assert partial.outlook.medium_term is not None
+    assert len(partial.needs_more_research) == 3
+    assert {item.source_section for item in partial.needs_more_research} == {
+        "market_reaction_analysis", "key_catalysts[0]", "outlook.short_term",
+    }
+    assert "selling pressure" not in serialized
+    assert "durable long-term catalyst" not in serialized
+    assert "short-term outlook is neutral" not in serialized
+
+
+def test_partial_success_fails_when_reconciliation_is_uncertain():
+    claim = _disposition_claim()
+    violation = _disposition_violation(
+        claim, issue_id="unknown.atomic_9"
+    ).model_copy(update={"atomic_proposition": "Different proposition."})
+    review = GroundingEnforcementResult(
+        valid=False, claims=[claim], violations=[violation]
+    )
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        _partial_report(review)
+
+    assert exc_info.value.details["failure_kind"] == "semantic_disposition_unreconciled"
+
+
+def test_partial_success_fails_when_no_meaningful_pass_remains():
+    claim = _disposition_claim(
+        unit="executive_summary", segment="executive_summary.segment_0"
+    )
+    review = GroundingEnforcementResult(
+        valid=False, claims=[claim], violations=[_disposition_violation(claim)]
+    )
+
+    with pytest.raises(AISemanticGroundingError) as exc_info:
+        _partial_report(review)
+
+    assert exc_info.value.details["failure_kind"] == "semantic_partial_report_not_meaningful"
+
+
+def test_malformed_atomic_claim_remains_schema_invalid():
+    with pytest.raises(ValidationError):
+        _disposition_claim(proposition="")
+
+
+def test_needs_more_research_is_backward_compatible_and_round_trips():
+    legacy_payload = {
+        "asset": "AMD", "overall_sentiment": "Neutral", "confidence_score": 50,
+    }
+    legacy = FinancialAnalysisResponse.model_validate(legacy_payload)
+    assert legacy.needs_more_research == []
+
+    round_trip = FinancialAnalysisResponse.model_validate(
+        _partial_report(GroundingEnforcementResult(
+            valid=False,
+            claims=[
+                _disposition_claim(),
+                _disposition_claim(
+                    unit="news_summary[0]", segment="news_summary[0].segment_0",
+                    ordinal=1, role="fact", proposition="AMD is preparing a bond sale.",
+                    classification="directly_supported", rule="selected_article_support",
+                    selected=[1],
+                ),
+            ],
+            violations=[_disposition_violation(_disposition_claim())],
+        )).model_dump(mode="json")
+    )
+    assert round_trip.needs_more_research[0].research_question.endswith("?")
+
+
+def test_public_schema_exposes_research_contract_but_provider_schema_does_not():
+    public_schema = FinancialAnalysisResponse.model_json_schema()
+    provider_schema = FinancialAnalysisLLMResponse.model_json_schema()
+
+    assert "needs_more_research" in public_schema["properties"]
+    assert "NeedsMoreResearchItem" in public_schema["$defs"]
+    assert "needs_more_research" not in provider_schema["properties"]

@@ -20,6 +20,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 
 def _coerce_to_str(v: Any) -> str:
@@ -95,6 +96,22 @@ class ArticleReference(BaseModel):
     published_at: Optional[str] = Field(default=None, description="ISO publish date")
 
 
+class NeedsMoreResearchItem(BaseModel):
+    """Backend-owned unresolved research lead, never a validated conclusion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=16, max_length=64)
+    source_section: str = Field(min_length=1, max_length=80)
+    research_question: str = Field(min_length=1, max_length=300)
+    reason: str = Field(min_length=1, max_length=300)
+    missing_evidence: str = Field(min_length=1, max_length=400)
+    grounding_rule: str = Field(min_length=1, max_length=80)
+    classification: str = Field(min_length=1, max_length=80)
+    article_indices: List[StrictInt] = Field(default_factory=list)
+    market_fields: List[str] = Field(default_factory=list)
+
+
 class KeyRisk(BaseModel):
     """Individual risk factor with severity level."""
 
@@ -105,7 +122,7 @@ class KeyRisk(BaseModel):
 class TechnicalAnalysisResponse(BaseModel):
     """Technical analysis section of the report."""
 
-    trend: str
+    trend: Optional[str] = None
     support_levels: List[StrOrNum] = Field(default_factory=list)
     resistance_levels: List[StrOrNum] = Field(default_factory=list)
     breakout_level: StrOrNum = ""
@@ -154,13 +171,17 @@ class FinancialAnalysisLLMTechnicalResponse(TechnicalAnalysisResponse):
 class OutlookResponse(BaseModel):
     """Multi-timeframe outlook."""
 
-    short_term: str = Field(description="1-7 days outlook (Bullish/Neutral/Bearish + explanation)")
-    medium_term: str = Field(description="1-3 months outlook")
-    long_term: str = Field(description="6-12 months outlook")
+    short_term: Optional[str] = Field(default=None, description="1-7 days outlook (Bullish/Neutral/Bearish + explanation)")
+    medium_term: Optional[str] = Field(default=None, description="1-3 months outlook")
+    long_term: Optional[str] = Field(default=None, description="6-12 months outlook")
 
 
 class FinancialAnalysisLLMOutlookResponse(OutlookResponse):
     """Internal generated-outlook contract that rejects copied horizon labels."""
+
+    short_term: str = Field(description="1-7 days outlook (Bullish/Neutral/Bearish + explanation)")
+    medium_term: str = Field(description="1-3 months outlook")
+    long_term: str = Field(description="6-12 months outlook")
 
     @field_validator("short_term", "medium_term", "long_term")
     @classmethod
@@ -209,6 +230,7 @@ class FinancialAnalysisResponse(BaseModel):
         description="Current market price when the analysis was generated",
     )
     report_id: Optional[int] = Field(default=None, description="Saved report ID in database")
+    needs_more_research: List[NeedsMoreResearchItem] = Field(default_factory=list)
 
 
 class FinancialAnalysisV2LLMRisk(BaseModel):
@@ -318,6 +340,10 @@ class FinancialAnalysisLLMResponse(FinancialAnalysisResponse):
     actionable_insights: List[str] = Field(min_length=1)
     portfolio_fit: str = Field(min_length=1)
     executive_summary: str = Field(min_length=1)
+    needs_more_research: SkipJsonSchema[List[NeedsMoreResearchItem]] = Field(
+        default_factory=list,
+        exclude=True,
+    )
     article_indices_used: List[int] = Field(
         exclude=True,
         description="One-based indexes of input articles materially used by the analysis",
