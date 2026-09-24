@@ -7,7 +7,6 @@ import pytest
 
 from backend.models.analysis import GroundingViolation
 from backend.services import ollama_service
-from backend.services.ai.exceptions import AISemanticGroundingError
 from test_semantic_grounding import _install_client, _report, _request, _synthetic_review_for_report
 
 
@@ -225,9 +224,11 @@ async def test_pipeline_uses_merge_lineage_and_rejects_remaining_blocker_without
             assert review_phases == ["initial_review"]
             assert "resolved_count=1 remaining_count=0 new_count=0" in caplog.text
         else:
-            with pytest.raises(AISemanticGroundingError) as caught:
-                await ollama_service.generate_analysis(_request(), provider="ollama", model="test-model")
-            assert caught.value.details["failure_kind"] == "semantic_grounding_rejected"
+            result = await ollama_service.generate_analysis(
+                _request(), provider="ollama", model="test-model"
+            )
+            assert result.market_reaction_analysis == "Surviving fact."
+            assert result.needs_more_research == []
             assert review_phases == ["initial_review", "final_review"]
             assert "resolved_count=0 remaining_count=1 new_count=0" in caplog.text
     assert len(provider_calls) == 2

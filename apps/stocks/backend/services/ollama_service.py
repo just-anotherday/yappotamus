@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Mapping, Optional, Tuple
 
 import httpx
 import requests
@@ -42,6 +42,7 @@ from backend.models.analysis import (
     GroundingViolation,
     KeyRisk,
     ModelInfo,
+    NeedsMoreResearchItem,
     NewsArticleRequest,
     NormalizedGroundingClaimFinding,
     OllamaConfigResponse,
@@ -2076,6 +2077,7 @@ def validate_correction_patch_set(
     registry: CorrectionTargetRegistry,
     required_target_ids: List[str],
     article_count: Optional[int] = None,
+    authorized_article_indices_by_target: Optional[Mapping[str, set[int]]] = None,
 ) -> CorrectionPatchSet:
     """Validate exact request-local authorization and completeness."""
 
@@ -2115,6 +2117,14 @@ def validate_correction_patch_set(
             _raise_correction_patch_error(
                 "correction_patch_attribution_invalid",
                 target_id=patch.target_id,
+            )
+        if authorized_article_indices_by_target is not None and not set(
+            patch.article_indices_used
+        ).issubset(authorized_article_indices_by_target.get(patch.target_id, set())):
+            _raise_correction_patch_error(
+                "correction_patch_attribution_invalid",
+                target_id=patch.target_id,
+                reason="article_index_outside_target_evidence_boundary",
             )
         _validate_patch_replacement(patch, target)
 
@@ -2216,6 +2226,84 @@ def _patch_claims_by_target(
     return grouped
 
 
+def _claim_for_patch_violation(
+    violation: GroundingViolation,
+    claims_by_target: Mapping[str, List[NormalizedGroundingClaimFinding]],
+) -> Optional[NormalizedGroundingClaimFinding]:
+    """Resolve one blocker to its exact reviewed atomic claim when available."""
+
+    target_id = violation.patch_target_id or violation.coverage_segment_id
+    if target_id is None:
+        return None
+    candidates = claims_by_target.get(target_id, [])
+    issue_claim_id, separator, _ = violation.issue.partition(":")
+    if separator:
+        exact_id = next(
+            (claim for claim in candidates if claim.atomic_claim_id == issue_claim_id),
+            None,
+        )
+        if exact_id is not None:
+            return exact_id
+    if violation.atomic_proposition is None:
+        return None
+    normalized = _normalize_review_proposition_text(violation.atomic_proposition)
+    matches = [
+        claim for claim in candidates
+        if _normalize_review_proposition_text(claim.atomic_proposition) == normalized
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _patch_evidence_boundaries_by_target(
+    violations: List[GroundingViolation],
+    claims: Optional[List[NormalizedGroundingClaimFinding]],
+) -> Dict[str, Dict[str, Any]]:
+    """Return only claim-local evidence authorized for each rejected target."""
+
+    claims_by_target = _patch_claims_by_target(claims)
+    boundaries: Dict[str, Dict[str, Any]] = {}
+    for violation in violations:
+        target_id = violation.patch_target_id
+        if target_id is None:
+            continue
+        boundary = boundaries.setdefault(target_id, {
+            "article_indices": set(),
+            "market_fields": set(),
+            "input_context": set(),
+            "rejected_findings": [],
+        })
+        claim = _claim_for_patch_violation(violation, claims_by_target)
+        article_indices = sorted(set(
+            claim.supporting_selected_indices if claim is not None else []
+        ))
+        market_fields = sorted(set(
+            (
+                claim.supporting_market_data_fields
+                + claim.backend_derived_market_fields
+            ) if claim is not None else []
+        ))
+        input_context = sorted(set(
+            (
+                claim.supporting_input_context
+                + claim.backend_derived_input_context
+            ) if claim is not None else []
+        ))
+        boundary["article_indices"].update(article_indices)
+        boundary["market_fields"].update(market_fields)
+        boundary["input_context"].update(input_context)
+        boundary["rejected_findings"].append({
+            "atomic_proposition": violation.atomic_proposition,
+            "violating_rule": violation.rule,
+            "classification": claim.classification if claim is not None else None,
+            "claim_role": claim.claim_role if claim is not None else None,
+            "reviewer_rule": claim.rule if claim is not None else None,
+            "allowed_article_indices": article_indices,
+            "allowed_market_data_fields": market_fields,
+            "allowed_input_context": input_context,
+        })
+    return boundaries
+
+
 def _patch_repair_instruction(target_rules: List[str]) -> str:
     guidance = [
         GROUNDING_RULE_CORRECTION_GUIDANCE[rule]
@@ -2315,9 +2403,11 @@ def build_patch_correction_prompt(
             reason="zero_required_targets",
         )
     rules_by_target = _patch_rules_by_target(violations)
-    claims_by_target = _patch_claims_by_target(claims)
+    evidence_by_target = _patch_evidence_boundaries_by_target(violations, claims)
     targets_payload: List[Dict[str, Any]] = []
     used_article_indices: set[int] = set()
+    used_market_fields: set[str] = set()
+    used_input_context: set[str] = set()
     for target_id in required_target_ids:
         target = registry.get(target_id)
         if target is None:
@@ -2325,14 +2415,21 @@ def build_patch_correction_prompt(
                 "correction_patch_unknown_target",
                 target_id=target_id,
             )
-        target_claims = claims_by_target.get(target_id, [])
-        article_indices = sorted({
-            index
-            for claim in target_claims
-            for index in claim.supporting_selected_indices
-            if 1 <= index <= len(request.news_articles)
+        evidence = evidence_by_target.get(target_id, {
+            "article_indices": set(),
+            "market_fields": set(),
+            "input_context": set(),
+            "rejected_findings": [],
         })
+        article_indices = sorted(
+            index for index in evidence["article_indices"]
+            if 1 <= index <= len(request.news_articles)
+        )
+        market_fields = sorted(evidence["market_fields"])
+        input_context = sorted(evidence["input_context"])
         used_article_indices.update(article_indices)
+        used_market_fields.update(market_fields)
+        used_input_context.update(input_context)
         target_rules = rules_by_target.get(target_id, [])
         target_payload = {
             "target_id": target_id,
@@ -2343,7 +2440,10 @@ def build_patch_correction_prompt(
             "repair_instruction": _patch_repair_instruction(target_rules),
             "read_only_previous_context": target.previous_context,
             "read_only_next_context": target.next_context,
+            "rejected_atomic_findings": evidence["rejected_findings"],
             "trusted_article_indices_available": article_indices,
+            "trusted_market_data_fields_available": market_fields,
+            "trusted_input_context_available": input_context,
         }
         target_payload["parent_field_invariant"] = (
             _correction_parent_invariant_instruction(target)
@@ -2377,8 +2477,12 @@ def build_patch_correction_prompt(
     request_payload = {
         "targets": targets_payload,
         "trusted_articles": article_manifest,
-        "available_structured_market_data": available_market_data,
-        "deterministic_input_context": derive_available_input_context(request),
+        "authorized_structured_market_data": {
+            field: available_market_data[field]
+            for field in sorted(used_market_fields)
+            if field in available_market_data
+        },
+        "authorized_input_context": sorted(used_input_context),
         "missing_moving_average_guidance": missing_ma_guidance,
     }
     positive_examples = " ".join(
@@ -2402,7 +2506,9 @@ def build_patch_correction_prompt(
         "parent constraints permit deletion. Prefer DELETE when the invalid proposition is "
         "unnecessary and all parent invariants remain valid. Use REPLACE only when supplied "
         "evidence supports replacement content; never invent content to satisfy a parent "
-        "constraint. "
+        "constraint. Repair every rejected_atomic_finding without retaining or paraphrasing an "
+        "unsupported clause. Evidence is target-local: use only the article indices, market-data "
+        "fields, and input context explicitly allowed on that rejected finding. "
         "Do not create IDs, paths, sections, unrelated facts, or whole-section rewrites. Article "
         "indices are 1-based and must use the minimum useful trusted subset; structured-market-"
         "only replacements use an empty list.\n\nCorrection request (JSON):\n"
@@ -2438,6 +2544,14 @@ async def generate_correction_patch_set(
     prompt = build_patch_correction_prompt(
         required_target_ids, registry, violations, request, claims
     )
+    evidence_by_target = _patch_evidence_boundaries_by_target(violations, claims)
+    authorized_article_indices_by_target = {
+        target_id: {
+            index for index in evidence["article_indices"]
+            if 1 <= index <= len(request.news_articles)
+        }
+        for target_id, evidence in evidence_by_target.items()
+    }
     response_schema = build_request_local_patch_schema(required_target_ids)
     started = time.perf_counter()
     raw_response = await ai.generate(
@@ -2455,6 +2569,9 @@ async def generate_correction_patch_set(
             registry,
             required_target_ids,
             article_count=len(request.news_articles),
+            authorized_article_indices_by_target=(
+                authorized_article_indices_by_target
+            ),
         )
     except AISemanticGroundingError:
         logger.warning(
@@ -5806,6 +5923,297 @@ def _log_final_review_reconciliation(
         logger.info("[AI][GroundingLineage] %s", json.dumps(record, sort_keys=True))
 
 
+ClaimDisposition = Literal["PASS", "RESEARCH_CANDIDATE", "DROP"]
+
+_RESEARCH_CANDIDATE_RULES = frozenset({
+    "unsupported_company_specific_claim",
+    "unsupported_valuation_claim",
+    "unsupported_financing_mechanics",
+    "unsupported_acquisition_mechanics",
+    "selected_evidence_attribution_boundary",
+    "causal_mechanism_grounding",
+    "investor_motive_grounding",
+    "event_price_impact_grounding",
+    "portfolio_role_grounding",
+})
+_DROP_ONLY_RULES = frozenset({
+    "historical_range_not_technical_level",
+    "prospective_event_treated_as_completed",
+    "unsupported_numeric_precision",
+    "fact_scenario_confusion",
+    "scope_preservation",
+    "event_status_preservation",
+    "technical_role_grounding",
+    "fact_interpretation_separation",
+})
+_DROP_ONLY_CLASSIFICATIONS = frozenset({
+    "scope_mismatch", "event_status_mismatch", "technical_role_mismatch",
+})
+
+
+def _semantic_claim_disposition(
+    claim: Optional[NormalizedGroundingClaimFinding],
+    violations: List[GroundingViolation],
+) -> ClaimDisposition:
+    """Apply the auditable backend disposition table to one atomic claim."""
+
+    if not violations:
+        return "PASS"
+    if claim is None:
+        return "DROP"
+    rules = {violation.rule for violation in violations}
+    if claim.classification in _DROP_ONLY_CLASSIFICATIONS or rules & _DROP_ONLY_RULES:
+        return "DROP"
+    if (
+        claim.claim_role in {"interpretation", "investment_implication"}
+        and rules
+        and rules <= _RESEARCH_CANDIDATE_RULES
+    ):
+        return "RESEARCH_CANDIDATE"
+    return "DROP"
+
+
+def _research_question_for_claim(claim: NormalizedGroundingClaimFinding) -> str:
+    unit = claim.review_unit_id
+    if unit == "investment_rating":
+        return "Does the available evidence support an investment rating?"
+    if unit == "overall_sentiment":
+        return "What overall sentiment is supported by the available evidence?"
+    if unit.startswith("outlook.short_term"):
+        return "What short-term outlook is supported by the available evidence?"
+    if unit.startswith("outlook.medium_term"):
+        return "What medium-term outlook is supported by the available evidence?"
+    if unit.startswith("outlook.long_term"):
+        return "What long-term outlook is supported by the available evidence?"
+    if claim.rule == "investor_motive_grounding":
+        return "What evidence establishes the proposed investor motivation?"
+    if claim.rule == "event_price_impact_grounding":
+        return "Is there evidence linking the referenced event to the observed price reaction?"
+    if claim.rule == "causal_mechanism_grounding":
+        return "Is there evidence establishing the proposed causal relationship?"
+    if claim.rule == "unsupported_valuation_claim":
+        return "Does the available evidence support a valuation conclusion?"
+    if claim.rule == "portfolio_role_grounding" or unit == "portfolio_fit":
+        return "What evidence would support a portfolio-fit conclusion?"
+    if unit == "market_reaction_analysis":
+        return "What market-reaction interpretation is supported by the available evidence?"
+    if unit.startswith("actionable_insights"):
+        return "What investor action, if any, is supported by the available evidence?"
+    if unit.startswith("bull_case"):
+        return "What additional evidence would support the proposed upside case?"
+    if unit.startswith("bear_case") or unit.startswith("key_risks"):
+        return "What additional evidence would support the proposed risk relationship?"
+    return "What additional evidence is needed to evaluate the generated interpretation?"
+
+
+def _missing_evidence_for_rule(rule: str) -> str:
+    return {
+        "causal_mechanism_grounding": (
+            "A source or authorized market-data relationship explicitly establishing the proposed cause."
+        ),
+        "investor_motive_grounding": (
+            "A selected source explicitly describing the relevant investor motivation."
+        ),
+        "event_price_impact_grounding": (
+            "A selected source explicitly linking the event to the observed price reaction."
+        ),
+        "portfolio_role_grounding": (
+            "Grounded risk, horizon, and portfolio-role evidence supporting the proposed fit."
+        ),
+        "unsupported_valuation_claim": (
+            "Authorized valuation or fundamental evidence supporting a valuation conclusion."
+        ),
+        "selected_evidence_attribution_boundary": (
+            "Support within the selected and authorized evidence set."
+        ),
+    }.get(
+        rule,
+        "A selected source or authorized market-data field directly supporting the interpretation.",
+    )
+
+
+def _research_item(
+    claim: NormalizedGroundingClaimFinding,
+    violations: List[GroundingViolation],
+) -> NeedsMoreResearchItem:
+    rules = _order_preserving_dedupe([violation.rule for violation in violations])
+    primary_rule = rules[0]
+    article_indices = sorted(set(claim.supporting_selected_indices))
+    market_fields = sorted(set(
+        claim.supporting_market_data_fields + claim.backend_derived_market_fields
+    ))
+    return NeedsMoreResearchItem(
+        id=_canonical_fingerprint({
+            "review_unit_id": claim.review_unit_id,
+            "atomic_claim_id": claim.atomic_claim_id,
+            "rules": rules,
+        })[:24],
+        source_section=claim.review_unit_id,
+        research_question=_research_question_for_claim(claim),
+        reason="Insufficient supporting evidence in the supplied sources.",
+        missing_evidence=_missing_evidence_for_rule(primary_rule),
+        grounding_rule=primary_rule,
+        classification=claim.classification,
+        article_indices=article_indices,
+        market_fields=market_fields,
+    )
+
+
+def _normalize_partial_report_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert deleted internal spans to explicit absence in the public contract."""
+
+    for field in (
+        "news_summary", "key_catalysts", "bull_case", "bear_case",
+        "actionable_insights",
+    ):
+        payload[field] = [
+            value for value in payload.get(field, [])
+            if isinstance(value, str) and value.strip()
+        ]
+    payload["key_risks"] = [
+        value for value in payload.get("key_risks", [])
+        if isinstance(value, dict)
+        and isinstance(value.get("risk"), str)
+        and value["risk"].strip()
+    ]
+    for field in ("market_reaction_analysis", "portfolio_fit", "executive_summary"):
+        if not isinstance(payload.get(field), str) or not payload[field].strip():
+            payload[field] = None
+    technical = payload.get("technical_analysis")
+    if isinstance(technical, dict):
+        if not isinstance(technical.get("trend"), str) or not technical["trend"].strip():
+            technical["trend"] = None
+    outlook = payload.get("outlook")
+    if isinstance(outlook, dict):
+        for horizon in ("short_term", "medium_term", "long_term"):
+            if not isinstance(outlook.get(horizon), str) or not outlook[horizon].strip():
+                outlook[horizon] = None
+        if not any(outlook.values()):
+            payload["outlook"] = None
+    return payload
+
+
+def _build_partial_semantic_success(
+    request: FinancialAnalysisRequest,
+    result: FinancialAnalysisLLMResponse,
+    selected_indices: List[int],
+    review: GroundingEnforcementResult,
+) -> FinancialAnalysisResponse:
+    """Remove every blocked segment and quarantine only eligible interpretations."""
+
+    authorized_article_indices = set(selected_indices)
+    if any(
+        not set(claim.supporting_selected_indices) <= authorized_article_indices
+        for claim in review.claims
+    ):
+        raise AISemanticGroundingError(
+            "AI analysis could not be completed because semantic evidence authorization was uncertain.",
+            details={"failure_kind": "semantic_disposition_unreconciled"},
+        )
+
+    claims_by_target = _patch_claims_by_target(review.claims)
+    violations_by_claim: Dict[str, List[GroundingViolation]] = {}
+    unmatched: List[GroundingViolation] = []
+    for violation in review.violations:
+        claim = _claim_for_patch_violation(violation, claims_by_target)
+        if claim is None:
+            unmatched.append(violation)
+        else:
+            violations_by_claim.setdefault(claim.atomic_claim_id, []).append(violation)
+
+    blocked_segment_ids = {
+        violation.coverage_segment_id
+        for violation in review.violations
+        if violation.coverage_segment_id is not None
+    }
+    if unmatched:
+        raise AISemanticGroundingError(
+            "AI analysis could not be completed because semantic disposition was uncertain.",
+            details={"failure_kind": "semantic_disposition_unreconciled"},
+        )
+
+    research_items: List[NeedsMoreResearchItem] = []
+    disposition_counts: Dict[ClaimDisposition, int] = {
+        "PASS": 0,
+        "RESEARCH_CANDIDATE": 0,
+        "DROP": 0,
+    }
+    for claim in review.claims:
+        claim_violations = violations_by_claim.get(claim.atomic_claim_id, [])
+        disposition = _semantic_claim_disposition(claim, claim_violations)
+        disposition_counts[disposition] += 1
+        if disposition == "RESEARCH_CANDIDATE":
+            research_items.append(_research_item(claim, claim_violations))
+
+    review_units = _build_reviewable_claim_units(result)
+    registry = build_correction_target_registry(review_units)
+    registry_ids = {target.patch_target_id for target in registry.targets}
+    delete_target_ids = sorted(blocked_segment_ids & registry_ids)
+    protected_blocked = blocked_segment_ids - registry_ids
+    protected_units = {
+        segment_id.rsplit(".segment_", 1)[0] for segment_id in protected_blocked
+    }
+    if protected_units - {"overall_sentiment", "investment_rating"}:
+        raise AISemanticGroundingError(
+            "AI analysis could not be completed because semantic disposition was uncertain.",
+            details={"failure_kind": "semantic_disposition_unreconciled"},
+        )
+    if "overall_sentiment" in protected_units:
+        raise AISemanticGroundingError(
+            "AI analysis could not be completed because no grounded overall sentiment remained.",
+            details={"failure_kind": "semantic_partial_report_not_meaningful"},
+        )
+
+    patches = CorrectionPatchSet(patches=[
+        CorrectionPatch(target_id=target_id, operation="DELETE")
+        for target_id in delete_target_ids
+    ])
+    payload = (
+        _build_correction_candidate_payload(result, patches, registry)
+        if patches.patches else result.model_dump(mode="python")
+    )
+    if "investment_rating" in protected_units:
+        payload["investment_rating"] = None
+    payload = _normalize_partial_report_payload(payload)
+
+    meaningful_passes = [
+        claim for claim in review.claims
+        if claim.coverage_segment_id not in blocked_segment_ids
+        and claim.section in _PATCHABLE_GROUNDING_SECTIONS
+    ]
+    if not meaningful_passes:
+        raise AISemanticGroundingError(
+            "AI analysis could not be completed because no meaningful grounded analysis remained.",
+            details={"failure_kind": "semantic_partial_report_not_meaningful"},
+        )
+
+    retained_indices = sorted({
+        index
+        for claim in meaningful_passes
+        for index in claim.supporting_selected_indices
+    } | {
+        index for item in research_items for index in item.article_indices
+    })
+    payload.pop("article_indices_used", None)
+    payload["asset"] = request.ticker
+    payload["articles_used"] = _resolve_articles_used(
+        retained_indices, request.news_articles
+    )
+    payload["current_price_at_analysis"] = request.price_data.current_price
+    payload["report_id"] = None
+    payload["needs_more_research"] = research_items
+    public = FinancialAnalysisResponse.model_validate(payload)
+    logger.info(
+        "[AI][SemanticDisposition] pass_claim_count=%d research_candidate_count=%d "
+        "drop_claim_count=%d removed_segment_count=%d",
+        disposition_counts["PASS"],
+        disposition_counts["RESEARCH_CANDIDATE"],
+        disposition_counts["DROP"],
+        len(blocked_segment_ids),
+    )
+    return public
+
+
 async def _run_grounding_review(
     ai: Any,
     request: FinancialAnalysisRequest,
@@ -6705,6 +7113,7 @@ async def generate_analysis(
     sanitized_indices: List[int] = []
     trusted_articles: List[ArticleReference] = []
     candidate_ready = False
+    partial_result: Optional[FinancialAnalysisResponse] = None
 
     from backend.services.ai.ai_service import validate_provider_model
 
@@ -7025,41 +7434,35 @@ async def generate_analysis(
                 final_review_valid=final_review.valid,
             )
             if not final_review.valid:
-                logger.error(
-                    "[AI][SemanticGrounding] rejected=true rules=%s sections=%s",
+                logger.warning(
+                    "[AI][SemanticGrounding] partial_success_required=true rules=%s sections=%s",
                     [violation.rule for violation in final_review.violations],
                     [violation.section for violation in final_review.violations],
                 )
-                logger.warning(
-                    "[AI][Timing] stage=total outcome=semantic_rejected duration_s=%.3f",
-                    time.perf_counter() - analysis_started,
-                )
-                raise AISemanticGroundingError(
-                    "AI analysis could not be completed because the corrected report "
-                    "still violated semantic grounding rules.",
-                    details={
-                        "failure_kind": "semantic_grounding_rejected",
-                        "rules": sorted(
-                            {violation.rule for violation in final_review.violations}
-                        ),
-                        "provider": target_provider,
-                        "model": active_model,
-                    },
+                partial_result = _build_partial_semantic_success(
+                    request,
+                    llm_result,
+                    sanitized_indices,
+                    final_review,
                 )
 
-        response_data = llm_result.model_dump()
-        response_data["asset"] = request.ticker
-        response_data["articles_used"] = trusted_articles
-        response_data["current_price_at_analysis"] = request.price_data.current_price
-        response_data["report_id"] = None
-        result = FinancialAnalysisResponse(**response_data)
+        if partial_result is not None:
+            result = partial_result
+        else:
+            response_data = llm_result.model_dump()
+            response_data["asset"] = request.ticker
+            response_data["articles_used"] = trusted_articles
+            response_data["current_price_at_analysis"] = request.price_data.current_price
+            response_data["report_id"] = None
+            result = FinancialAnalysisResponse(**response_data)
         logger.info(
             f"[AI] Analysis complete for {request.ticker}: "
             f"sentiment={result.overall_sentiment}, confidence={result.confidence_score}, "
             f"articles_used={len(result.articles_used)}/{len(request.news_articles)}"
         )
         logger.info(
-            "[AI][Timing] stage=total outcome=success duration_s=%.3f",
+            "[AI][Timing] stage=total outcome=%s duration_s=%.3f",
+            "partial_success" if partial_result is not None else "success",
             time.perf_counter() - analysis_started,
         )
         return result
