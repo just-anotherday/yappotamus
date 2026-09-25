@@ -433,7 +433,7 @@ export default function HomePage() {
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-zinc-600">You can view or download my resume below:</p>
           <a
-            href="/assets/yapResume.pdf"
+            href="/assets/yapResume-v3.pdf"
             target="_blank"
             rel="noreferrer"
             className="mt-5 inline-flex rounded-lg border-2 border-black bg-black px-5 py-2.5 font-bold text-white transition hover:-translate-y-0.5 hover:bg-yellow-500 hover:text-black"
