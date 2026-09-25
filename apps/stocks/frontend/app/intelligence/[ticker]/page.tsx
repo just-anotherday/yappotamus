@@ -3,10 +3,11 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { CachedCompanyReport, KeyRisk, TechnicalAnalysisData, OutlookData } from '@/types/stock';
+import type { CachedCompanyReport, KeyRisk } from '@/types/stock';
+import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { fetchCompanyReport, triggerCompanyReportRegeneration } from '@/lib/api';
 import { formatApiTimestamp } from '@/lib/formatters';
-import { formatReportDateTime } from '@/lib/reportPresentation';
+import { formatReportDateTime, hasOutlook, hasTechnicalAnalysis } from '@/lib/reportPresentation';
 
 function sentimentColor(sentiment: string): string {
   const s = sentiment.toLowerCase();
@@ -182,49 +183,58 @@ export default function IntelligenceDetail() {
       </div>
 
       {/* Executive Summary */}
-      <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>📋 Executive Summary</h2>
-        <div style={{ ...cardStyle, lineHeight: 1.7, fontSize: 15, color: 'var(--text-secondary)' }}>
-          {rd.executive_summary}
-        </div>
-      </section>
+      {rd.executive_summary && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>📋 Executive Summary</h2>
+          <div style={{ ...cardStyle, lineHeight: 1.7, fontSize: 15, color: 'var(--text-secondary)' }}>
+            {rd.executive_summary}
+          </div>
+        </section>
+      )}
 
       {/* Key Catalysts */}
-      <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>🚀 Key Catalysts</h2>
-        <div style={cardStyle}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {rd.key_catalysts?.map((c, i) => (
-              <div key={i} style={{ padding: '10px 16px', background: 'var(--section-bg)', borderRadius: 8, borderLeft: '4px solid #4caf50', fontSize: 14, color: 'var(--text-primary)' }}>
-                {c}
-              </div>
-            ))}
+      {rd.key_catalysts?.length > 0 && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>🚀 Key Catalysts</h2>
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {rd.key_catalysts.map((c, i) => (
+                <div key={i} style={{ padding: '10px 16px', background: 'var(--section-bg)', borderRadius: 8, borderLeft: '4px solid #4caf50', fontSize: 14, color: 'var(--text-primary)' }}>
+                  {c}
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* Key Risks */}
-      <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>⚠️ Key Risks</h2>
-        <div style={cardStyle}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {rd.key_risks?.map((r: KeyRisk, i: number) => (
-              <div key={i} style={{ padding: '10px 16px', background: 'var(--section-bg)', borderRadius: 8, borderLeft: `4px solid ${severityColor(r.severity)}`, fontSize: 14, color: 'var(--text-primary)' }}>
-                <strong>{r.risk}</strong>
-                <span style={{ marginLeft: 8, fontSize: 12, color: severityColor(r.severity), fontWeight: 600 }}>[{r.severity}]</span>
-              </div>
-            ))}
+      {rd.key_risks?.length > 0 && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>⚠️ Key Risks</h2>
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {rd.key_risks.map((r: KeyRisk, i: number) => (
+                <div key={i} style={{ padding: '10px 16px', background: 'var(--section-bg)', borderRadius: 8, borderLeft: `4px solid ${severityColor(r.severity)}`, fontSize: 14, color: 'var(--text-primary)' }}>
+                  <strong>{r.risk}</strong>
+                  <span style={{ marginLeft: 8, fontSize: 12, color: severityColor(r.severity), fontWeight: 600 }}>[{r.severity}]</span>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* Technical Analysis */}
-      <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>📈 Technical Analysis</h2>
-        <div style={cardStyle}>
-          {(rd.technical_analysis as TechnicalAnalysisData)?.trend && (
-            <>
+      {hasTechnicalAnalysis(rd.technical_analysis) && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>📈 Technical Analysis</h2>
+          <div style={cardStyle}>
+            {rd.technical_analysis && (
+              <>
+              {rd.technical_analysis.trend && (
               <p style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}><strong>Trend:</strong> {rd.technical_analysis.trend}</p>
+              )}
               {rd.technical_analysis.support_levels?.length > 0 && (
                 <p style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}><strong>Support:</strong> {rd.technical_analysis.support_levels.join(', ')}</p>
               )}
@@ -237,47 +247,52 @@ export default function IntelligenceDetail() {
               {rd.technical_analysis.breakdown_level && (
                 <p style={{ margin: 0, color: '#f44336' }}><strong>Breakdown Level:</strong> {rd.technical_analysis.breakdown_level}</p>
               )}
-            </>
-          )}
-        </div>
-      </section>
+              </>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* Outlook */}
-      <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>🔭 Outlook</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
-          {(rd.outlook as OutlookData)?.short_term && (
+      {hasOutlook(rd.outlook) && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>🔭 Outlook</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+          {rd.outlook?.short_term && (
             <div style={{ padding: 16, background: '#e3f2fd', borderRadius: 8 }}>
               <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: '#1565c0' }}>Short Term (1-7 days)</p>
               <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.short_term}</p>
             </div>
           )}
-          {(rd.outlook as OutlookData)?.medium_term && (
+          {rd.outlook?.medium_term && (
             <div style={{ padding: 16, background: '#fff3e0', borderRadius: 8 }}>
               <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: '#e65100' }}>Medium Term (1-3 months)</p>
               <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.medium_term}</p>
             </div>
           )}
-          {(rd.outlook as OutlookData)?.long_term && (
+          {rd.outlook?.long_term && (
             <div style={{ padding: 16, background: '#e8f5e9', borderRadius: 8 }}>
               <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: '#2e7d32' }}>Long Term (6-12 months)</p>
               <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.long_term}</p>
             </div>
           )}
-        </div>
-      </section>
+          </div>
+        </section>
+      )}
 
       {/* Actionable Insights */}
-      <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>💡 Actionable Insights</h2>
-        <div style={cardStyle}>
-          <ol style={{ paddingLeft: 24, margin: 0, color: 'var(--text-secondary)' }}>
-            {rd.actionable_insights?.map((insight, i) => (
-              <li key={i} style={{ padding: '6px 0', fontSize: 14, lineHeight: 1.6 }}>{insight}</li>
-            ))}
+      {rd.actionable_insights?.length > 0 && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>💡 Actionable Insights</h2>
+          <div style={cardStyle}>
+            <ol style={{ paddingLeft: 24, margin: 0, color: 'var(--text-secondary)' }}>
+              {rd.actionable_insights.map((insight, i) => (
+                <li key={i} style={{ padding: '6px 0', fontSize: 14, lineHeight: 1.6 }}>{insight}</li>
+              ))}
           </ol>
-        </div>
-      </section>
+          </div>
+        </section>
+      )}
 
       {/* Market Reaction */}
       {rd.market_reaction_analysis && (
@@ -288,6 +303,8 @@ export default function IntelligenceDetail() {
           </div>
         </section>
       )}
+
+      <NeedsMoreResearchSection items={rd.needs_more_research} />
 
       {/* News Summary */}
       {rd.news_summary?.length > 0 && (

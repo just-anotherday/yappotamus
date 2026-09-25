@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { API_BASE } from '@/lib/serviceUrls';
 import { apiFetch } from '@/lib/apiFetch';
 import { requireOk } from '@/lib/apiError';
@@ -12,6 +13,8 @@ import {
   formatArticlesSupplied,
   formatReportDateTime,
   getPromptBadge,
+  hasOutlook,
+  hasTechnicalAnalysis,
 } from '@/lib/reportPresentation';
 
 export default function ReportDetailPage() {
@@ -146,7 +149,9 @@ export default function ReportDetailPage() {
               }} />
             </div>
           </div>
-          <p style={{ lineHeight: 1.6, color: '#374151' }} className="dark:text-gray-300">{data.executive_summary}</p>
+          {data.executive_summary && (
+            <p style={{ lineHeight: 1.6, color: '#374151' }} className="dark:text-gray-300">{data.executive_summary}</p>
+          )}
         </div>
 
         {/* News Summary */}
@@ -234,11 +239,13 @@ export default function ReportDetailPage() {
         )}
 
         {/* Technical Analysis */}
-        {data.technical_analysis && (
+        {hasTechnicalAnalysis(data.technical_analysis) && data.technical_analysis && (
           <div style={{ padding: '1.5rem', borderRadius: '12px', background: 'white', border: '1px solid #e5e7eb' }}
             className="dark:bg-slate-800 dark:border-slate-700">
             <h3 style={{ marginTop: 0, fontSize: '1.25rem', fontWeight: 700, letterSpacing: '0.025em', color: '#111827', paddingBottom: '0.5rem', borderBottom: '2px solid #e5e7eb' }} className="dark:text-white dark:border-slate-600">Technical Context</h3>
+          {data.technical_analysis.trend && (
             <p style={{ color: '#374151' }} className="dark:text-gray-300"><strong>Trend:</strong> {data.technical_analysis.trend}</p>
+          )}
           {data.technical_analysis.support_levels?.length > 0 && (
             <p style={{ color: '#374151' }} className="dark:text-gray-300"><strong>Support Levels:</strong> {data.technical_analysis.support_levels.join(', ')}</p>
           )}
@@ -255,23 +262,23 @@ export default function ReportDetailPage() {
         )}
 
         {/* Outlook */}
-        {data.outlook && (
+        {hasOutlook(data.outlook) && data.outlook && (
           <div style={{ padding: '1.5rem', borderRadius: '12px', background: '#fffbeb', border: '1px solid #fde68a' }}
           className="dark:bg-yellow-900/30 dark:border-yellow-800">
           <h3 style={{ marginTop: 0, fontSize: '1.25rem', fontWeight: 700, letterSpacing: '0.025em', color: '#92400e', paddingBottom: '0.5rem', borderBottom: '2px solid #fde68a' }} className="dark:text-yellow-400 dark:border-yellow-800">Investment Outlook</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div>
+            {data.outlook.short_term && <div>
               <strong style={{ color: '#92400e' }} className="dark:text-yellow-400">Short-Term (1-7 days):</strong>
               <p style={{ margin: '0.25rem 0 0', color: '#374151' }} className="dark:text-gray-300">{data.outlook.short_term}</p>
-            </div>
-            <div>
+            </div>}
+            {data.outlook.medium_term && <div>
               <strong style={{ color: '#92400e' }} className="dark:text-yellow-400">Medium-Term (1-3 months):</strong>
               <p style={{ margin: '0.25rem 0 0', color: '#374151' }} className="dark:text-gray-300">{data.outlook.medium_term}</p>
-            </div>
-            <div>
+            </div>}
+            {data.outlook.long_term && <div>
               <strong style={{ color: '#92400e' }} className="dark:text-yellow-400">Long-Term (6-12 months):</strong>
               <p style={{ margin: '0.25rem 0 0', color: '#374151' }} className="dark:text-gray-300">{data.outlook.long_term}</p>
-            </div>
+            </div>}
           </div>
           </div>
         )}
@@ -288,6 +295,8 @@ export default function ReportDetailPage() {
             </ul>
           </div>
         )}
+
+        <NeedsMoreResearchSection items={data.needs_more_research} />
 
         {/* Portfolio Fit */}
         {data.portfolio_fit && (
