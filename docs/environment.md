@@ -160,7 +160,7 @@ Managed through Next.js `.env` files in `apps/stocks/frontend/`.
 
 | Variable | Description | Required | Local Value | Production Value |
 |----------|-------------|----------|-------------|------------------|
-| `NEXT_PUBLIC_API_URL` | Backend API URL | ✅ Yes | `http://localhost:3001` | Cloudflare Pages hostname |
+| `VITE_AI_API_BASE` | Express chat endpoint | ✅ Yes for live chat | `http://localhost:5000/api/openai` | Deployed backend endpoint |
 | `NEXT_PUBLIC_APP_URL` | Public app URL | No | — | Production URL |
 
 ### HTML/JS Static Pages (`apps/website/frontend/projects/`)
@@ -175,7 +175,7 @@ Managed through `apps/website/backend/ai-generator-backend/.env`.
 
 | Variable | Description | Required | Default | Notes |
 |----------|-------------|----------|---------|-------|
-| `PORT` | Server port | No | `3001` | Local dev port |
+| `PORT` | Server port | No | `5000` | Local dev port |
 | `OPENAI_API_KEY` | OpenAI API key | ✅ Yes | — | Required for generation |
 | `OPENAI_MODEL` | Model to use | No | `gpt-4o-mini` | — |
 | `ANTHROPIC_API_KEY` | Anthropic API key (alternative) | No | — | Optional fallback |

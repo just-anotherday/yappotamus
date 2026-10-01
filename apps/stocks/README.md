@@ -6,7 +6,7 @@ A full-stack real-time stock market dashboard built with **FastAPI** + **Postgre
 
 | Layer | Technologies |
 |-------|-------------|
-| **Backend** | FastAPI, Python 3.10+, SQLAlchemy 2.x (async), asyncpg |
+| **Backend** | FastAPI, Python 3.12+, SQLAlchemy 2.x (async), asyncpg |
 | **Database** | PostgreSQL (news articles + watchlist persistence) |
 | **Frontend** | Next.js 15, TypeScript, React 19, Tailwind CSS |
 | **Real-time** | WebSockets (yfinance live price streaming) |
@@ -75,7 +75,7 @@ Stock Data Dashboard/
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.12+** (matches the production Docker image)
 - **Node.js 20+** and **npm**
 - **PostgreSQL 14+** running locally (or accessible via connection string)
 
@@ -189,9 +189,11 @@ inside the FastAPI lifespan; there is no separate worker process command.
 
 - **Database schema** is managed by Alembic (`python -m alembic upgrade head`); startup performs a connectivity check only.
 - **News ingestion** is externally triggered every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly overnight/weekend coverage; the in-process scheduler remains a local-development option.
+- Local automatic ingestion is disabled in `.env.example` to avoid unexpected Finnhub usage. Set `NEWS_SCHEDULER_ENABLED=true` and `FINNHUB_API_KEY` in `apps/stocks/.env`, then keep `python run.py` running. The scheduler runs in the FastAPI process every 15 minutes.
+- For a one-time local run, keep FastAPI running and call `curl -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" http://localhost:8000/api/news/ingest`. Verify it through the response summary, backend `[NewsIngestion]` logs, and the `news_ingestion` object returned by `GET /health`.
 - **WebSocket price streaming** uses a background thread to listen to Yahoo Finance WebSockets, then bridges events back to the FastAPI event loop.
 - **Error handling** is centralized via FastAPI exception handlers (`backend/exceptions.py`).
-- **All mutable endpoints currently lack authentication** — intended for local/personal use only (see `docs/TECHNICAL_DEBT_REPORT.md` for details).
+- **API access is token protected** — use the `APP_ACCESS_TOKEN` value as a Bearer token for direct API calls.
 
 ## Troubleshooting
 
@@ -200,7 +202,7 @@ inside the FastAPI lifespan; there is no separate worker process command.
 | Backend won't start / DB error | Verify `DATABASE_URL` points to a running PostgreSQL instance |
 | Frontend shows "Failed to fetch" | Ensure backend is running on port 8000 |
 | No live price updates | Check WebSocket connection in browser dev tools; verify yfinance connectivity |
-| News not populating | Manual trigger: `curl -X POST http://localhost:8000/api/news/ingest` |
+| News not populating | Set `FINNHUB_API_KEY`; then use the authenticated manual ingestion command in Architecture Notes and inspect `/health` |
 
 ## Known Limitations
 

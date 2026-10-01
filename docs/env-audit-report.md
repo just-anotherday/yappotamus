@@ -59,7 +59,7 @@ Performed a comprehensive audit of all environment variables across the YapVibes
 
 | # | Variable | Used In | Required | Default Value | Status |
 |---|----------|---------|----------|---------------|--------|
-| 1 | `PORT` | `server.js` | No | `3001` | ✅ Configured |
+| 1 | `PORT` | `server.js` | No | `5000` | ✅ Configured |
 | 2 | `OPENAI_API_KEY` | `server.js` | ✅ Yes | — | ✅ Configured |
 | 3 | `OPENAI_MODEL` | `server.js` | No | `gpt-4o-mini` | ✅ Configured |
 | 4 | `ANTHROPIC_API_KEY` | `server.js` | No | — | ✅ Documented |
@@ -178,7 +178,7 @@ NEXT_PUBLIC_SENTRY_DSN=
 ## 8. Local Environment Setup
 
 ### Prerequisites
-- Python 3.11+
+- Python 3.12+
 - Node.js 18+
 - PostgreSQL running locally (or Supabase project)
 - Ollama running locally (optional, for AI features)

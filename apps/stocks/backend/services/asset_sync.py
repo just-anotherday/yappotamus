@@ -65,7 +65,7 @@ async def _get_or_create_asset(session: AsyncSession, ticker: str) -> Optional[A
             exchange=profile_data.get("exchange", "US"),
             is_primary=(existing_by_slug.primary_ticker is None),
         )
-        await session.add(new_at)
+        session.add(new_at)
 
         # If existing had no primary ticker, set this one
         if not existing_by_slug.primary_ticker:
@@ -92,7 +92,7 @@ async def _get_or_create_asset(session: AsyncSession, ticker: str) -> Optional[A
         is_active=True,
     )
 
-    await session.add(asset)
+    session.add(asset)
     await session.flush()  # get asset.id
 
     # Create ticker mapping
@@ -102,7 +102,7 @@ async def _get_or_create_asset(session: AsyncSession, ticker: str) -> Optional[A
         exchange=profile_data.get("exchange", "US"),
         is_primary=True,
     )
-    await session.add(at_record)
+    session.add(at_record)
 
     logger.info("[AssetSync] Created asset %s (%s)", name, ticker_upper)
     return asset

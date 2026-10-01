@@ -17,15 +17,21 @@ npm run dev
 
 The app reads `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from the appropriate Vite environment file.
 
-## Database migration
+## Database setup
 
-Apply `migrations/004_add_project_kinds_and_task_metadata.sql` to the correctly identified Supabase project before using Shopping List or Recipe Collection projects. It adds:
+Projects needs a Supabase project; a plain empty PostgreSQL database does not
+provide the required Auth, Storage, Realtime, and database roles.
 
-- `projects.kind`, defaulting existing rows to `board`
-- `tasks.metadata`, a JSON object used for shopping and recipe fields
-- an index for a user's projects by kind
+For a new Supabase project, follow
+[`migrations/FRESH_DATABASE.md`](migrations/FRESH_DATABASE.md). Start with the
+fresh-only `000` baseline, then apply the documented forward migrations in
+order. The optional reminder-email scheduler has separate extension, Vault,
+function, and provider-secret prerequisites.
 
-The migration does not replace or weaken existing row-level security policies. A rollback script is provided beside it.
+For an existing installation, never apply the fresh baseline. Continue from
+the next unapplied forward migration using that installation's migration
+record. Files containing `rollback` and files under `migrations/tests` are not
+part of the forward install sequence.
 
 ## Validation
 
