@@ -23,7 +23,7 @@
   "author": "just-anotherday",
   "license": "MIT",
   "devDependencies": {
-    "@opennextjs/cloudflare": "^1.20.1",
-    "wrangler": "^4.111.0"
+    "@opennextjs/cloudflare": "^1.20.7",
+    "wrangler": "^4.125.0"
   }
 }

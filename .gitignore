@@ -47,8 +47,9 @@ npm-debug.log*
 # Turbo/Turbopack cache
 .turbo/
 
-# Subdirectory lockfiles (monorepo uses single root package-lock.json)
+# Workspace subdirectory lockfiles (monorepo uses the root package-lock.json)
 apps/**/package-lock.json
+!apps/website/backend/ai-generator-backend/package-lock.json
 packages/**/package-lock.json
 
 # Local generated test and acceptance output
