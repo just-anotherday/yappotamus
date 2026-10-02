@@ -28,6 +28,9 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 | `FINNHUB_API_KEY` | **Yes** | Market data API key |
 | `FINNHUB_REQUESTS_PER_MINUTE` | No | Defaults to and is capped at `45`, reserving 25% below Finnhub Free's 60/minute ceiling. |
 | `INTERNAL_JOB_TOKEN` | **Yes** for scheduled ingestion | Dedicated bearer token accepted only by `POST /internal/jobs/news-ingest`. |
+| `MAINTENANCE_API_ENABLED` | No | Defaults to `false`. Enable only while the authenticated article-intelligence maintenance API is needed. |
+| `MAINTENANCE_API_TOKEN` | **Yes** when maintenance is enabled | Dedicated bearer token for maintenance routes; do not reuse the browser or internal-job token. |
+| `MAINTENANCE_MAX_REQUEST_BYTES` | No | Maximum maintenance request body, enforced while streaming. Defaults to `1048576` (1 MiB). |
 | `NEWS_SCHEDULER_ENABLED` | **Yes** in production | Set `false`; the GitHub workflow is the production scheduler. |
 | `NEWS_OVERLAP_MINUTES` | No | Defaults to `30`; combined with the 15-minute cadence this normally replays 45 minutes. |
 | `NEWS_MAX_BACKFILL_HOURS` | No | Defaults to `72`; bounds recovery after an outage. |
@@ -96,6 +99,29 @@ traffic. Use expand-first changes; perform destructive contract changes only
 in a later release after all running application versions no longer depend on
 the old schema. Never automatically downgrade production after a failed
 application deployment.
+
+### Maintenance Request Body Defense in Depth
+
+The application enforces `MAINTENANCE_MAX_REQUEST_BYTES` while consuming the
+ASGI stream, but the production ingress should reject larger maintenance
+requests before they reach the container as a separate resource-protection
+layer. Configure the proxy or WAF in front of
+`/api/maintenance/article-intelligence/v1/*` to block request bodies larger
+than the same configured value (1 MiB by default), including requests that do
+not supply `Content-Length`. For example, a Cloudflare WAF rule can use
+[`http.request.body.size`](https://developers.cloudflare.com/ruleset-engine/rules-language/fields/reference/http.request.body.size/)
+to evaluate the total byte count, but that field requires an Enterprise plan;
+use another always-on proxy limit when it is unavailable.
+
+This repository does not currently contain a Render Blueprint or a reverse
+proxy configuration with a repository-managed body-size directive. The Render
+web service is also reachable at its public `onrender.com` URL, so a custom
+proxied API hostname does not provide complete protection if callers can bypass
+it and reach that origin directly. Before treating a WAF rule as authoritative,
+either restrict direct-origin access or apply an equivalent limit at a proxy
+that all public traffic must traverse. Keep the application limit enabled even
+after adding the ingress rule, and verify both declared-length and chunked
+requests during deployment testing.
 
 ### Production Release Verification
 

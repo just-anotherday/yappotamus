@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config.database import get_async_session
 from backend.config.settings import settings
-from backend.maintenance.auth import verify_maintenance_token
+from backend.maintenance.auth import require_maintenance_authorization, verify_maintenance_token
 from backend.maintenance.article_intelligence.contracts import ExportSessionCreate, ImportBatchRequest
 from backend.maintenance.article_intelligence.prompts import PromptCompatibilityRegistry
 from backend.maintenance.article_intelligence.services import MaintenanceExportService, MaintenanceImportService
@@ -20,17 +20,32 @@ class MaintenanceSizeLimitedRoute(APIRoute):
         original = super().get_route_handler()
 
         async def limited(request: Request) -> Response:
+            # APIRoute wrappers run before FastAPI resolves router dependencies.
+            # Authenticate here so rejected callers cannot make us read a body;
+            # the dependency retains the same shared check as defense in depth.
+            require_maintenance_authorization(request.headers.get("authorization"))
+
+            max_request_bytes = settings.MAINTENANCE_MAX_REQUEST_BYTES
             content_length = request.headers.get("content-length")
             try:
                 declared_size = int(content_length) if content_length else 0
             except ValueError:
                 raise HTTPException(400, "Invalid Content-Length header") from None
-            if declared_size > settings.MAINTENANCE_MAX_REQUEST_BYTES:
+            if declared_size > max_request_bytes:
                 raise HTTPException(413, "Maintenance request body is too large")
             if request.method in {"POST", "PUT", "PATCH"}:
-                body = await request.body()
-                if len(body) > settings.MAINTENANCE_MAX_REQUEST_BYTES:
-                    raise HTTPException(413, "Maintenance request body is too large")
+                body = bytearray()
+                received = 0
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > max_request_bytes:
+                        raise HTTPException(413, "Maintenance request body is too large")
+                    body.extend(chunk)
+
+                # FastAPI reads the body from this same Request after dependency
+                # resolution. Cache only the accepted, bounded bytes so its
+                # normal JSON and Pydantic parsing remains unchanged.
+                request._body = bytes(body)
             return await original(request)
 
         return limited

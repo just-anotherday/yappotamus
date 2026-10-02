@@ -7,7 +7,8 @@ from fastapi import Header, HTTPException
 from backend.config.settings import settings
 
 
-async def verify_maintenance_token(authorization: str | None = Header(None)) -> None:
+def require_maintenance_authorization(authorization: str | None) -> None:
+    """Apply the maintenance feature and bearer-token checks."""
     if not settings.MAINTENANCE_API_ENABLED:
         raise HTTPException(404, "Maintenance API is disabled")
     if not authorization or not authorization.startswith("Bearer "):
@@ -15,3 +16,7 @@ async def verify_maintenance_token(authorization: str | None = Header(None)) -> 
     token = authorization.removeprefix("Bearer ").strip()
     if not secrets.compare_digest(token, settings.MAINTENANCE_API_TOKEN or ""):
         raise HTTPException(401, "Invalid maintenance credential")
+
+
+async def verify_maintenance_token(authorization: str | None = Header(None)) -> None:
+    require_maintenance_authorization(authorization)
