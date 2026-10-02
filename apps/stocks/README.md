@@ -1,6 +1,6 @@
 # Stock Data Dashboard
 
-A full-stack real-time stock market dashboard built with **FastAPI** + **PostgreSQL** backend and **Next.js** frontend. Features real-time price streaming via WebSockets, persistent watchlists, and automated news ingestion from Yahoo Finance.
+A full-stack stock market dashboard built with a **FastAPI** + **PostgreSQL** backend and **Next.js** frontend. It provides live price updates, persistent personal watchlists, Finnhub news ingestion, and optional AI analysis through Ollama or OpenAI.
 
 ## Tech Stack
 
@@ -8,9 +8,9 @@ A full-stack real-time stock market dashboard built with **FastAPI** + **Postgre
 |-------|-------------|
 | **Backend** | FastAPI, Python 3.12+, SQLAlchemy 2.x (async), asyncpg |
 | **Database** | PostgreSQL (news articles + watchlist persistence) |
-| **Frontend** | Next.js 15, TypeScript, React 19, Tailwind CSS |
+| **Frontend** | Next.js 16, TypeScript, React 19, Tailwind CSS |
 | **Real-time** | WebSockets (yfinance live price streaming) |
-| **External APIs** | yfinance (stock data, company info, news) |
+| **External APIs** | Finnhub and yfinance (quotes, company data, and news) |
 
 ## Features
 
@@ -78,6 +78,9 @@ Stock Data Dashboard/
 - **Python 3.12+** (matches the production Docker image)
 - **Node.js 20+** and **npm**
 - **PostgreSQL 14+** running locally (or accessible via connection string)
+- A private app access token that you choose
+- A Finnhub API key for Finnhub-backed quotes and news
+- Ollama only if you want to use the default local AI provider
 
 ## Setup Instructions
 
@@ -103,11 +106,24 @@ pip install -r requirements.txt
 
 ### 3. Environment Configuration
 
-Create a `.env` file in the project root:
+Copy the tracked example and edit the resulting `.env` file:
+
+```powershell
+Copy-Item .env.example .env
+```
 
 ```env
+# Private password chosen by you; this is not a Finnhub or OpenAI key
+APP_ACCESS_TOKEN=generate_a_long_random_value
+
 # Database
 DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/stock_dashboard
+
+# Your Finnhub account API key
+FINNHUB_API_KEY=replace_with_your_key
+
+# Optional: fetch news every 15 minutes while this backend remains running
+NEWS_SCHEDULER_ENABLED=true
 
 # CORS (comma-separated origins)
 CORS_ORIGINS=http://localhost:3000
@@ -156,7 +172,12 @@ npm run build
 ```
 
 Open **http://localhost:3000** in your browser. The AI worker currently starts
-inside the FastAPI lifespan; there is no separate worker process command.
+inside the FastAPI lifespan; there is no separate worker process command. Enter
+the same `APP_ACCESS_TOKEN` when the frontend asks you to unlock the app.
+
+Search for a ticker and add it to the watchlist to use the app with your own
+stocks. The watchlist is stored in PostgreSQL, subscribes the ticker to live
+updates, and starts an initial background news fetch for that symbol.
 
 ## API Endpoints
 
@@ -176,7 +197,8 @@ inside the FastAPI lifespan; there is no separate worker process command.
 ### News
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/news` | Query news articles (supports filter, sort, pagination) |
+| `GET` | `/news` | Query news articles (supports filter, sort, pagination) |
+| `GET` | `/news/tickers` | List tickers represented in stored news |
 | `POST` | `/api/news/ingest` | Trigger manual news ingestion for default tickers |
 | `POST` | `/api/news/ingest/{ticker}` | Ingest news for a specific ticker |
 
@@ -190,7 +212,7 @@ inside the FastAPI lifespan; there is no separate worker process command.
 - **Database schema** is managed by Alembic (`python -m alembic upgrade head`); startup performs a connectivity check only.
 - **News ingestion** is externally triggered every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly overnight/weekend coverage; the in-process scheduler remains a local-development option.
 - Local automatic ingestion is disabled in `.env.example` to avoid unexpected Finnhub usage. Set `NEWS_SCHEDULER_ENABLED=true` and `FINNHUB_API_KEY` in `apps/stocks/.env`, then keep `python run.py` running. The scheduler runs in the FastAPI process every 15 minutes.
-- For a one-time local run, keep FastAPI running and call `curl -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" http://localhost:8000/api/news/ingest`. Verify it through the response summary, backend `[NewsIngestion]` logs, and the `news_ingestion` object returned by `GET /health`.
+- For a one-time local run, keep FastAPI running and call `curl.exe -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" http://localhost:8000/api/news/ingest`. Verify it through the response summary, backend `[NewsIngestion]` logs, and the `news_ingestion` object returned by `GET /health`.
 - **WebSocket price streaming** uses a background thread to listen to Yahoo Finance WebSockets, then bridges events back to the FastAPI event loop.
 - **Error handling** is centralized via FastAPI exception handlers (`backend/exceptions.py`).
 - **API access is token protected** — use the `APP_ACCESS_TOKEN` value as a Bearer token for direct API calls.
@@ -206,9 +228,9 @@ inside the FastAPI lifespan; there is no separate worker process command.
 
 ## Known Limitations
 
-- No authentication or authorization (local use only)
-- No rate limiting on backend endpoints
-- No unit test suite yet
-- Singleton pattern used for `MarketDataService` (DI refactor pending)
+- Local automatic news ingestion runs only while FastAPI is running and only when `NEWS_SCHEDULER_ENABLED=true`.
+- Ollama analysis requires a separately running Ollama service with the configured model already downloaded.
+- This is a personal/single-user deployment model protected by a shared app token, not a multi-tenant authorization system.
+- `MarketDataService` remains a process singleton.
 
 See **[Technical Debt Report](docs/TECHNICAL_DEBT_REPORT.md)** for a complete audit and remediation roadmap.

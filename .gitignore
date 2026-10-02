@@ -50,3 +50,12 @@ npm-debug.log*
 # Subdirectory lockfiles (monorepo uses single root package-lock.json)
 apps/**/package-lock.json
 packages/**/package-lock.json
+
+# Local generated test and acceptance output
+/.pytest_cache/
+/.pytest_tmp_stocks/
+/artifacts/
+
+# Local Codex worktree checkouts
+/.codex/repair-worktrees/
+/.worktrees/

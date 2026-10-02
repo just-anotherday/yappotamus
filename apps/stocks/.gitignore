@@ -56,3 +56,12 @@ CLAUDE.md
 # ===== Test Artifacts =====
 test_output.txt
 test_raw.txt
+.pytest_cache/
+.pytest_tmp*/
+logs/
+*.backend.pid
+*.client.result.json
+*.client.error.json
+*.market_gate.json
+*.log.stderr
+tmp_amd_prompt_v3_*.json

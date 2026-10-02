@@ -3,7 +3,7 @@
 YapVibes contains three independently runnable applications:
 
 - **Website** — a React/Vite site with an optional live chat companion.
-- **Projects** — a React/Vite/TypeScript app backed directly by Supabase.
+- **Projects / Planner** — a Todo, shopping-list, and recipe organizer backed directly by Supabase.
 - **Stocks** — a Next.js dashboard backed by FastAPI and PostgreSQL.
 
 ## Which app do you want to run?
@@ -11,16 +11,16 @@ YapVibes contains three independently runnable applications:
 | App | Frontend | Backend to run | Database | AI/model |
 | --- | --- | --- | --- | --- |
 | [Website](#run-website) | React + Vite | Express (for live chat) | No application database configured | Hosted OpenAI; no local model runtime |
-| [Projects](#run-projects) | React + Vite + TypeScript | None separately — Supabase is the backend | Supabase PostgreSQL | No local model runtime |
+| [Projects / Planner](#run-projects-planner) | React + Vite + TypeScript | None separately — Supabase is the backend | Supabase PostgreSQL | No local model runtime |
 | [Stocks](#run-stocks) | Next.js | FastAPI | PostgreSQL + Alembic | Ollama by default, or OpenAI when selected |
 
 ### Website
 
 You need Node.js/npm and an OpenAI API key to use live chat. Start two processes for live chat: the Express backend and Vite frontend. You do not need Python, PostgreSQL, or Ollama.
 
-### Projects
+### Projects / Planner
 
-You need Node.js/npm and a Supabase project with its public URL and anon key. Start one process: the Vite frontend. You do not start a separate Express, FastAPI, or local PostgreSQL process.
+You need Node.js/npm and a Supabase project with its public URL and anon key. Start one process: the Vite frontend. The Board project type is the Todo/task manager; Shopping List and Recipe Collection are additional organizer types. You do not start a separate Express, FastAPI, or local PostgreSQL process.
 
 ### Stocks
 
@@ -114,7 +114,7 @@ The rest of the Website works when the Express service is unavailable; the chat 
 
 Build with `npm run build:website` from the root, or `npm run build` from `apps/website/frontend/app`. Run the backend tests with `npm test` from `apps/website/backend/ai-generator-backend`.
 
-## Run Projects
+## Run Projects Planner
 
 **Processes to start:** 1 (Vite frontend).
 
@@ -144,7 +144,13 @@ Projects has no separate application API server to start locally. Its backend be
 
 ### 1. Configure environment
 
-Create `apps/projects/.env.local` from `apps/projects/.env.example` and set:
+Create `apps/projects/.env.local` from the tracked example:
+
+```powershell
+Copy-Item apps/projects/.env.example apps/projects/.env.local
+```
+
+Set these values from **Supabase Dashboard → Project Settings → API**:
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
@@ -169,11 +175,12 @@ npm run dev
 
 No Vite port override is configured, so it uses the default development port, 5173, unless overridden at launch.
 
-### 4. Verify
+### 4. Create an account and verify
 
 - Open the Vite URL shown in the terminal.
-- Confirm the app can authenticate against the configured Supabase project.
-- Confirm data loads for the available project areas: boards, shopping lists, and recipe collections.
+- Use **Sign Up** to create an email/password account. If email confirmation is enabled in Supabase Auth, open the confirmation link before signing in.
+- Create a **Board** project and add a task; this is the Todo/task-manager workflow.
+- Optionally create Shopping List and Recipe Collection projects.
 
 Validate from `apps/projects` with `npm run lint` and `npm run build`, or build from the root with `npm run build:projects`.
 
@@ -230,19 +237,35 @@ For Windows Command Prompt, activate with `.venv\Scripts\activate`. On macOS/Lin
 
 ### 3. Configure environment
 
-Create `apps/stocks/.env` from `apps/stocks/.env.example`.
+Create `apps/stocks/.env` from the tracked example:
+
+```powershell
+Copy-Item apps/stocks/.env.example apps/stocks/.env
+```
 
 Backend variables required at startup:
 
 - `APP_ACCESS_TOKEN` or `APP_ACCESS_TOKENS`
 - `DATABASE_URL`
 
+`APP_ACCESS_TOKEN` is a private password you choose for this app; it is not a provider API key. You can generate one with:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+For Finnhub-backed quotes and news, create your own Finnhub API key and set `FINNHUB_API_KEY`. To keep fetching news every 15 minutes while your local backend is running, set `NEWS_SCHEDULER_ENABLED=true`; the tracked example keeps it off to avoid unexpected API traffic.
+
 AI provider variables:
 
 - Default local provider: `AI_PROVIDER=ollama`, with optional `OLLAMA_BASE_URL` and `OLLAMA_MODEL`
 - Hosted provider: `AI_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_ALLOWED_MODELS` (the selected model must be allow-listed)
 
-Create `apps/stocks/frontend/.env.local` from `apps/stocks/frontend/.env.example`.
+Create `apps/stocks/frontend/.env.local` from its tracked example:
+
+```powershell
+Copy-Item apps/stocks/frontend/.env.example apps/stocks/frontend/.env.local
+```
 
 - `NEXT_PUBLIC_API_BASE` — local backend origin; the code defaults to `http://localhost:8000` outside production
 - `NEXT_PUBLIC_WS_URL` — optional; otherwise derived from the API base as its `/ws` URL
@@ -286,7 +309,7 @@ runs inside FastAPI; no separate worker process is needed.
 For a one-time run while FastAPI is running:
 
 ```powershell
-curl -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" http://localhost:8000/api/news/ingest
+curl.exe -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" http://localhost:8000/api/news/ingest
 ```
 
 The response summarizes the run. You can also check the backend
@@ -323,13 +346,14 @@ No Next.js development port is configured in the repository; use the URL printed
 ### 8. Verify
 
 ```powershell
-curl http://localhost:8000/health/live
-curl http://localhost:8000/health
+curl.exe http://localhost:8000/health/live
+curl.exe http://localhost:8000/health
 ```
 
 - `/health/live` checks the FastAPI process only.
 - `/health` and `/health/ready` check database readiness and return 503 when the database is unavailable.
 - Open the Next.js URL printed in Terminal 2, unlock the UI with the configured access token, then confirm the watchlist and market data load.
+- Search for a ticker and add it to the watchlist to use the dashboard with your own stocks. Adding a ticker also starts a background news fetch for that symbol.
 - Confirm the browser WebSocket connects for live data. Test an AI feature only after configuring its selected provider.
 
 Run `npm run typecheck` and `npm run build` from `apps/stocks/frontend`; the root frontend build command is `npm run build:stocks-frontend`.

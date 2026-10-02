@@ -7,13 +7,12 @@ Development (local):
 Production (Railway/Docker):
     uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
-On Windows, uvicorn uses ProactorEventLoop by default which is incompatible
-with asyncpg. This script forces SelectorEventLoop before starting the server.
+On Windows, explicitly use SelectorEventLoop through Uvicorn's loop factory
+so the same loop is used in development reload workers and production.
 """
 import asyncio
 import os
 import sys
-import selectors
 
 from dotenv import load_dotenv
 
@@ -21,9 +20,10 @@ from dotenv import load_dotenv
 # (like DATABASE_URL) take precedence over values in the local .env file.
 load_dotenv(override=False)
 
-# On Windows, force SelectorEventLoop for asyncpg compatibility
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+def new_selector_event_loop():
+    """Create the Windows loop without the deprecated global policy API."""
+    return asyncio.SelectorEventLoop()
 
 
 def is_production():
@@ -49,5 +49,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         reload=not prod,
+        loop="run:new_selector_event_loop" if sys.platform == "win32" else "auto",
         log_level="info",
     )

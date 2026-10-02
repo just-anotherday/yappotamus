@@ -84,6 +84,10 @@ class HealthLiveResponse(BaseModel):
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan context manager for startup/shutdown."""
 
+    # The daily task owns ingestion/report execution; its HTTP server must
+    # not also consume queued jobs or start independent background schedules.
+    task_managed = os.getenv("STOCKS_TASK_MANAGED_BACKEND") == "1"
+
     # ---- Startup ----
     configure_yfinance_cache()
     set_event_loop(asyncio.get_running_loop())
@@ -141,7 +145,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Production collection is externally triggered. Keep this only as an
     # opt-in local-development convenience so web-process sleep cannot stop news.
-    if settings.NEWS_SCHEDULER_ENABLED:
+    if settings.NEWS_SCHEDULER_ENABLED and not task_managed:
         try:
             async def fetch_tickers():
                 async with async_session_factory() as session:
@@ -154,35 +158,40 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("[Startup] In-process news scheduler disabled; external trigger is authoritative.")
 
-    # Start AI Worker (background job processor)
-    try:
-        app.state.ai_worker = AIWorker(
-            get_session_factory=async_session_factory,
-            poll_interval=settings.AI_WORKER_POLL_INTERVAL_S,
-            max_concurrent=settings.AI_WORKER_MAX_CONCURRENT,
-        )
-        asyncio.create_task(app.state.ai_worker.start())
-        logger.info("[Startup] AI Worker started (background job processor).")
-    except Exception as e:
-        logger.warning("[Startup] Failed to start AI Worker: %s", e)
+    app.state.ai_worker = None
+    if not task_managed:
+        # Start AI Worker (background job processor)
+        try:
+            app.state.ai_worker = AIWorker(
+                get_session_factory=async_session_factory,
+                poll_interval=settings.AI_WORKER_POLL_INTERVAL_S,
+                max_concurrent=settings.AI_WORKER_MAX_CONCURRENT,
+            )
+            asyncio.create_task(app.state.ai_worker.start())
+            logger.info("[Startup] AI Worker started (background job processor).")
+        except Exception as e:
+            logger.warning("[Startup] Failed to start AI Worker: %s", e)
 
-    # Start daily market report scheduler (enqueues once per day at ~4 PM EST)
-    try:
-        app.state._market_report_task = asyncio.create_task(
-            _daily_market_report_loop(async_session_factory)
-        )
-        logger.info("[Startup] Daily market report scheduler started.")
-    except Exception as e:
-        logger.warning("[Startup] Failed to start market report scheduler: %s", e)
+        # Start daily market report scheduler (enqueues once per day at ~4 PM EST)
+        try:
+            app.state._market_report_task = asyncio.create_task(
+                _daily_market_report_loop(async_session_factory)
+            )
+            logger.info("[Startup] Daily market report scheduler started.")
+        except Exception as e:
+            logger.warning("[Startup] Failed to start market report scheduler: %s", e)
 
-    # Start post-market price fetch loop (fetches at 4:01 PM ET on weekdays)
-    try:
-        app.state._post_market_task = asyncio.create_task(
-            _post_market_fetch_loop(async_session_factory)
-        )
-        logger.info("[Startup] Post-market price fetch loop started.")
-    except Exception as e:
-        logger.warning("[Startup] Failed to start post-market fetch loop: %s", e)
+        # Start post-market price fetch loop (fetches at 4:01 PM ET on weekdays)
+        try:
+            app.state._post_market_task = asyncio.create_task(
+                _post_market_fetch_loop(async_session_factory)
+            )
+            logger.info("[Startup] Post-market price fetch loop started.")
+        except Exception as e:
+            logger.warning("[Startup] Failed to start post-market fetch loop: %s", e)
+
+    else:
+        logger.info("[Startup] Task-managed backend: background workers and schedules disabled.")
 
     # ---- Memory diagnostic at startup completion ----
     if settings.MEMORY_DIAGNOSTICS_ENABLED:
@@ -204,7 +213,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("[Shutdown] Failed to stop market data service: %s", e)
 
-    if settings.NEWS_SCHEDULER_ENABLED:
+    if settings.NEWS_SCHEDULER_ENABLED and not task_managed:
         try:
             stop_scheduler()
             logger.info("[Shutdown] News ingestion scheduler stopped.")
