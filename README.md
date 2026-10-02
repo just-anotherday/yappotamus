@@ -24,13 +24,15 @@ You need Node.js/npm and a Supabase project with its public URL and anon key. St
 
 ### Stocks
 
-You need Node.js/npm, Python 3.10+, a reachable PostgreSQL database, and an access token. Start FastAPI and Next.js; run Ollama separately only when using the default local AI provider for AI analysis. Finnhub credentials are recommended for Finnhub-dependent market-data features.
+You need Node.js/npm, Python 3.12+, a reachable PostgreSQL database, and an access token. Start FastAPI and Next.js; run Ollama separately only when using the default local AI provider for AI analysis. Finnhub credentials are recommended for Finnhub-dependent market-data features.
 
 ## Common setup
 
-Install Node.js/npm dependencies from the repository root once:
+Clone the repository, enter it, and install Node.js/npm dependencies once:
 
 ```powershell
+git clone https://github.com/just-anotherday/yappotamus.git YapVibes
+cd YapVibes
 npm install
 ```
 
@@ -67,7 +69,7 @@ The Express server defaults to port 5000, so its matching frontend configuration
 VITE_AI_API_BASE=http://localhost:5000/api/openai
 ```
 
-The committed frontend example uses port 3001. Use that value only after setting the Express backend's `PORT=3001`.
+The frontend and backend examples both use port 5000.
 
 Create `apps/website/backend/ai-generator-backend/.env` from its `.env.example`. Set:
 
@@ -149,7 +151,7 @@ Create `apps/projects/.env.local` from `apps/projects/.env.example` and set:
 
 ### 2. Apply database migrations
 
-Versioned SQL migrations are in `apps/projects/migrations/`, with checks in `apps/projects/migrations/tests/`. Apply the required SQL to the intended Supabase database using that project's database workflow. This repository does not define a root Supabase CLI migration command, so do not infer one from this README.
+For a new Supabase project, follow `apps/projects/migrations/FRESH_DATABASE.md`. It starts with the fresh-only baseline, preserves the existing migration history, and separates the runnable core schema from the optional scheduled-reminder setup. Existing databases must not run the baseline; apply only their next unapplied forward migration. Do not run rollback or test SQL files.
 
 ### 3. Start Projects
 
@@ -186,7 +188,7 @@ Validate from `apps/projects` with `npm run lint` and `npm run build`, or build 
 ### What you need
 
 - Node.js and npm for the Next.js frontend.
-- Python 3.10 or later for FastAPI.
+- Python 3.12 or later for FastAPI, matching the production Docker image.
 - A reachable PostgreSQL database.
 - An access token configured as `APP_ACCESS_TOKEN` or `APP_ACCESS_TOKENS`.
 - `FINNHUB_API_KEY` for Finnhub-dependent features (the backend starts without it, but those features degrade).
@@ -201,7 +203,9 @@ Browser → Next.js frontend → HTTP/WebSocket → FastAPI
                                            └─ Ollama or OpenAI AI provider
 ```
 
-FastAPI also starts its news, market-data, and AI-worker tasks in-process; there is no separate worker command.
+FastAPI starts its market-data and AI-worker tasks in-process. News ingestion
+also runs in-process when `NEWS_SCHEDULER_ENABLED=true`; production uses the
+external GitHub Actions trigger.
 
 ### 1. Install JavaScript dependencies
 
@@ -251,7 +255,7 @@ From `apps/stocks`, with the backend environment configured:
 python -m alembic upgrade head
 ```
 
-This is required before starting FastAPI against a new or outdated database. Alembic configuration is `apps/stocks/alembic.ini`; revisions are in `apps/stocks/alembic/versions/`. Application startup verifies connectivity but does not create or upgrade the schema. SQLAlchemy models represent tables; they are not separate processes.
+This is required before starting FastAPI against a new or outdated database. Alembic configuration is `apps/stocks/alembic.ini`; revisions are in `apps/stocks/alembic/versions/`. Application startup verifies connectivity but does not create or upgrade the schema. SQLAlchemy models represent tables; they are not separate processes. The shared Stocks settings load `apps/stocks/.env` by absolute app path, with existing process variables taking precedence, so Alembic uses the same `DATABASE_URL` as the backend even when invoked from another working directory.
 
 ### 5. Configure AI
 
@@ -271,6 +275,24 @@ If `OLLAMA_MODEL` changes, pull that configured model instead.
 #### Using OpenAI
 
 Set `AI_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_ALLOWED_MODELS` as described above. No local model runtime is required.
+
+### Optional local news ingestion
+
+Automatic ingestion is disabled in `.env.example` to prevent unexpected
+Finnhub traffic. To enable it locally, set `FINNHUB_API_KEY` and
+`NEWS_SCHEDULER_ENABLED=true`, then keep `python run.py` running. The scheduler
+runs inside FastAPI; no separate worker process is needed.
+
+For a one-time run while FastAPI is running:
+
+```powershell
+curl -X POST -H "Authorization: Bearer YOUR_APP_ACCESS_TOKEN" http://localhost:8000/api/news/ingest
+```
+
+The response summarizes the run. You can also check the backend
+`[NewsIngestion]` logs and the `news_ingestion` object returned by `/health`.
+Production uses the GitHub Actions external trigger; local development does not
+need to reproduce that automation.
 
 ### 6. Start FastAPI — Terminal 1
 
@@ -328,7 +350,7 @@ The `packages/*` workspaces currently contain package manifests but no source fi
 
 ### Frontend cannot reach a backend
 
-Confirm the backend is running and the frontend environment variable points to its correct host, port, and endpoint. In particular, Website's committed frontend example uses port 3001 while the Express code default is 5000.
+Confirm the backend is running and the frontend environment variable points to its correct host, port, and endpoint. Website's local examples use `http://localhost:5000/api/openai`.
 
 ### Projects cannot load data
 

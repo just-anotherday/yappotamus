@@ -21,7 +21,7 @@ YapVibes Monorepo
 │   ├── projects/              # React + Vite + TypeScript + Supabase (SPA)
 │   ├── stocks/
 │   │   ├── frontend/          # Next.js 16 (App Router, Static + Dynamic pages)
-│   │   └── backend/           # FastAPI (Python 3.11+) [standalone in root]
+│   │   └── backend/           # FastAPI (Python 3.12+) [standalone in root]
 │   └── website/
 │       ├── frontend/app/      # React + Vite + TypeScript (SPA Landing Page)
 │       └── backend/           # Node.js AI Generator Backend (Express-like JS server)
@@ -68,7 +68,7 @@ yapvibes-stocks-api.onrender.com → Render-hosted stocks backend
 ### Prerequisites
 - Node.js 18+ (recommended 20 LTS)
 - npm 9+ (workspace-aware)
-- Python 3.11+ (for stocks backend)
+- Python 3.12+ (for stocks backend)
 - PostgreSQL 15+ (for stocks backend)
 
 ### From Repository Root
@@ -242,7 +242,7 @@ CNAME    api                     {backend-provider-url}         Auto
 
 | Criteria | Score |
 |----------|-------|
-| Python 3.11+ support | ✓ |
+| Python 3.12+ support | ✓ |
 | PostgreSQL managed DB | ✓ (built-in) |
 | Free tier available | ✓ |
 | Simple deployment | ✓ (Git push → auto-deploy) |

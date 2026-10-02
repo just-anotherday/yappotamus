@@ -15,7 +15,15 @@ import logging
 import os
 import re
 from functools import cached_property
+from pathlib import Path
 from typing import List, Optional
+
+from dotenv import load_dotenv
+
+# Resolve the app-root environment file consistently for the server, Alembic,
+# maintenance scripts, and commands launched from another working directory.
+# Existing process variables retain precedence in deployment and CI.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 from backend.config.polling_settings import polling_settings
 
@@ -264,14 +272,14 @@ class Settings:
 
     @property
     def NEWS_SCHEDULER_ENABLED(self) -> bool:
-        """Keep the in-process collector for local development only by default.
+        """Allow an explicitly enabled in-process collector for local development.
 
         Production scheduling is intentionally external: a web process can be
         suspended or restarted independently of a schedule.
         """
         if self.ENVIRONMENT.lower() == "production":
             return False
-        return os.getenv("NEWS_SCHEDULER_ENABLED", "true").strip().lower() in {
+        return os.getenv("NEWS_SCHEDULER_ENABLED", "false").strip().lower() in {
             "1", "true", "yes"
         }
 
