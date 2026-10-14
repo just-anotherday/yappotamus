@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { fetchCompanyReportHistory } from '@/lib/api';
 import { formatApiTimestamp } from '@/lib/formatters';
@@ -346,6 +347,7 @@ export default function ReportHistoryPage() {
                     </div>
                     {isExpanded && entry.report_data && (
                       <div style={{ padding: '0 20px 20px', borderBottom: '1px solid var(--card-border)' }}>
+                        <ReportPdfButton report={{ ...entry, ticker }} />
                         {renderReportData(entry.report_data)}
                       </div>
                     )}

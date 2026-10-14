@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import type { CachedCompanyReport, KeyRisk } from '@/types/stock';
 import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { fetchCompanyReport, triggerCompanyReportRegeneration } from '@/lib/api';
@@ -133,7 +134,8 @@ export default function IntelligenceDetail() {
           <h1 style={{ fontSize: 32, fontWeight: 800, margin: '0 0 4px', color: 'var(--text-primary)' }}>{ticker}</h1>
           <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: 13 }}>Last updated: {updated} · Model: {report.model_used} · {report.articles_count} articles analyzed</p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <ReportPdfButton report={report} />
           <Link href={`/intelligence/${ticker}/history`} style={{
             padding: '10px 20px',
             background: '#7c4dff',

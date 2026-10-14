@@ -277,6 +277,38 @@ class _FakeOpenAIResponse:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6-luna-2026-05-18"])
+async def test_luna_uses_compatible_parameters_and_preserves_schema(monkeypatch, model):
+    captured = []
+
+    class _CapturingOpenAIClient(_CapturingAsyncClient):
+        async def post(self, url, json, headers):
+            captured.append(json)
+            return _FakeOpenAIResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOWED_MODELS", model)
+    monkeypatch.setattr(
+        "backend.services.ai.openai_provider.httpx.AsyncClient",
+        lambda **kwargs: _CapturingOpenAIClient([], **kwargs),
+    )
+    schema = FinancialAnalysisLLMResponse.model_json_schema()
+    await OpenAIProvider().generate(
+        "system", "user", model=model, temperature=0.2,
+        max_tokens=4096, response_schema=schema, max_attempts=1,
+    )
+
+    assert len(captured) == 1
+    payload = captured[0]
+    assert payload["model"] == model
+    assert payload["reasoning_effort"] == "none"
+    assert payload["temperature"] == 0.2
+    assert payload["max_completion_tokens"] == 4096
+    assert "max_tokens" not in payload
+    assert payload["response_format"]["json_schema"]["schema"] == schema
+
+
+@pytest.mark.asyncio
 async def test_openai_forwards_generic_json_schema_response_format(
     monkeypatch,
 ):

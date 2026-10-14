@@ -1,11 +1,11 @@
 """OpenAI Provider - Production LLM via OpenAI Chat Completions API
 
 Implements BaseAIClient interface using the standard OpenAI /v1/chat/completions endpoint.
-Reuses the same pattern as the website AI generator (gpt-4o-mini default).
+Uses gpt-6-luna by default for stock analysis.
 
 Env vars:
     OPENAI_API_KEY - Required for this provider
-    OPENAI_MODEL   - Model name (default: gpt-4o-mini)
+    OPENAI_MODEL   - Model name (default: gpt-6-luna)
 """
 
 import logging
@@ -75,8 +75,13 @@ class OpenAIProvider(BaseAIClient):
             "messages": messages,
             "temperature": temperature,
         }
+        is_luna = active_model == "gpt-6-luna" or active_model.startswith("gpt-6-luna-")
+        if is_luna:
+            # Preserve the existing non-reasoning workload and sampling controls.
+            # Luna otherwise defaults to medium reasoning, which rejects temperature.
+            payload["reasoning_effort"] = "none"
         if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+            payload["max_completion_tokens" if is_luna else "max_tokens"] = max_tokens
 
         response_schema = kwargs.get("response_schema")
         if response_schema is not None:

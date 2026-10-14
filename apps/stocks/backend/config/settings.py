@@ -233,7 +233,7 @@ class Settings:
 
     @property
     def OPENAI_MODEL(self) -> str:
-        return (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+        return (os.getenv("OPENAI_MODEL") or "gpt-6-luna").strip()
 
     @property
     def OPENAI_ALLOWED_MODELS(self) -> List[str]:
@@ -242,11 +242,11 @@ class Settings:
         Cost control source of truth. Only models in this list can be used,
         even if they exist in the OpenAI API catalog.
 
-        Example: OPENAI_ALLOWED_MODELS=gpt-4o-mini,gpt-4.1-mini
+        Example: OPENAI_ALLOWED_MODELS=gpt-6-luna
         """
         raw = os.getenv("OPENAI_ALLOWED_MODELS", "")
         if not raw:
-            return ["gpt-4o-mini"]
+            return ["gpt-6-luna"]
 
         # Preserve declaration order while removing whitespace and duplicates.
         return list(dict.fromkeys(m.strip() for m in raw.split(",") if m.strip()))

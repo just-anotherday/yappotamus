@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import { useParams, useRouter } from 'next/navigation';
 import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { API_BASE } from '@/lib/serviceUrls';
@@ -385,6 +386,8 @@ export default function ReportDetailPage() {
           className="dark:text-blue-400">
           ← Back
         </button>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <ReportPdfButton report={report} />
         <button onClick={handleDelete} style={{
           background: 'none', border: '1px solid #ef4444', color: '#ef4444',
           padding: '0.375rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.875rem',
@@ -392,6 +395,7 @@ export default function ReportDetailPage() {
         className="dark:border-red-800 dark:text-red-500">
           Delete Report
         </button>
+        </div>
       </div>
 
       <div style={{ marginBottom: '1rem' }}>

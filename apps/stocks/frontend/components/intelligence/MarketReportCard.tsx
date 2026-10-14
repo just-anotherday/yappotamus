@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import { fetchMarketReport } from '@/lib/api';
 import { formatApiTimestamp } from '@/lib/formatters';
 import { formatReportDateTime } from '@/lib/reportPresentation';
@@ -156,6 +157,7 @@ export default function MarketReportCard({ onHover }: MarketReportCardProps) {
       </div>
 
       {/* Footer actions */}
+      <div style={{ marginBottom: 12 }}><ReportPdfButton report={report} /></div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Link href="/analysis/market-history" style={{ fontSize: 13, color: '#ff9800', fontWeight: 600 }}>
           View full report & history →

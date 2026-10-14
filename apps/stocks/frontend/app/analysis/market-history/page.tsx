@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import { fetchMarketReportHistory, fetchMarketReportById, triggerMarketReportRegeneration } from '@/lib/api';
 import { formatApiTimestamp } from '@/lib/formatters';
 import type { MarketReportHistoryResponse } from '@/lib/api';
@@ -159,6 +160,7 @@ export default function MarketReportHistoryPage() {
               </span>
             )}
           </div>
+          <ReportPdfButton report={selectedReport} />
           {selectedReport.report_data && (
             <pre style={{
               background: '#f5f5f5', padding: 16, borderRadius: 8, fontSize: 12,

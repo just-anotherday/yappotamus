@@ -38,8 +38,8 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 | `YFINANCE_CACHE_DIR` | No | Writable yfinance SQLite cache path. Defaults to OS temp; it is an optimization and can remain ephemeral on Render. |
 | `OPENAI_API_KEY` | **Yes** (prod) | OpenAI API key for AI analysis |
 | `AI_PROVIDER` | No | Set to `openai` (default: `ollama`) |
-| `OPENAI_MODEL` | No | Model name (default: `gpt-4o-mini`) |
-| `OPENAI_ALLOWED_MODELS` | **Yes** when OpenAI is used | Must include `OPENAI_MODEL` (for example `gpt-4o-mini`) |
+| `OPENAI_MODEL` | No | Model name (default: `gpt-6-luna`) |
+| `OPENAI_ALLOWED_MODELS` | **Yes** when OpenAI is used | Must include `OPENAI_MODEL` (for example `gpt-6-luna`) |
 | `CORS_ORIGINS` | **Yes** | Include `https://stocks.yapvibes.com` and the Worker preview domain |
 | `AI_STALE_JOB_RECOVERY_ENABLED` | No | Keep `false` until protected queue timestamps are verified |
 | `PORT` | No | Override default port 8000 |
@@ -258,10 +258,23 @@ OLLAMA_MODEL=llama3.2
 ```env
 AI_PROVIDER=openai
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-6-luna
+OPENAI_ALLOWED_MODELS=gpt-6-luna
 ```
 
 No code changes needed to switch providers.
+
+The stock OpenAI adapter uses `reasoning_effort=none` for GPT-6 Luna to preserve
+the existing analysis sampling behavior, and sends output limits as
+`max_completion_tokens`. Restart the backend after changing environment values.
+For an existing deployment, update both model variables in its environment;
+deployment environment values take precedence over the application defaults.
+
+Saved analysis, company intelligence/history, and market reports include a
+**Download PDF** action. Export runs in the browser using the saved report data;
+it does not generate a new analysis or call OpenAI. The PDF includes metadata,
+all stored report sections and source references, and page numbers. Deploy the
+frontend with its `public/fonts` assets so the export fonts can load.
 
 ---
 

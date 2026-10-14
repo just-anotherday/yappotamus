@@ -75,7 +75,7 @@ def test_openai_allowlist_parsing_and_defaults(monkeypatch):
     )
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     settings = Settings()
-    assert settings.OPENAI_MODEL == "gpt-4o-mini"
+    assert settings.OPENAI_MODEL == "gpt-6-luna"
     assert settings.OPENAI_ALLOWED_MODELS == ["gpt-4o-mini", "gpt-4.1-mini"]
 
 
