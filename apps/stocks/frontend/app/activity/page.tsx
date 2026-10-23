@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { fetchPipelineStatus } from '@/lib/api';
 import { timeAgo } from '@/lib/formatters';
@@ -10,9 +10,13 @@ export default function PipelineMonitor() {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const refreshInFlight = useRef(false);
 
   const loadStatus = useCallback(async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    setLoading(true);
     setError(null);
     try {
       const data = await fetchPipelineStatus();
@@ -21,14 +25,18 @@ export default function PipelineMonitor() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch pipeline status');
     } finally {
+      refreshInFlight.current = false;
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadStatus();
+    const initialLoad = setTimeout(() => { void loadStatus(); }, 0);
     const interval = setInterval(loadStatus, 10000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialLoad);
+      clearInterval(interval);
+    };
   }, [loadStatus]);
 
   const formatTime = (d: Date) => d.toLocaleTimeString('en-US', {
@@ -57,44 +65,45 @@ export default function PipelineMonitor() {
   };
 
   const statValueStyle: React.CSSProperties = {
-    fontSize: 32, fontWeight: 800, color: 'var(--text-primary)',
+    fontSize: 30, fontWeight: 550, letterSpacing: '-.04em', color: 'var(--text-primary)',
   };
 
   const subLabelStyle: React.CSSProperties = { fontSize: 12, color: 'var(--text-muted)' };
 
   return (
-    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '40px 20px' }}>
+    <div className="workspace-page">
       {/* Header */}
-      <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, margin: '0 0 8px', color: 'var(--text-primary)' }}>
-          ⚡ Activity Monitor
+      <div className="page-heading">
+        <p className="eyebrow"><span className="accent-line" /> Behind the scenes</p>
+        <h1>
+          Workspace activity.
         </h1>
-        <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: 14 }}>
-          Real-time visibility into data ingestion and processing.
-          Auto-refreshes every 10s. Last update: {formatTime(lastRefresh)}
+        <p>
+          Data ingestion and processing at a glance.
+          Auto-refreshes every 10s. Last update: {lastRefresh ? formatTime(lastRefresh) : 'Not yet updated'}
         </p>
       </div>
 
       {/* Refresh Button */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 24 }}>
         <button
           onClick={loadStatus}
           disabled={loading}
-          style={{
-            padding: '10px 20px', background: '#2196f3',
-            color: '#fff', border: 'none', borderRadius: 8,
-            fontSize: 14, fontWeight: 700,
-            cursor: loading ? 'not-allowed' : 'pointer',
-          }}
+          aria-busy={loading}
+          aria-describedby="activity-refresh-status"
+          className="button-secondary"
         >
-          ↻ Refresh Now
+          {loading ? <><span className="button-spinner" aria-hidden="true" /> Refreshing…</> : '↻ Refresh Now'}
         </button>
+        <span id="activity-refresh-status" role="status" style={subLabelStyle}>
+          {loading ? 'Checking for activity updates…' : error ? 'Refresh failed. Try again.' : lastRefresh ? `Activity updated at ${formatTime(lastRefresh)}` : ''}
+        </span>
       </div>
 
       {/* Error State */}
       {error && (
-        <div style={{ padding: 16, background: '#ffebee', borderRadius: 8, marginBottom: 24, border: '1px solid #ffcdd2' }}>
-          <p style={{ margin: 0, color: '#c62828' }}>{error}</p>
+        <div style={{ padding: 16, background: 'var(--negative-soft)', borderRadius: 8, marginBottom: 24, border: '1px solid var(--negative-border)' }}>
+          <p style={{ margin: 0, color: 'var(--negative)' }}>{error}</p>
         </div>
       )}
 
@@ -116,11 +125,11 @@ export default function PipelineMonitor() {
               <div style={cardStyle}>
                 <div style={statLabelStyle}>Total Articles</div>
                 <div style={statValueStyle}>{(status.news?.total_articles ?? 0).toLocaleString()}</div>
-                <Link href="/news" style={{ fontSize: 12, color: '#2196f3' }}>View Articles →</Link>
+                <Link href="/news" style={{ fontSize: 12, color: 'var(--accent)' }}>View Articles →</Link>
               </div>
               <div style={cardStyle}>
                 <div style={statLabelStyle}>Articles Today</div>
-                <div style={{ ...statValueStyle, color: '#2e7d32' }}>{(status.news?.articles_today ?? 0).toLocaleString()}</div>
+                <div style={{ ...statValueStyle, color: 'var(--positive)' }}>{(status.news?.articles_today ?? 0).toLocaleString()}</div>
                 <div style={subLabelStyle}>Fresh ingestion</div>
               </div>
             </div>
@@ -135,7 +144,7 @@ export default function PipelineMonitor() {
                   {status.news.recent_articles.map((a) => (
                     <div key={a.id} style={{ fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px', borderRadius: 6, background: 'var(--bg-secondary)' }}>
                       <span style={{ fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <strong style={{ color: '#1565c0', marginRight: 8 }}>{a.ticker}</strong>
+                        <strong style={{ color: 'var(--info)', marginRight: 8 }}>{a.ticker}</strong>
                         {a.article_url ? (
                           <a href={a.article_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-primary)', textDecoration: 'none' }}>
                             {a.title}

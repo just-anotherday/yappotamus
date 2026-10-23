@@ -224,9 +224,9 @@ class TestIsValidAccessToken:
             is_valid_access_token("a")  # first token matches
 
         assert len(call_log) == 3
-        assert call_log[0][1] == "a"
-        assert call_log[1][1] == "b"
-        assert call_log[2][1] == "c"
+        assert call_log[0][1] == b"a"
+        assert call_log[1][1] == b"b"
+        assert call_log[2][1] == b"c"
 
 
 # --------------------------------------------------------------------------- #

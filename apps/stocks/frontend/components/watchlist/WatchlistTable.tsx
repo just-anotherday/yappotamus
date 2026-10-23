@@ -4,7 +4,7 @@
 // COMPONENT: WatchlistTable - Compact watchlist table with expandable details
 // ==============================================================================
 
-import React, { useState, useCallback, useMemo, useRef, Fragment, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useRef, Fragment } from 'react';
 import Link from 'next/link';
 import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
@@ -12,7 +12,9 @@ import { CSS } from '@dnd-kit/utilities';
 import { EASTERN_TIME_ZONE, formatShares, riskBadgeClass, recommendationBadgeClass, safePercent, formatExpenseRatio, formatAUM } from '@/lib/formatters';
 import type { WatchlistItem, LiveQuote } from '@/types/stock';
 import TickerTooltip from './TickerTooltip';
+import TickerResearchNotes from '@/components/TickerResearchNotes';
 import { useExtendedHours } from '@/hooks/useExtendedHours';
+import type { WatchlistRefreshResult } from '@/hooks/useWatchlist';
 import {
   canReorderWatchlist,
   formatWatchlistCurrency,
@@ -42,7 +44,7 @@ interface WatchlistTableProps {
   onRemove: (ticker: string) => void;
   watchlistOrder: string[];
   onReorder: (newOrder: string[]) => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<WatchlistRefreshResult>;
   lastRefreshedAt: Date | null;
   isReordering: boolean;
 }
@@ -51,7 +53,7 @@ const SortableRow = React.memo(function SortableRow({ ticker, disabled, children
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: ticker, disabled });
   return (
     <tr ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }}>
-      <td {...attributes} {...listeners} className={`px-3 py-2.5 text-gray-400 select-none text-center ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-grab'}`} aria-label={`Reorder ${ticker}`}>
+      <td {...attributes} {...listeners} className={`px-3 py-2.5 text-muted select-none text-center ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-grab'}`} aria-label={`Reorder ${ticker}`}>
         <span aria-hidden="true">⋮⋮</span>
       </td>
       {children}
@@ -65,19 +67,39 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<WatchlistSort>('custom');
   const [direction, setDirection] = useState<WatchlistDirectionFilter>('all');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFeedback, setRefreshFeedback] = useState<{ error: boolean; message: string } | null>(null);
+  const refreshInFlight = useRef(false);
   const { isExtendedHours: showAfterHours } = useExtendedHours();
 
-  const allExpanded = watchlist.length > 0 && expandedTickers.size === watchlist.length;
-  const reorderEnabled = canReorderWatchlist(sort, search, direction) && !isReordering;
+  const handleRefresh = async () => {
+    if (refreshInFlight.current || loading) return;
+    refreshInFlight.current = true;
+    setRefreshing(true);
+    setRefreshFeedback(null);
+    try {
+      const result = await onRefresh();
+      if (result.status === 'completed') {
+        setRefreshFeedback({ error: false, message: `Refresh complete — ${result.count} ticker${result.count === 1 ? '' : 's'} checked. ${result.partial ? 'Some data is still cached or unavailable.' : 'Values may be unchanged.'}` });
+      } else if (result.status === 'failed') {
+        setRefreshFeedback({ error: true, message: `Refresh failed: ${result.message}. Try again; last-known values are still shown.` });
+      } else {
+        setRefreshFeedback({ error: false, message: 'The watchlist changed during refresh. Refresh again to check the latest list.' });
+      }
+    } catch {
+      setRefreshFeedback({ error: true, message: 'Refresh failed. Try again; last-known values are still shown.' });
+    } finally {
+      refreshInFlight.current = false;
+      setRefreshing(false);
+    }
+  };
 
-  useEffect(() => {
-    const tickers = new Set(watchlist.map(item => item.ticker));
-    setExpandedTickers(prev => new Set([...prev].filter(ticker => tickers.has(ticker))));
-  }, [watchlist]);
+  const allExpanded = watchlist.length > 0 && watchlist.every(item => expandedTickers.has(item.ticker));
+  const reorderEnabled = canReorderWatchlist(sort, search, direction) && !isReordering;
 
   const toggleExpand = (ticker: string) => {
     setExpandedTickers(prev => {
-      const next = new Set(prev);
+      const next = new Set([...prev].filter(value => watchlist.some(item => item.ticker === value)));
       if (next.has(ticker)) {
         next.delete(ticker);
       } else {
@@ -144,24 +166,17 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
   );
 
   return (
-    <div className="w-full px-6 mt-12">
+    <div className="w-full watchlist-section">
       {/* Section Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-green-500 to-emerald-600 shadow-md">
-            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-            </svg>
-          </div>
+      <div className="watchlist-section-header">
           <div>
-            <h2 className="text-2xl font-extrabold text-gray-900 dark:text-white">Tickers</h2>
-            <span className="text-xs text-gray-500 dark:text-slate-400">Watchlist: {watchlist.length} stock{watchlist.length !== 1 ? 's' : ''}</span>
+            <h2>Your watchlist</h2>
+            <p>Your companies, at a glance. Expand a row for a closer look.</p>
           </div>
-        </div>
         {watchlist.length > 0 && (
           <button
             onClick={toggleExpandAll}
-            className="group inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-orange-500 to-orange-600 text-white text-xs font-bold shadow-md hover:from-orange-600 hover:to-orange-700 hover:shadow-lg transition-all duration-300"
+            className="button-secondary group"
           >
             {allExpanded ? (
               <>
@@ -182,7 +197,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
         )}
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3 shadow-sm dark:bg-slate-900">
+      <div className="watchlist-toolbar surface mb-3 flex flex-wrap items-center gap-2 p-3">
         <input aria-label="Search watchlist" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search ticker or company" className="min-w-48 flex-1 rounded-md border px-3 py-2 text-sm dark:bg-slate-800" />
         <select aria-label="Sort watchlist" value={sort} onChange={event => setSort(event.target.value as WatchlistSort)} className="rounded-md border px-3 py-2 text-sm dark:bg-slate-800">
           <option value="custom">Custom order</option><option value="ticker">Ticker</option><option value="change">Price change</option><option value="market-cap">Market size</option>
@@ -190,23 +205,30 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
         <select aria-label="Filter watchlist movers" value={direction} onChange={event => setDirection(event.target.value as WatchlistDirectionFilter)} className="rounded-md border px-3 py-2 text-sm dark:bg-slate-800">
           <option value="all">All</option><option value="gainers">Gainers</option><option value="losers">Losers</option>
         </select>
-        <span className="text-xs text-gray-500">{orderedWatchlist.length} of {watchlist.length}</span>
-        <button type="button" onClick={onRefresh} disabled={loading} className="rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-50">{loading ? 'Refreshing…' : 'Refresh'}</button>
-        <span className="text-xs text-gray-400">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: EASTERN_TIME_ZONE, timeZoneName: 'short' })}` : 'Not refreshed'}</span>
-        {!reorderEnabled && <span className="w-full text-xs text-amber-600">Clear filters and select Custom order to drag.</span>}
+        <span className="text-xs text-muted">{orderedWatchlist.length} of {watchlist.length}</span>
+        <button type="button" onClick={handleRefresh} disabled={loading || refreshing} aria-busy={loading || refreshing} aria-controls="watchlist-refresh-status" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold disabled:cursor-wait disabled:opacity-60">
+          {(loading || refreshing) && <span aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" />}
+          {loading || refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
+        <span className="text-xs text-muted">{lastRefreshedAt ? `Last checked ${lastRefreshedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: EASTERN_TIME_ZONE, timeZoneName: 'short' })}` : 'Not refreshed'}</span>
+        <p id="watchlist-refresh-status" role={refreshFeedback?.error ? 'alert' : 'status'} className={`w-full text-xs ${refreshFeedback?.error ? 'text-negative dark:text-negative' : 'text-positive dark:text-positive'}`}>
+          {refreshing ? 'Checking watchlist data… Last-known values remain visible.' : refreshFeedback?.message}
+        </p>
+        {!reorderEnabled && <span className="w-full text-xs text-warning">Clear filters and select Custom order to drag.</span>}
       </div>
 
-      {loading ? (
+      {loading && watchlist.length > 0 && <p role="status" className="mb-3 text-xs text-warning dark:text-warning">Showing the last loaded watchlist while refreshing.</p>}
+      {loading && watchlist.length === 0 ? (
         /* Skeleton loader: renders a table-shaped skeleton with 4 pulsing rows */
-        <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+        <div className="bg-card rounded-xl shadow-sm border overflow-hidden">
           <table className="w-full text-sm whitespace-nowrap">
-            <thead className="bg-gray-100 border-b">
+            <thead className="bg-surface-muted border-b">
               <tr>
-                <th className="px-2 py-2.5 text-center font-semibold text-gray-700 w-8"></th>
-                <th className="px-2 py-2.5 text-left font-semibold text-gray-700 min-w-0">Ticker / Company</th>
-                <th className="px-2 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Current Price</th>
-                <th className="px-2 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Change %</th>
-                <th className="px-2 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Market Size</th>
+                <th className="px-2 py-2.5 text-center font-semibold text-secondary w-8"></th>
+                <th className="px-2 py-2.5 text-left font-semibold text-secondary min-w-0">Ticker / Company</th>
+                <th className="px-2 py-2.5 text-right font-semibold text-secondary tabular-nums">Current Price</th>
+                <th className="px-2 py-2.5 text-right font-semibold text-secondary tabular-nums">Change %</th>
+                <th className="px-2 py-2.5 text-right font-semibold text-secondary tabular-nums">Market Size</th>
               </tr>
             </thead>
             <tbody>
@@ -216,7 +238,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                   <td className="px-3 py-2.5">
                     <div className="flex flex-col gap-1">
                       <div className="h-4 w-16 bg-gray-200 rounded animate-pulse" />
-                      <div className="h-3 w-32 bg-gray-100 rounded animate-pulse" style={{ animationDelay: '100ms' }} />
+                      <div className="h-3 w-32 bg-surface-muted rounded animate-pulse" style={{ animationDelay: '100ms' }} />
                     </div>
                   </td>
                   <td className="px-3 py-2.5 text-right"><div className="h-4 w-20 bg-gray-200 rounded animate-pulse ml-auto" /></td>
@@ -228,7 +250,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
           </table>
         </div>
       ) : (
-        <div className="w-full overflow-x-auto bg-white rounded-xl shadow-sm border">
+        <div className="watchlist-table-shell w-full overflow-x-auto">
           <DndContext
             sensors={sensors}
             onDragStart={() => { draggedRef.current = true; }}
@@ -240,16 +262,16 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
           >
             <SortableContext items={reorderEnabled ? watchlistOrder : []} strategy={verticalListSortingStrategy} disabled={!reorderEnabled}>
               <table className="w-full text-sm whitespace-nowrap">
-                <thead className="bg-gray-100 border-b">
+                <thead className="bg-surface-muted border-b">
                   <tr>
-                    <th className="px-3 py-2.5 text-center font-semibold text-gray-700 w-8" title="Drag to reorder"></th>
-                    <th className="px-3 py-2.5 text-left font-semibold text-gray-700">Ticker / Company</th>
-                    <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Current Price</th>
-                     <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Change %</th>
+                    <th className="px-3 py-2.5 text-center font-semibold text-secondary w-8" title="Drag to reorder"></th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-secondary">Ticker / Company</th>
+                    <th className="px-3 py-2.5 text-right font-semibold text-secondary tabular-nums">Current Price</th>
+                     <th className="px-3 py-2.5 text-right font-semibold text-secondary tabular-nums">Change %</th>
                      {showAfterHours && (
-                       <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums" title="Extended-hours price (pre-market and after-hours ET)">After Hours</th>
+                       <th className="px-3 py-2.5 text-right font-semibold text-secondary tabular-nums" title="Extended-hours price (pre-market and after-hours ET)">After Hours</th>
                      )}
-                     <th className="px-3 py-2.5 text-right font-semibold text-gray-700 tabular-nums">Market Size</th>
+                     <th className="px-3 py-2.5 text-right font-semibold text-secondary tabular-nums">Market Size</th>
                    </tr>
                  </thead>
                  <tbody>
@@ -271,14 +293,14 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                   <Fragment key={item.ticker}>
                     {/* Main row - wrapped in SortableRow for drag-and-drop */}
                     <SortableRow ticker={item.ticker} disabled={!reorderEnabled}>
-                      <td className="px-3 py-2.5 relative group cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => safeToggleExpand(item.ticker)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); safeToggleExpand(item.ticker); } }} tabIndex={0} role="button" aria-expanded={isExpanded} aria-controls={`${item.ticker}-details`}>
+                      <td className="px-3 py-2.5 relative group cursor-pointer hover:bg-surface-muted transition-colors" onClick={() => safeToggleExpand(item.ticker)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); safeToggleExpand(item.ticker); } }} tabIndex={0} role="button" aria-expanded={isExpanded} aria-controls={`${item.ticker}-details`}>
                         <div className="flex flex-col">
-                          <span className="font-bold text-gray-900 text-sm">{item.ticker}</span>
-                          <span className="text-gray-500 text-xs truncate max-w-[120px]">
+                          <span className="font-bold text-primary text-sm">{item.ticker}</span>
+                          <span className="text-muted text-xs truncate max-w-[120px]">
                             {item.company_name || "Unknown Company"}
                           </span>
                           {dataWarning && (
-                            <span role="status" className="mt-1 max-w-[150px] whitespace-normal text-[10px] font-medium text-amber-700" title={dataWarning}>
+                            <span role="status" className="mt-1 max-w-[150px] whitespace-normal text-[10px] font-medium text-warning" title={dataWarning}>
                               {dataWarning}
                             </span>
                           )}
@@ -286,22 +308,22 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                         <TickerTooltip item={item} />
                       </td>
                       <td className={`px-3 py-2.5 text-right transition-colors duration-1000 ${
-                        displayChangePct != null && displayChangePct > 0 ? 'text-green-600'
-                          : displayChangePct != null && displayChangePct < 0 ? 'text-red-600'
-                          : 'text-gray-900'
+                        displayChangePct != null && displayChangePct > 0 ? 'text-positive'
+                          : displayChangePct != null && displayChangePct < 0 ? 'text-negative'
+                          : 'text-primary'
                       } ${
                         priceFlash[item.ticker] === 'up'
-                          ? 'bg-green-200'
+                          ? 'bg-positive-soft'
                           : priceFlash[item.ticker] === 'down'
-                          ? 'bg-red-200'
+                          ? 'bg-negative-soft'
                           : ''
                       }`} onClick={() => safeToggleExpand(item.ticker)}>
                         {formatWatchlistCurrency(displayPrice)}
                       </td>
                       <td className={`px-3 py-2.5 text-right font-medium ${
-                        displayChangePct != null && displayChangePct > 0 ? 'text-green-600'
-                          : displayChangePct != null && displayChangePct < 0 ? 'text-red-600'
-                          : 'text-gray-500'
+                        displayChangePct != null && displayChangePct > 0 ? 'text-positive'
+                          : displayChangePct != null && displayChangePct < 0 ? 'text-negative'
+                          : 'text-muted'
                       }`} onClick={() => safeToggleExpand(item.ticker)}>
                         {displayChangePct != null ? (displayChangePct > 0 ? '+' : '') + displayChangePct.toFixed(2) + '%' : '—'}
                       </td>
@@ -310,44 +332,45 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                         <td className={`px-3 py-2.5 text-right tabular-nums transition-colors duration-1000 ${
                           item.post_market_price != null && item.post_market_price > 0
                             ? postMarketFlash[item.ticker] === 'up'
-                              ? 'text-green-600 font-medium bg-green-200'
+                              ? 'text-positive font-medium bg-positive-soft'
                               : postMarketFlash[item.ticker] === 'down'
-                                ? 'text-red-600 font-medium bg-red-200'
-                                : 'text-blue-600 font-medium'
-                            : 'text-gray-400'
+                                ? 'text-negative font-medium bg-negative-soft'
+                                : 'text-accent font-medium'
+                            : 'text-muted'
                         }`} onClick={() => safeToggleExpand(item.ticker)}>
                           {item.post_market_price != null && item.post_market_price > 0 
                             ? formatWatchlistCurrency(item.post_market_price)
                             : '\u2014'}
                         </td>
                       )}
-                      <td className="px-3 py-2.5 text-right text-blue-800 dark:text-blue-300" onClick={() => safeToggleExpand(item.ticker)}>
+                      <td className="px-3 py-2.5 text-right text-info dark:text-accent" onClick={() => safeToggleExpand(item.ticker)}>
                         <div className="flex flex-col items-end">
                           <span>{formatMarketSize(item)}</span>
-                          <span className="text-[10px] font-medium text-gray-500 dark:text-slate-400">{getMarketSizeLabel(item)}</span>
+                          <span className="text-[10px] font-medium text-muted dark:text-slate-400">{getMarketSizeLabel(item)}</span>
                         </div>
                       </td>
                     </SortableRow>
 
                     {/* Expanded detail row */}
                     {isExpanded && (
-                      <tr id={`${item.ticker}-details`} key={`${item.ticker}-detail`} className="border-b hover:bg-gray-50 transition-colors">
-                        <td colSpan={watchlistColumnCount(showAfterHours)} className="bg-gray-50 px-6 py-5">
+                      <tr id={`${item.ticker}-details`} key={`${item.ticker}-detail`} className="border-b hover:bg-surface-muted transition-colors">
+                        <td colSpan={watchlistColumnCount(showAfterHours)} className="whitespace-normal bg-surface-muted px-6 py-5">
+                          <TickerResearchNotes ticker={item.ticker} />
                           {/* Max-width container keeps expanded content within table structure */}
                           <div className="w-full">
                             {/* Header Card with description + action bar */}
-                            <div className="mb-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg px-5 py-4 border border-blue-200 flex items-start justify-between gap-4 min-w-0">
+                            <div className="mb-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg px-5 py-4 border border-info-border flex items-start justify-between gap-4 min-w-0">
                               <div className="flex-1 min-w-0 space-y-3 overflow-hidden">
                           {/* Sector & Industry */}
                           {(item.sector || item.industry) && (
                             <div className="flex gap-2 flex-wrap">
                               {item.sector && (
-                                <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">
+                                <span className="px-3 py-1 bg-info-soft text-info rounded-full text-xs font-semibold">
                                   {item.sector}
                                 </span>
                               )}
                               {item.industry && (
-                                <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">
+                                <span className="px-3 py-1 bg-info-soft text-info rounded-full text-xs font-semibold">
                                   {item.industry}
                                 </span>
                               )}
@@ -355,10 +378,10 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                           )}
                           {/* CEO / Exchange / Employees Row */}
                           {(item.ceo_name || item.exchange || item.full_time_employees) && (
-                            <div className="flex items-center gap-3 text-xs text-gray-600 flex-wrap">
+                            <div className="flex items-center gap-3 text-xs text-secondary flex-wrap">
                               {item.ceo_name && (
                                 <span className="flex items-center gap-1.5">
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                                   </svg>
                                   <span className="font-medium">CEO:</span>
@@ -367,7 +390,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               )}
                               {item.exchange && (
                                 <span className="flex items-center gap-1.5">
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m8-14l4 4-4 4m0-4h8" />
                                   </svg>
                                   <span className="font-medium">Exchange:</span>
@@ -376,7 +399,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               )}
                               {item.full_time_employees != null && (
                                 <span className="flex items-center gap-1.5">
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                                   </svg>
                                   <span className="font-medium">Employees:</span>
@@ -387,7 +410,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                           )}
                               {/* Full Description */}
                               {item.long_business_summary && (
-                                <p className="text-gray-600 text-sm leading-relaxed whitespace-pre-line">
+                                <p className="text-secondary text-sm leading-relaxed whitespace-pre-line">
                                   {item.long_business_summary}
                                 </p>
                               )}
@@ -415,7 +438,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                <Link
                                  href={`/news/${item.ticker}`}
                                  onClick={(e) => e.stopPropagation()}
-                                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-600 text-white rounded-md text-xs font-medium hover:bg-blue-700 transition-colors shadow-sm"
+                                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-action text-white rounded-md text-xs font-medium hover:bg-action-hover transition-colors shadow-sm"
                                  title={`View latest news for ${item.ticker}`}
                                >
                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -427,8 +450,8 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                                  onClick={(e) => handleDelete(item.ticker, e)}
                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-300 ${
                                    deletingTicker === item.ticker
-                                     ? 'bg-red-600 text-white scale-95 opacity-0'
-                                     : 'bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 border border-red-200 hover:border-red-300'
+                                     ? 'bg-negative-solid text-white scale-95 opacity-0'
+                                     : 'bg-negative-soft text-negative hover:bg-negative-soft hover:text-negative border border-negative-border hover:border-negative-border'
                                  }`}
                                  title={`Remove ${item.ticker} from watchlist`}
                                >
@@ -444,32 +467,32 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                           <div className="space-y-4 mt-4">
                             {/* Price & Volume Section */}
                             <div>
-                              <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2 flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <h4 className="text-xs font-bold text-secondary uppercase tracking-wider mb-2 flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
                                 </svg>
                                 Price & Ranges
                               </h4>
                               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Open</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(liveOpen)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Open</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistCurrency(liveOpen)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Prev Close</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(livePreviousClose)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Prev Close</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistCurrency(livePreviousClose)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Day Low</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(liveDayLow)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Day Low</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistCurrency(liveDayLow)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Day High</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistCurrency(liveDayHigh)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Day High</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistCurrency(liveDayHigh)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>52W Range</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistRange(item.fifty_two_week_low, item.fifty_two_week_high)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>52W Range</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistRange(item.fifty_two_week_low, item.fifty_two_week_high)}</span>
                                 </div>
                               </div>
                             </div>
@@ -477,45 +500,45 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                             {/* Analyst Targets Section - only for STOCKs with valid targets */}
                             {(item.security_type === 'STOCK' || item.security_type === 'ADR' || !item.security_type) && (item.target_mean_price != null || item.target_median_price != null || item.target_high_price != null || item.target_low_price != null) ? (
                             <div>
-                              <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2 flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <h4 className="text-xs font-bold text-secondary uppercase tracking-wider mb-2 flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-positive" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                                 </svg>
                                 Analyst Price Targets
                                 {item.number_of_analysts != null && item.number_of_analysts > 0 && (
-                                  <span className="text-gray-400 font-normal normal-case ml-1">({item.number_of_analysts} analysts)</span>
+                                  <span className="text-muted font-normal normal-case ml-1">({item.number_of_analysts} analysts)</span>
                                 )}
                               </h4>
                               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-green-200 shadow-sm">
-                                  <span className="text-green-600 font-medium" style={{ fontSize: '10px' }}>▲ High Target</span>
-                                  <span className={`font-semibold ${item.target_high_price != null ? 'text-green-700' : 'text-gray-400'}`}>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-positive-border shadow-sm">
+                                  <span className="text-positive font-medium" style={{ fontSize: '10px' }}>▲ High Target</span>
+                                  <span className={`font-semibold ${item.target_high_price != null ? 'text-positive' : 'text-muted'}`}>
                                     {formatWatchlistCurrency(item.target_high_price)}
                                   </span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-blue-200 shadow-sm">
-                                  <span className="text-blue-600 font-medium" style={{ fontSize: '10px' }}>◆ Mean Target</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-info-border shadow-sm">
+                                  <span className="text-accent font-medium" style={{ fontSize: '10px' }}>◆ Mean Target</span>
                                   <span className={`font-semibold ${
                                     item.target_mean_price != null && displayPrice != null && displayPrice > 0
-                                      ? (item.target_mean_price > displayPrice ? 'text-green-600' : item.target_mean_price < displayPrice ? 'text-red-600' : 'text-gray-500')
-                                      : 'text-gray-400'
+                                      ? (item.target_mean_price > displayPrice ? 'text-positive' : item.target_mean_price < displayPrice ? 'text-negative' : 'text-muted')
+                                      : 'text-muted'
                                   }`}>
                                     {formatWatchlistCurrency(item.target_mean_price)}
                                   </span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-blue-200 shadow-sm">
-                                  <span className="text-blue-600 font-medium" style={{ fontSize: '10px' }}>◆ Median Target</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-info-border shadow-sm">
+                                  <span className="text-accent font-medium" style={{ fontSize: '10px' }}>◆ Median Target</span>
                                   <span className={`font-semibold ${
                                     item.target_median_price != null && displayPrice != null && displayPrice > 0
-                                      ? (item.target_median_price > displayPrice ? 'text-green-600' : item.target_median_price < displayPrice ? 'text-red-600' : 'text-gray-500')
-                                      : 'text-gray-400'
+                                      ? (item.target_median_price > displayPrice ? 'text-positive' : item.target_median_price < displayPrice ? 'text-negative' : 'text-muted')
+                                      : 'text-muted'
                                   }`}>
                                     {formatWatchlistCurrency(item.target_median_price)}
                                   </span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-red-200 shadow-sm">
-                                  <span className="text-red-600 font-medium" style={{ fontSize: '10px' }}>▼ Low Target</span>
-                                  <span className={`font-semibold ${item.target_low_price != null ? 'text-red-700' : 'text-gray-400'}`}>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-negative-border shadow-sm">
+                                  <span className="text-negative font-medium" style={{ fontSize: '10px' }}>▼ Low Target</span>
+                                  <span className={`font-semibold ${item.target_low_price != null ? 'text-negative' : 'text-muted'}`}>
                                     {formatWatchlistCurrency(item.target_low_price)}
                                   </span>
                                 </div>
@@ -526,28 +549,28 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                             {/* Share Structure Section - only for STOCKs with meaningful data */}
                             {(item.security_type === 'STOCK' || item.security_type === 'ADR' || !item.security_type) && (
                             <div>
-                              <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2 flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <h4 className="text-xs font-bold text-secondary uppercase tracking-wider mb-2 flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
                                 </svg>
                                 Share Structure & Ownership
                               </h4>
                               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Shares Outstanding</span>
-                                  <span className="font-semibold text-gray-900">{formatShares(item.shares_outstanding)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Shares Outstanding</span>
+                                  <span className="font-semibold text-primary">{formatShares(item.shares_outstanding)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Float Shares</span>
-                                  <span className="font-semibold text-gray-900">{formatShares(item.float_shares)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Float Shares</span>
+                                  <span className="font-semibold text-primary">{formatShares(item.float_shares)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Insider Ownership</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistPercent(item.insider_percent)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Insider Ownership</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistPercent(item.insider_percent)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Institution Ownership</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistPercent(item.institution_percent)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Institution Ownership</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistPercent(item.institution_percent)}</span>
                                 </div>
                               </div>
                             </div>
@@ -556,7 +579,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                             {/* ETF-Specific Data Section - only for ETFs */}
                             {item.security_type === 'ETF' && item.etf_data && (
                             <div>
-                              <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                              <h4 className="text-xs font-bold text-secondary uppercase tracking-wider mb-2 flex items-center gap-2">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-cyan-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m8-14l4 4-4 4m0-4h8" />
                                 </svg>
@@ -564,57 +587,57 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               </h4>
                               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                                 {item.etf_data.fund_family && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Fund Family</span>
-                                    <span className="font-semibold text-gray-900 truncate">{item.etf_data.fund_family}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Fund Family</span>
+                                    <span className="font-semibold text-primary truncate">{item.etf_data.fund_family}</span>
                                   </div>
                                 )}
                                 {item.etf_data.expense_ratio != null && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Expense Ratio</span>
-                                    <span className="font-semibold text-gray-900">{formatExpenseRatio(item.etf_data.expense_ratio)}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Expense Ratio</span>
+                                    <span className="font-semibold text-primary">{formatExpenseRatio(item.etf_data.expense_ratio)}</span>
                                   </div>
                                 )}
                                 {item.etf_data.net_assets != null && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Net Assets (AUM)</span>
-                                    <span className="font-semibold text-gray-900">{formatAUM(item.etf_data.net_assets)}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Net Assets (AUM)</span>
+                                    <span className="font-semibold text-primary">{formatAUM(item.etf_data.net_assets)}</span>
                                   </div>
                                 )}
                                 {item.etf_data.inception_date && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Inception Date</span>
-                                    <span className="font-semibold text-gray-900">{item.etf_data.inception_date}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Inception Date</span>
+                                    <span className="font-semibold text-primary">{item.etf_data.inception_date}</span>
                                   </div>
                                 )}
                                 {item.etf_data.dividend_yield != null && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Dividend Yield</span>
-                                    <span className="font-semibold text-gray-900">{safePercent(item.etf_data.dividend_yield)}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Dividend Yield</span>
+                                    <span className="font-semibold text-primary">{safePercent(item.etf_data.dividend_yield)}</span>
                                   </div>
                                 )}
                                 {item.etf_data.distribution_frequency && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Distribution Freq</span>
-                                    <span className="font-semibold text-gray-900">{item.etf_data.distribution_frequency}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Distribution Freq</span>
+                                    <span className="font-semibold text-primary">{item.etf_data.distribution_frequency}</span>
                                   </div>
                                 )}
                                 {item.etf_data.index_tracked && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Index Tracked</span>
-                                    <span className="font-semibold text-gray-900 truncate">{item.etf_data.index_tracked}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Index Tracked</span>
+                                    <span className="font-semibold text-primary truncate">{item.etf_data.index_tracked}</span>
                                   </div>
                                 )}
                                 {item.etf_data.category && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Fund Category</span>
-                                    <span className="font-semibold text-gray-900">{item.etf_data.category}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Fund Category</span>
+                                    <span className="font-semibold text-primary">{item.etf_data.category}</span>
                                   </div>
                                 )}
                                 {item.etf_data.holdings_count != null && (
-                                  <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
-                                    <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Holdings Count</span>
-                                    <span className="font-semibold text-gray-900">{item.etf_data.holdings_count}</span>
+                                  <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-cyan-200 shadow-sm">
+                                    <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Holdings Count</span>
+                                    <span className="font-semibold text-primary">{item.etf_data.holdings_count}</span>
                                   </div>
                                 )}
                               </div>
@@ -622,12 +645,12 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               {/* Top Holdings sub-section */}
                               {item.etf_data.top_holdings && item.etf_data.top_holdings.length > 0 && (
                                 <div className="mt-3">
-                                  <h5 className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2">Top Holdings</h5>
+                                  <h5 className="text-xs font-bold text-secondary uppercase tracking-wider mb-2">Top Holdings</h5>
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                                     {item.etf_data.top_holdings.map((h, idx) => (
-                                      <div key={idx} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-gray-200 shadow-sm">
-                                        <span className="text-gray-800 font-medium truncate">{h.name || h.ticker || `#${idx + 1}`}</span>
-                                        <span className="text-gray-500 ml-2 shrink-0">{safePercent(h.weight)}</span>
+                                      <div key={idx} className="flex items-center justify-between bg-card rounded-lg px-3 py-2 border border-divider shadow-sm">
+                                        <span className="text-primary font-medium truncate">{h.name || h.ticker || `#${idx + 1}`}</span>
+                                        <span className="text-muted ml-2 shrink-0">{safePercent(h.weight)}</span>
                                       </div>
                                     ))}
                                   </div>
@@ -637,12 +660,12 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                               {/* Sector Allocation sub-section */}
                               {item.etf_data.sector_allocation && item.etf_data.sector_allocation.length > 0 && (
                                 <div className="mt-3">
-                                  <h5 className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2">Sector Allocation</h5>
+                                  <h5 className="text-xs font-bold text-secondary uppercase tracking-wider mb-2">Sector Allocation</h5>
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                                     {item.etf_data.sector_allocation.map((s, idx) => (
-                                      <div key={idx} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-gray-200 shadow-sm">
-                                        <span className="text-gray-800 font-medium">{s.sector}</span>
-                                        <span className="text-gray-500 ml-2 shrink-0">{safePercent(s.weight)}</span>
+                                      <div key={idx} className="flex items-center justify-between bg-card rounded-lg px-3 py-2 border border-divider shadow-sm">
+                                        <span className="text-primary font-medium">{s.sector}</span>
+                                        <span className="text-muted ml-2 shrink-0">{safePercent(s.weight)}</span>
                                       </div>
                                     ))}
                                   </div>
@@ -653,24 +676,24 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
 
                             {/* Risk Profile Section - show for all types */}
                             <div>
-                              <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2 flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <h4 className="text-xs font-bold text-secondary uppercase tracking-wider mb-2 flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-warning" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                                 </svg>
                                 Risk Profile
                               </h4>
                               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Beta</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistNumber(item.beta)}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Beta</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistNumber(item.beta)}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Short % of Float</span>
-                                  <span className="font-semibold text-gray-900">{formatWatchlistPercent(item.short_percent_of_float, item.security_type === 'ETF')}</span>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Short % of Float</span>
+                                  <span className="font-semibold text-primary">{formatWatchlistPercent(item.short_percent_of_float, item.security_type === 'ETF')}</span>
                                 </div>
-                                <div className="flex flex-col bg-white rounded-lg px-3 py-2.5 border border-gray-200 shadow-sm">
-                                  <span className="text-gray-500 font-medium" style={{ fontSize: '10px' }}>Overall Risk</span>
-                                  <span className={`font-semibold ${item.overall_risk != null ? riskBadgeClass(item.overall_risk).split(' ').pop() : 'text-gray-500'}`}>
+                                <div className="flex flex-col bg-card rounded-lg px-3 py-2.5 border border-divider shadow-sm">
+                                  <span className="text-muted font-medium" style={{ fontSize: '10px' }}>Overall Risk</span>
+                                  <span className={`font-semibold ${item.overall_risk != null ? riskBadgeClass(item.overall_risk).split(' ').pop() : 'text-muted'}`}>
                                     {item.overall_risk != null ? `${formatWatchlistNumber(item.overall_risk, 1)} / 10` : '—'}
                                   </span>
                                 </div>
@@ -679,9 +702,9 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
                           </div>
 
                           {/* Risk Formula Note */}
-                          <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                            <p className="text-xs text-amber-800 font-medium flex items-start gap-1.5">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <div className="mt-3 p-3 bg-warning-soft border border-warning-border rounded-lg">
+                            <p className="text-xs text-warning font-medium flex items-start gap-1.5">
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0 mt-0.5 text-warning" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z" />
                               </svg>
                               <span>Risk score formula: 10 × (0.25·β<sub>n</sub> + 0.25·ShortFloat<sub>n</sub> + 0.25·DebtEq<sub>n</sub> + 0.25·Volatility<sub>n</sub>). Each component normalized to [0,1] and capped. This is a heuristic composite score — not a predictive or investment-grade risk model.</span>

@@ -1,8 +1,11 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 const nextConfig: NextConfig = {
   // Production optimizations
   reactStrictMode: true,
+  // Include hoisted workspace packages in standalone output so OpenNext can patch them.
+  outputFileTracingRoot: path.join(__dirname, "../../.."),
 
   // Security headers for production
   async headers() {
@@ -21,6 +24,14 @@ const nextConfig: NextConfig = {
           {
             key: 'Referrer-Policy',
             value: 'strict-origin-when-cross-origin',
+          },
+          {
+            key: 'Content-Security-Policy',
+            value: "base-uri 'self'; object-src 'none'; frame-ancestors 'none'",
+          },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=()',
           },
         ],
       },

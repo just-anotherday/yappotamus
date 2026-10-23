@@ -1,29 +1,29 @@
 'use client';
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import StockCard from '@/components/stock/StockCard';
+import HomeNews from './HomeNews';
 import WatchlistTable from '@/components/watchlist/WatchlistTable';
 import ErrorBanner from '@/components/ui/ErrorBanner';
 import SuccessBanner from '@/components/ui/SuccessBanner';
 import { useLivePrices } from '@/hooks/useLivePrices';
 import { useWatchlist } from '@/hooks/useWatchlist';
-import { useNews } from '@/hooks/useNews';
 import { fetchStock } from '@/lib/api';
-import { getOffset, computeTotalPages, pageSizeForPage } from '@/lib/pagination';
-import ArticleCard from '@/components/news/ArticleCard';
-import type { StockData, NewsArticle } from '@/types/stock';
+import type { StockData } from '@/types/stock';
+import { getWatchlistChange } from '@/lib/watchlistPresentation';
+import AppIcon from '@/components/ui/AppIcon';
 
-const NEWS_FETCH_LIMIT = 50;
-const FIRST_PAGE_SIZE = 5;
-const SUBSEQUENT_PAGE_SIZE = 9;
+
+const StockCard = dynamic(() => import('@/components/stock/StockCard'), {
+  loading: () => <p role="status" className="py-4 text-sm">Loading stock details…</p>,
+});
 
 export default function HomeClient() {
   const [ticker, setTicker] = useState('');
   const [stockData, setStockData] = useState<StockData | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
 
   const { livePrices, priceFlash } = useLivePrices();
   const {
@@ -41,13 +41,6 @@ export default function HomeClient() {
     lastRefreshedAt,
     loadWatchlist,
   } = useWatchlist();
-
-  const { articles, loading: newsLoading, error: newsError, refetch } = useNews(undefined, NEWS_FETCH_LIMIT);
-
-  const totalPages = computeTotalPages(articles.length, FIRST_PAGE_SIZE, SUBSEQUENT_PAGE_SIZE);
-  const startIdx = getOffset(page, FIRST_PAGE_SIZE, SUBSEQUENT_PAGE_SIZE);
-  const pageSize = pageSizeForPage(page, FIRST_PAGE_SIZE, SUBSEQUENT_PAGE_SIZE);
-  const pageArticles = articles.slice(startIdx, startIdx + pageSize);
 
   const handleChangeTicker = (value: string) => {
     setTicker(value);
@@ -72,140 +65,47 @@ export default function HomeClient() {
     }
   };
 
+  const changes = watchlist.map(item => getWatchlistChange(item, livePrices[item.ticker]));
+  const rising = changes.filter(change => change != null && change > 0).length;
+  const falling = changes.filter(change => change != null && change < 0).length;
+
   return (
-    <div className="max-w-7xl mx-auto px-4 w-full mt-8">
+    <div className="workspace-page">
 
-      {/* ============================================================ */}
-      {/* 1. LATEST MARKET NEWS (first section)                        */}
-      {/* ============================================================ */}
-      <div className="mb-10 bg-gradient-to-br from-orange-50 to-amber-50 dark:from-slate-800 dark:to-slate-900 rounded-2xl p-6 border-l-4 border-orange-500 shadow-sm">
-        <div className="flex items-center gap-3 mb-5">
-          <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-amber-500 shadow-md">
-            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m-6 14l4-4m0 0l4 4m-4-4v12" />
-            </svg>
+      <section aria-labelledby="watchlist-briefing" className="page-heading overview-heading">
+          <div>
+            <p className="eyebrow"><span className="accent-line" /> The overview</p>
+            <h1 id="watchlist-briefing">Your research desk.</h1>
+            <p>Follow your companies. Find the stories. See the bigger picture.</p>
           </div>
-          <h2 className="text-2xl font-extrabold text-gray-900 dark:text-white">
-            Latest Market News
-          </h2>
-        </div>
+          <Link href="/analysis/reports" className="button-secondary">Explore your research <AppIcon name="arrow" width={15} height={15} /></Link>
+      </section>
 
-        {newsLoading ? (
-          <div className="flex items-center gap-3 text-gray-500 dark:text-slate-400">
-            <div className="w-6 h-6 border-2 border-blue-400 dark:border-indigo-400 border-t-blue-600 dark:border-t-indigo-600 rounded-full animate-spin"></div>
-            <span className="text-sm">Loading latest news...</span>
-          </div>
-        ) : newsError ? (
-          <div className="rounded-xl border border-red-200 bg-red-50 dark:border-red-900/70 dark:bg-red-950/30 p-5 text-center">
-            <p className="text-sm font-medium text-red-700 dark:text-red-300">Unable to load market news.</p>
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{newsError}</p>
-            <button
-              onClick={refetch}
-              className="mt-3 px-4 py-2 text-sm font-medium rounded-lg border border-red-300 bg-white text-red-700 hover:bg-red-50 dark:border-red-800 dark:bg-slate-800 dark:text-red-300 dark:hover:bg-slate-700 transition-colors"
-            >
-              Try Again
-            </button>
-          </div>
-        ) : pageArticles.length > 0 ? (
-          <>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mb-6">
-              {pageArticles.map((article: NewsArticle) => (
-                <ArticleCard key={article.id} article={article} />
-              ))}
-            </div>
-
-            {/* Pagination with First/Last buttons */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-center gap-2">
-                <button
-                  onClick={() => setPage(1)}
-                  disabled={page === 1}
-                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  &laquo; First
-                </button>
-                <button
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  &lsaquo; Prev
-                </button>
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setPage(p)}
-                    className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                      p === page
-                        ? 'bg-blue-600 dark:bg-indigo-600 text-white border-blue-600 dark:border-indigo-600'
-                        : 'border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    {p}
-                  </button>
-                ))}
-                <button
-                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  Next &rsaquo;
-                </button>
-                <button
-                  onClick={() => setPage(totalPages)}
-                  disabled={page === totalPages}
-                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  Last &raquo;
-                </button>
-
-                {/* Article count + View all articles link */}
-                <span className="ml-4 text-xs text-gray-500 dark:text-slate-400">
-                  {startIdx + 1}-{Math.min(startIdx + pageSize, articles.length)} of {articles.length} articles
-                </span>
-                <Link
-                  href="/news"
-                  className="text-blue-600 dark:text-indigo-400 hover:text-blue-700 dark:hover:text-indigo-300 font-semibold text-sm flex items-center gap-1 hover:underline transition-colors"
-                >
-                  View all articles
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
-                </Link>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="text-center py-8 text-gray-500 dark:text-slate-400">
-            <p className="text-sm">No news articles yet. News updates every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly off-hours coverage.</p>
-            <button
-              onClick={refetch}
-              className="mt-3 px-4 py-2 text-sm font-medium rounded-lg border bg-white dark:bg-slate-800 hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
-            >
-              Refresh
-            </button>
-          </div>
-        )}
+      <div className="surface overview-summary" aria-live="polite" aria-busy={watchlistLoading}>
+        <div className="overview-stat"><div><p className="overview-stat-label">Companies tracked</p><p className="overview-stat-value">{watchlistLoading ? '—' : watchlist.length}</p></div><span className="stat-icon"><AppIcon name="dashboard" /></span></div>
+        <div className="overview-stat"><div><p className="overview-stat-label">Moving up</p><p className="overview-stat-value">{watchlistLoading ? '—' : rising}</p></div><span className="stat-icon positive"><AppIcon name="chart" /></span></div>
+        <div className="overview-stat"><div><p className="overview-stat-label">Moving down</p><p className="overview-stat-value">{watchlistLoading ? '—' : falling}</p></div><span className="stat-icon negative"><AppIcon name="chart" style={{ transform: 'scaleY(-1)' }} /></span></div>
       </div>
+      <p className="overview-caption">Based on available price changes in your watchlist. Companies without change data are excluded.</p>
 
-      {/* ============================================================ */}
-      {/* 2. TICKER SEARCH (second section)                            */}
-      {/* ============================================================ */}
-      <form onSubmit={handleSearch} className="flex gap-2 mb-5">
+      <form onSubmit={handleSearch} className="ticker-search">
+        <div><AppIcon name="search" width={17} height={17} />
         <input
           type="text"
+          aria-label="Look up a ticker"
           value={ticker}
           onChange={(e) => handleChangeTicker(e.target.value)}
-          placeholder="TICKER"
-          className="w-[10ch] px-2 py-1.5 border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-white rounded-md text-sm font-mono placeholder-gray-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-indigo-500 focus:border-transparent shadow-sm"
+          placeholder="Look up a company ticker…"
         />
+        </div>
         <button
           type="submit"
-          disabled={loading}
-          className="px-4 py-1.5 bg-blue-600 dark:bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 dark:hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+          disabled={loading || !ticker.trim()}
+          className="button-primary disabled:opacity-50"
         >
-          {loading ? '...' : 'Search'}
+          {loading ? 'Searching…' : 'Look up'}
         </button>
+        <span className="ticker-search-hint">A closer look starts with a ticker.</span>
       </form>
 
       {/* Search error message */}
@@ -227,10 +127,7 @@ export default function HomeClient() {
       {/* Success message */}
       {successMessage && <SuccessBanner message={successMessage} />}
 
-      {/* ============================================================ */}
-      {/* 3. WATCHLIST TABLE (last section)                            */}
-      {/* ============================================================ */}
-      <div className="w-full overflow-visible pb-16">
+      <div className="mb-10 w-full overflow-visible">
         <WatchlistTable
           watchlist={watchlist}
           livePrices={livePrices}
@@ -245,6 +142,7 @@ export default function HomeClient() {
           isReordering={isReordering}
         />
       </div>
+      <HomeNews />
     </div>
   );
 }

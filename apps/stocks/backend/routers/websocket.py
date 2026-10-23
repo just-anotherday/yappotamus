@@ -1,9 +1,9 @@
 import base64
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
-from backend.auth import is_valid_access_token
+from backend.auth import verify_user_access_token
 from backend.services.market_data_service import MarketDataService
 
 logger = logging.getLogger(__name__)
@@ -26,8 +26,11 @@ async def websocket_endpoint(websocket: WebSocket):
             token = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8")
         except (ValueError, UnicodeDecodeError):
             token = ""
-    if not is_valid_access_token(token):
-        await websocket.close(code=4401, reason="Unauthorized")
+    try:
+        await verify_user_access_token(token)
+    except HTTPException as exc:
+        code = 4403 if exc.status_code == 403 else (1013 if exc.status_code == 503 else 4401)
+        await websocket.close(code=code, reason="Authentication unavailable" if code == 1013 else "Unauthorized")
         return
 
     requested_channel = websocket.query_params.get("channel", "").strip().lower()

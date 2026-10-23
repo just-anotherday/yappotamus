@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import { fetchMarketReportHistory, fetchMarketReportById, triggerMarketReportRegeneration } from '@/lib/api';
 import { formatApiTimestamp } from '@/lib/formatters';
 import type { MarketReportHistoryResponse } from '@/lib/api';
@@ -19,23 +20,24 @@ export default function MarketReportHistoryPage() {
 
   const LIMIT = 20;
 
-  const loadReports = async (pageNum: number) => {
+  const loadReports = useCallback(async (pageNum: number, signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchMarketReportHistory(pageNum, LIMIT);
-      setReports(res.items);
-      setTotal(res.total);
+      const res = await fetchMarketReportHistory(pageNum, LIMIT, signal);
+      if (!signal?.aborted) { setReports(res.items); setTotal(res.total); }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load market report history');
+      if (!signal?.aborted) setError(err instanceof Error ? err.message : 'Failed to load market report history');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadReports(page);
-  }, [page]);
+    const controller = new AbortController();
+    const timer = setTimeout(() => { void loadReports(page, controller.signal); }, 0);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [page, loadReports]);
 
   const handleViewReport = async (id: number) => {
     setDetailLoading(true);
@@ -64,24 +66,24 @@ export default function MarketReportHistoryPage() {
 
   const sentimentColor = (sentiment: string) => {
     const s = sentiment.toLowerCase();
-    if (s.includes('very bullish')) return '#4caf50';
+    if (s.includes('very bullish')) return '#166b52';
     if (s.includes('bullish')) return '#8bc34a';
-    if (s.includes('neutral')) return '#ff9800';
+    if (s.includes('neutral')) return '#805d17';
     if (s.includes('bearish')) return '#ff5722';
-    if (s.includes('very bearish')) return '#f44336';
-    return '#9e9e9e';
+    if (s.includes('very bearish')) return '#b1364e';
+    return 'var(--text-muted)';
   };
 
   const totalPages = Math.ceil(total / LIMIT);
 
   return (
-    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '40px 20px' }}>
+    <div className="workspace-page">
       {/* Header */}
       <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, margin: '0 0 8px', color: '#1a1a2e' }}>
+        <h1 style={{ fontSize: 28, fontWeight: 800, margin: '0 0 8px', color: 'var(--text-primary)' }}>
           📊 Daily Market Report History
         </h1>
-        <p style={{ color: '#6b7280', margin: 0, fontSize: 14 }}>
+        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: 14 }}>
           Archive of AI-generated daily market summaries. Generated at 9:00 AM ET each trading day.
         </p>
       </div>
@@ -93,7 +95,7 @@ export default function MarketReportHistoryPage() {
           disabled={regenerating || loading}
           style={{
             padding: '10px 20px',
-            background: regenerating ? '#9e9e9e' : '#ff9800',
+            background: regenerating ? 'var(--text-muted)' : '#805d17',
             color: '#fff',
             border: 'none',
             borderRadius: 8,
@@ -104,7 +106,7 @@ export default function MarketReportHistoryPage() {
         >
           {regenerating ? '⏳ Generating...' : '🔄 Generate New Report'}
         </button>
-        <Link href="/intelligence" style={{ marginLeft: 'auto', fontSize: 13, color: '#2196f3', textDecoration: 'none' }}>
+        <Link href="/intelligence" style={{ marginLeft: 'auto', fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}>
           ← Back to Intelligence Dashboard
         </Link>
       </div>
@@ -112,8 +114,8 @@ export default function MarketReportHistoryPage() {
       {/* Error */}
       {error && (
         <div style={{
-          padding: 16, marginBottom: 20, background: '#ffebee', borderRadius: 8,
-          border: '1px solid #ef9a9a', color: '#c62828', fontSize: 14,
+          padding: 16, marginBottom: 20, background: 'var(--negative-soft)', borderRadius: 8,
+          border: '1px solid #ef9a9a', color: 'var(--negative)', fontSize: 14,
         }}>
           {error}
         </div>
@@ -122,22 +124,22 @@ export default function MarketReportHistoryPage() {
       {/* Selected Report Detail Modal */}
       {selectedReport && (
         <div style={{
-          marginBottom: 24, padding: 24, background: '#fff', borderRadius: 12,
-          border: '1px solid #e0e0e0', boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+          marginBottom: 24, padding: 24, background: 'var(--card-bg)', borderRadius: 12,
+          border: '1px solid var(--card-border)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
             <div>
               <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700 }}>
                 Market Report #{selectedReport.id}
               </h2>
-              <span style={{ fontSize: 12, color: '#9e9e9e' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                 {selectedReport.report_date ? formatApiTimestamp(selectedReport.report_date, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : 'Date unknown'}
                 {' • '}Model: {selectedReport.model_used || 'N/A'}
               </span>
             </div>
             <button
               onClick={() => setSelectedReport(null)}
-              style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9e9e9e' }}
+              style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: 'var(--text-muted)' }}
             >
               ✕
             </button>
@@ -150,7 +152,7 @@ export default function MarketReportHistoryPage() {
             }}>
               {selectedReport.overall_sentiment}
             </span>
-            <span style={{ padding: '4px 12px', borderRadius: 16, fontSize: 12, fontWeight: 700, background: '#e3f2fd', color: '#1565c0' }}>
+            <span style={{ padding: '4px 12px', borderRadius: 16, fontSize: 12, fontWeight: 700, background: 'var(--info-soft)', color: 'var(--info)' }}>
               Risk: {selectedReport.risk_level}
             </span>
             {selectedReport.confidence_score != null && (
@@ -159,9 +161,10 @@ export default function MarketReportHistoryPage() {
               </span>
             )}
           </div>
+          <ReportPdfButton report={selectedReport} />
           {selectedReport.report_data && (
             <pre style={{
-              background: '#f5f5f5', padding: 16, borderRadius: 8, fontSize: 12,
+              background: 'var(--section-bg)', padding: 16, borderRadius: 8, fontSize: 12,
               overflow: 'auto', maxHeight: 400, whiteSpace: 'pre-wrap',
             }}>
               {JSON.stringify(selectedReport.report_data, null, 2)}
@@ -172,7 +175,7 @@ export default function MarketReportHistoryPage() {
 
       {/* Loading */}
       {loading && reports.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 80, color: '#9e9e9e' }}>
+        <div style={{ textAlign: 'center', padding: 80, color: 'var(--text-muted)' }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>🔄</div>
           <p>Loading report history...</p>
         </div>
@@ -180,7 +183,7 @@ export default function MarketReportHistoryPage() {
 
       {/* Empty State */}
       {!loading && reports.length === 0 && !error && (
-        <div style={{ textAlign: 'center', padding: 80, color: '#9e9e9e' }}>
+        <div style={{ textAlign: 'center', padding: 80, color: 'var(--text-muted)' }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>📭</div>
           <p>No market reports found. Generate one to get started.</p>
         </div>
@@ -188,24 +191,24 @@ export default function MarketReportHistoryPage() {
 
       {/* Report Table */}
       {reports.length > 0 && (
-        <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e0e0e0', overflow: 'hidden' }}>
+        <div style={{ background: 'var(--card-bg)', borderRadius: 12, border: '1px solid var(--card-border)', overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
             <thead>
-              <tr style={{ background: '#f5f5f5' }}>
-                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: '#424242' }}>ID</th>
-                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: '#424242' }}>Date</th>
-                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: '#424242' }}>Sentiment</th>
-                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: '#424242' }}>Risk</th>
-                <th style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700, color: '#424242' }}>Confidence</th>
-                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: '#424242' }}>Model</th>
-                <th style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700, color: '#424242' }}>Actions</th>
+              <tr style={{ background: 'var(--section-bg)' }}>
+                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: 'var(--text-secondary)' }}>ID</th>
+                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: 'var(--text-secondary)' }}>Date</th>
+                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: 'var(--text-secondary)' }}>Sentiment</th>
+                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: 'var(--text-secondary)' }}>Risk</th>
+                <th style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700, color: 'var(--text-secondary)' }}>Confidence</th>
+                <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: 'var(--text-secondary)' }}>Model</th>
+                <th style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700, color: 'var(--text-secondary)' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {reports.map((r) => (
                 <tr key={r.id} style={{ borderTop: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '12px 16px', color: '#757575' }}>#{r.id}</td>
-                  <td style={{ padding: '12px 16px', color: '#424242' }}>
+                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>#{r.id}</td>
+                  <td style={{ padding: '12px 16px', color: 'var(--text-secondary)' }}>
                     {r.report_date ? formatApiTimestamp(r.report_date, { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
                   </td>
                   <td style={{ padding: '12px 16px' }}>
@@ -217,17 +220,17 @@ export default function MarketReportHistoryPage() {
                       {r.overall_sentiment}
                     </span>
                   </td>
-                  <td style={{ padding: '12px 16px', color: '#424242' }}>{r.risk_level}</td>
-                  <td style={{ padding: '12px 16px', textAlign: 'center', color: '#424242' }}>
+                  <td style={{ padding: '12px 16px', color: 'var(--text-secondary)' }}>{r.risk_level}</td>
+                  <td style={{ padding: '12px 16px', textAlign: 'center', color: 'var(--text-secondary)' }}>
                     {r.confidence_score != null ? `${(r.confidence_score * 100).toFixed(0)}%` : 'N/A'}
                   </td>
-                  <td style={{ padding: '12px 16px', color: '#757575', fontSize: 12 }}>{r.model_used || 'N/A'}</td>
+                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: 12 }}>{r.model_used || 'N/A'}</td>
                   <td style={{ padding: '12px 16px', textAlign: 'center' }}>
                     <button
                       onClick={() => handleViewReport(r.id)}
                       disabled={detailLoading}
                       style={{
-                        padding: '5px 12px', background: '#e3f2fd', color: '#1565c0',
+                        padding: '5px 12px', background: 'var(--info-soft)', color: 'var(--info)',
                         border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600,
                         cursor: detailLoading ? 'not-allowed' : 'pointer',
                       }}
@@ -249,25 +252,25 @@ export default function MarketReportHistoryPage() {
             onClick={() => setPage(Math.max(1, page - 1))}
             disabled={page === 1}
             style={{
-              padding: '8px 16px', borderRadius: 8, border: '1px solid #e0e0e0',
-              background: page === 1 ? '#f5f5f5' : '#fff',
-              color: page === 1 ? '#bdbdbd' : '#424242',
+              padding: '8px 16px', borderRadius: 8, border: '1px solid var(--card-border)',
+              background: page === 1 ? 'var(--section-bg)' : '#fff',
+              color: page === 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
               cursor: page === 1 ? 'not-allowed' : 'pointer',
               fontWeight: 600, fontSize: 13,
             }}
           >
             ← Prev
           </button>
-          <span style={{ padding: '8px 16px', fontSize: 13, color: '#757575', display: 'flex', alignItems: 'center' }}>
+          <span style={{ padding: '8px 16px', fontSize: 13, color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
             Page {page} of {totalPages} ({total} reports)
           </span>
           <button
             onClick={() => setPage(Math.min(totalPages, page + 1))}
             disabled={page >= totalPages}
             style={{
-              padding: '8px 16px', borderRadius: 8, border: '1px solid #e0e0e0',
-              background: page >= totalPages ? '#f5f5f5' : '#fff',
-              color: page >= totalPages ? '#bdbdbd' : '#424242',
+              padding: '8px 16px', borderRadius: 8, border: '1px solid var(--card-border)',
+              background: page >= totalPages ? 'var(--section-bg)' : '#fff',
+              color: page >= totalPages ? 'var(--text-muted)' : 'var(--text-secondary)',
               cursor: page >= totalPages ? 'not-allowed' : 'pointer',
               fontWeight: 600, fontSize: 13,
             }}

@@ -17,12 +17,14 @@ from backend.lib.timestamps import utc_isoformat
 from backend.models.report_schemas import (
     AnalysisReportDetail,
     ReportPaginationResponse,
+    ReportCompanyOption,
 )
 from backend.services.report_service import (
     delete_report,
     get_latest_for_ticker,
     get_report_by_id,
     list_reports,
+    list_report_companies,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,20 @@ async def reports_list(
         limit=limit,
         has_more=has_more,
     )
+
+
+@router.get("/coverage")
+async def reports_coverage(session: AsyncSession = Depends(get_async_session)):
+    from backend.services.report_coverage_service import get_report_coverage
+    return await get_report_coverage(session)
+
+
+@router.get("/companies", response_model=list[ReportCompanyOption])
+async def reports_companies(
+    session: AsyncSession = Depends(get_async_session),
+):
+    """List companies with saved reports and their total report counts."""
+    return await list_report_companies(session)
 
 
 @router.get("/latest/{ticker}", response_model=AnalysisReportDetail)

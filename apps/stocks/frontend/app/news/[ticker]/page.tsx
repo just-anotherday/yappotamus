@@ -54,16 +54,16 @@ export default function TickerNewsPage() {
       <div className="max-w-6xl mx-auto px-4 py-12">
 
         {/* Breadcrumb */}
-        <nav className="flex items-center gap-2 text-sm text-gray-600 mb-4">
-          <Link href="/" className="hover:text-blue-600 transition-colors">
+        <nav className="flex items-center gap-2 text-sm text-secondary mb-4">
+          <Link href="/" className="hover:text-accent transition-colors">
             Dashboard
           </Link>
           <span>›</span>
-          <Link href="/news" className="hover:text-blue-600 transition-colors">
+          <Link href="/news" className="hover:text-accent transition-colors">
             All News
           </Link>
           <span>›</span>
-          <span className="font-semibold text-gray-900">{ticker}</span>
+          <span className="font-semibold text-primary">{ticker}</span>
         </nav>
 
         {/* ============================ */}
@@ -77,7 +77,7 @@ export default function TickerNewsPage() {
         <div className="flex flex-wrap gap-4 mb-6">
           <Link
             href="/news"
-            className="flex-1 min-w-[200px] px-6 py-4 rounded-xl border-2 border-blue-300 bg-blue-50 text-lg font-semibold text-blue-700 shadow-sm hover:bg-blue-100 hover:border-blue-400 transition-all duration-200 flex items-center justify-center gap-2 dark:border-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300 dark:hover:bg-indigo-800"
+            className="flex-1 min-w-[200px] px-6 py-4 rounded-xl border-2 border-info-border bg-info-soft text-lg font-semibold text-info shadow-sm hover:bg-info-soft hover:border-info-border transition-all duration-200 flex items-center justify-center gap-2 dark:border-info-border dark:bg-info-soft/30 dark:text-accent dark:hover:bg-action-hover"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 11a2 2 0 01-2-2V7m2 10a2 2 0 002-2V9a2 2 0 00-2-2h-4" />
@@ -86,7 +86,7 @@ export default function TickerNewsPage() {
           </Link>
           <Link
             href="/"
-            className="flex-1 min-w-[200px] px-6 py-4 rounded-xl border-2 border-green-300 bg-green-50 text-lg font-semibold text-green-700 shadow-sm hover:bg-green-100 hover:border-green-400 transition-all duration-200 flex items-center justify-center gap-2 dark:border-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-800"
+            className="flex-1 min-w-[200px] px-6 py-4 rounded-xl border-2 border-positive-border bg-positive-soft text-lg font-semibold text-positive shadow-sm hover:bg-positive-soft hover:border-positive-border transition-all duration-200 flex items-center justify-center gap-2 dark:border-positive-border dark:bg-positive-soft/30 dark:text-positive dark:hover:bg-positive-solid"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -101,7 +101,7 @@ export default function TickerNewsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             {total > 0 && (
-              <p className="text-sm text-gray-500 dark:text-slate-400">
+              <p className="text-sm text-muted dark:text-slate-400">
                 Showing {offset + 1}-{Math.min(offset + articles.length, total)} of {total} article{total !== 1 ? 's' : ''}
               </p>
             )}
@@ -112,7 +112,7 @@ export default function TickerNewsPage() {
             <select
               value={ticker}
               onChange={(e) => handleTickerSelect(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-indigo-500"
+              className="px-3 py-2 rounded-lg border border-divider bg-card text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-accent dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-accent"
             >
               {allTickers.map(t => (
                 <option key={t} value={t}>{t}</option>
@@ -124,23 +124,23 @@ export default function TickerNewsPage() {
         {/* Loading State */}
         {loading && !articles.length && (
           <div className="flex flex-col items-center justify-center py-20">
-            <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4 dark:border-indigo-400 dark:border-t-indigo-600"></div>
-            <p className="text-gray-500 dark:text-slate-400 text-sm">Loading articles...</p>
+            <div className="w-10 h-10 border-4 border-info-border border-t-blue-600 rounded-full animate-spin mb-4 dark:border-info-border dark:border-t-indigo-600"></div>
+            <p className="text-muted dark:text-slate-400 text-sm">Loading articles...</p>
           </div>
         )}
 
         {/* Error State */}
         {!loading && error && (
           <div className="flex flex-col items-center justify-center py-20">
-            <div className="w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center mb-4">
-              <svg className="w-8 h-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <div className="w-16 h-16 rounded-full bg-negative-soft dark:bg-negative-soft/30 flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-negative" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <p className="text-red-600 dark:text-red-400 text-sm mb-3">{error}</p>
+            <p className="text-negative dark:text-negative text-sm mb-3">{error}</p>
             <button
               onClick={() => refetch()}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 dark:bg-indigo-600 dark:hover:bg-indigo-700 transition-colors"
+              className="px-4 py-2 rounded-lg bg-action text-white text-sm hover:bg-action-hover dark:bg-action dark:hover:bg-action-hover transition-colors"
             >
               Retry
             </button>
@@ -150,13 +150,13 @@ export default function TickerNewsPage() {
         {/* Empty State */}
         {!loading && !error && articles.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20">
-            <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-slate-700 flex items-center justify-center mb-4">
-              <svg className="w-8 h-8 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <div className="w-16 h-16 rounded-full bg-surface-muted dark:bg-slate-700 flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 11a2 2 0 01-2-2V7m2 10a2 2 0 002-2V9a2 2 0 00-2-2h-4" />
               </svg>
             </div>
-            <p className="text-gray-500 dark:text-slate-400 text-sm mb-3">No news articles for {ticker}.</p>
-            <p className="text-xs text-gray-400 dark:text-slate-500">News updates every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly off-hours coverage.</p>
+            <p className="text-muted dark:text-slate-400 text-sm mb-3">No news articles for {ticker}.</p>
+            <p className="text-xs text-muted dark:text-slate-500">News updates every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly off-hours coverage.</p>
           </div>
         )}
 
@@ -185,8 +185,8 @@ export default function TickerNewsPage() {
                   disabled={page <= 1}
                   className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                     page <= 1
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
-                      : 'bg-white text-gray-700 hover:bg-blue-50 hover:border-blue-300 border-gray-300 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-indigo-900 dark:hover:border-indigo-500 dark:border-slate-600'
+                      ? 'bg-surface-muted text-muted cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
+                      : 'bg-card text-secondary hover:bg-info-soft hover:border-info-border border-divider dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-info-soft dark:hover:border-info-border dark:border-slate-600'
                   }`}
                 >
                   ← Prev
@@ -203,8 +203,8 @@ export default function TickerNewsPage() {
                       onClick={() => setPage(p)}
                       className={`w-10 h-10 rounded-lg text-sm font-medium transition-colors ${
                         p === page
-                          ? 'bg-blue-600 text-white dark:bg-indigo-600'
-                          : 'bg-white border border-gray-300 text-gray-700 hover:bg-blue-50 dark:bg-slate-800 dark:border-slate-600 dark:text-gray-100 dark:hover:bg-indigo-900'
+                          ? 'bg-action text-white dark:bg-action'
+                          : 'bg-card border border-divider text-secondary hover:bg-info-soft dark:bg-slate-800 dark:border-slate-600 dark:text-gray-100 dark:hover:bg-info-soft'
                       }`}
                     >
                       {p}
@@ -217,8 +217,8 @@ export default function TickerNewsPage() {
                   disabled={page >= totalPages}
                   className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                     page >= totalPages
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
-                      : 'bg-white text-gray-700 hover:bg-blue-50 hover:border-blue-300 border-gray-300 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-indigo-900 dark:hover:border-indigo-500 dark:border-slate-600'
+                      ? 'bg-surface-muted text-muted cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
+                      : 'bg-card text-secondary hover:bg-info-soft hover:border-info-border border-divider dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-info-soft dark:hover:border-info-border dark:border-slate-600'
                   }`}
                 >
                   Next →

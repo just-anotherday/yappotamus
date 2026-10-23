@@ -139,3 +139,11 @@ test('unauthorized closure invalidates auth without reconnecting', () => {
   assert.equal(h.unauthorized(), 1);
   assert.equal(h.timers.length, 0);
 });
+
+test('a forbidden account stops reconnecting and relocks the app', () => {
+  const h = harness();
+  h.connection.start();
+  h.sockets[0].disconnect(4403);
+  assert.equal(h.unauthorized(), 1);
+  assert.equal(h.timers.length, 0);
+});

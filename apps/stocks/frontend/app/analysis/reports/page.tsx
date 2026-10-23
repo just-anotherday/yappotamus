@@ -1,29 +1,32 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { API_BASE } from '@/lib/serviceUrls';
 import { apiFetch } from '@/lib/apiFetch';
 import { requireOk } from '@/lib/apiError';
-import type { ReportSummary, ReportPaginationResponse, OllamaConfigStatus } from '@/types/stock';
-import { useAnalysisStatus } from '@/hooks/useAnalysisStatus';
-import ArticleSelectionMeter from '@/components/ArticleSelectionMeter';
-import { easternDayLabel, formatApiTimestamp } from '@/lib/formatters';
+import type { ReportSummary, ReportPaginationResponse } from '@/types/stock';
+import ReportCoverageDashboard from '@/components/ReportCoverageDashboard';
 import {
   formatArticlesCited,
   formatArticlesSupplied,
   formatReportDateTime,
   getPromptBadge,
 } from '@/lib/reportPresentation';
-import {
-  PROMPT_VERSION_OPTIONS,
-  promptVersionRequestFields,
-  type PromptVersion,
-} from '@/lib/promptVersionSelector';
+import dynamic from 'next/dynamic';
+
+const ReportGenerator = dynamic(() => import('@/components/ReportGenerator'), {
+  loading: () => <p role="status" className="py-4 text-sm">Loading report generator…</p>,
+});
+
+interface ReportCompanyOption {
+  ticker: string;
+  company_name: string;
+  report_count: number;
+}
 
 export default function ReportsPage() {
   const router = useRouter();
-  const { setAnalyzing, clearAnalyzing } = useAnalysisStatus();
 
   // ---- Saved reports state ----
   const [reports, setReports] = useState<ReportSummary[]>([]);
@@ -40,72 +43,38 @@ export default function ReportsPage() {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
+  const [reportCompanies, setReportCompanies] = useState<ReportCompanyOption[]>([]);
+  const [companyFilterError, setCompanyFilterError] = useState(false);
+  const [watchlistCompanyNames, setWatchlistCompanyNames] = useState<Record<string, string>>({});
+  const companyOptions = useMemo(() => reportCompanies.map(company => ({
+    ...company,
+    company_name: company.company_name === company.ticker
+      ? watchlistCompanyNames[company.ticker] || company.ticker
+      : company.company_name,
+  })).sort((a, b) => a.company_name.localeCompare(b.company_name)), [reportCompanies, watchlistCompanyNames]);
 
-  // ---- Generate new analysis state ----
-  const [config, setConfig] = useState<OllamaConfigStatus | null>(null);
-  const [providers, setProviders] = useState<any[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<string>('ollama');
-  const [selectedModel, setSelectedModel] = useState<string>('');
-  const [selectedPromptVersion, setSelectedPromptVersion] = useState<PromptVersion>('2.0');
-  const [selectedTicker, setSelectedTicker] = useState<string>('');
-  const [watchlistTickers, setWatchlistTickers] = useState<string[]>([]);
-  const [generating, setGenerating] = useState(false);
-  const [genError, setGenError] = useState<string | null>(null);
-
-   // ---- Article picker state ----
-   const [availableArticles, setAvailableArticles] = useState<any[]>([]);
-   const [selectedArticleIds, setSelectedArticleIds] = useState<number[]>([]);
-   const [daysBack, setDaysBack] = useState(3);
-   const [maxArticles, setMaxArticles] = useState(50);
-   const [loadingArticles, setLoadingArticles] = useState(false);
-   const [articleSearch, setArticleSearch] = useState('');
-   const [articleGroupByDate, setArticleGroupByDate] = useState(true);
-   const [articleGroupingNow, setArticleGroupingNow] = useState(0);
-
-  // ---- Fetch Ollama config + providers + watchlist tickers on mount ----
-  useEffect(() => {
-    apiFetch(`${API_BASE}/api/analysis/config`)
-      .then(res => res.json())
-      .then(data => {
-        setConfig(data);
-      })
-      .catch(() => setConfig(null));
-
-    // Fetch available providers and models
-    apiFetch(`${API_BASE}/api/analysis/providers`)
-      .then(res => res.json())
-      .then(data => {
-        setProviders(data.providers || []);
-        // Auto-select first available provider with models, prefer online over offline
-        if (data.providers && data.providers.length > 0) {
-          // Prefer an available provider; fallback to any provider as last resort
-          const availableList = data.providers.filter((p: any) => p.available);
-          const pool = availableList.length > 0 ? availableList : data.providers;
-          const chosen = pool.find((p: any) => p.models?.length > 0) || pool[0];
-          if (chosen) {
-            setSelectedProvider(chosen.id);
-            if (chosen.models && chosen.models.length > 0) {
-              setSelectedModel(chosen.models[0].name || chosen.models[0]);
-            }
-          } else {
-            setSelectedModel('llama3.2');
-          }
-        } else {
-          setSelectedModel('llama3.2');
-        }
-      })
-      .catch(() => setProviders([]));
-
-    // Fetch watchlist tickers from backend
-    apiFetch(`${API_BASE}/api/watchlist`)
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setWatchlistTickers(data.map((item: any) => item.ticker || item.symbol));
-        }
-      })
-      .catch(() => setWatchlistTickers([]));
+  const fetchReportCompanies = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await apiFetch(`${API_BASE}/api/analysis/reports/companies`, { signal });
+      await requireOk(res, 'Failed to fetch report companies');
+      const companies: ReportCompanyOption[] = await res.json();
+      if (signal?.aborted) return;
+      setReportCompanies(companies);
+      setCompanyFilterError(false);
+    } catch {
+      if (!signal?.aborted) setCompanyFilterError(true);
+    }
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => { void fetchReportCompanies(controller.signal); }, 0);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [fetchReportCompanies]);
+
+  const [showGenerator, setShowGenerator] = useState(false);
+  const [generatorLoaded, setGeneratorLoaded] = useState(false);
+  const [coverageRevision, setCoverageRevision] = useState(0);
 
   // ---- Debounce cleanup on unmount ----
   useEffect(() => {
@@ -134,131 +103,36 @@ export default function ReportsPage() {
       const res = await apiFetch(`${API_BASE}/api/analysis/reports/?${params}`, { signal: controller.signal });
       await requireOk(res, 'Failed to fetch reports');
       const data: ReportPaginationResponse = await res.json();
+      if (controller.signal.aborted) return;
       setReports(data.items);
       setTotal(data.total);
       setHasMore(data.has_more);
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
+    } catch (e) {
+      if (!controller.signal.aborted) {
         console.error('[Reports] Fetch error:', e);
-        setFetchError(e.message || 'Failed to load reports');
+        setFetchError(e instanceof Error ? e.message : 'Failed to load reports');
       }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, []);
 
   // ---- Debounce ticker filter: wait 400ms after last keystroke, then fetch ----
   useEffect(() => {
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    const normalized = tickerFilter.trim().toUpperCase();
+    if (normalized === debouncedFilter) return;
     debounceTimerRef.current = setTimeout(() => {
-      setDebouncedFilter(tickerFilter);
+      setDebouncedFilter(normalized);
+      setPage(1);
     }, 400);
-  }, [tickerFilter]);
+  }, [tickerFilter, debouncedFilter]);
 
   // ---- Fetch when debounced filter, page, or sort changes ----
   useEffect(() => {
-    doFetch(page, limit, sort, debouncedFilter);
+    const timer = setTimeout(() => { void doFetch(page, limit, sort, debouncedFilter); }, 0);
+    return () => { clearTimeout(timer); abortControllerRef.current?.abort(); };
   }, [page, limit, sort, debouncedFilter, doFetch]);
-
-  // ---- Fetch available articles when ticker/daysBack changes ----
-  useEffect(() => {
-    if (!selectedTicker) {
-      setAvailableArticles([]);
-      setSelectedArticleIds([]);
-      setArticleGroupingNow(0);
-      return;
-    }
-    const controller = new AbortController();
-    (async () => {
-      setLoadingArticles(true);
-      try {
-        const res = await apiFetch(
-          `${API_BASE}/api/analysis/articles/${selectedTicker.toUpperCase()}?days_back=${daysBack}`,
-          { signal: controller.signal }
-        );
-        await requireOk(res, 'Failed to fetch articles');
-        const data = await res.json();
-        setAvailableArticles(data.articles || []);
-        setArticleGroupingNow(Date.now());
-        // Auto-select up to the current max by default
-        const ids = (data.articles || []).slice(0, maxArticles).map((a: any) => a.id);
-        setSelectedArticleIds(ids);
-      } catch (e: any) {
-        if (e.name !== 'AbortError') {
-          console.error('[Articles] Fetch error:', e);
-        }
-      } finally {
-        setLoadingArticles(false);
-      }
-    })();
-    return () => controller.abort();
-    // maxArticles intentionally omitted: it only seeds the initial auto-select
-    // on ticker/day-range change, and shouldn't wipe a manual selection when
-    // the user nudges the gauge's max afterward.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTicker, daysBack]);
-
-  // ---- Article selection helpers ----
-  const toggleArticle = (id: number) => {
-    setSelectedArticleIds(prev => {
-      if (prev.includes(id)) return prev.filter(x => x !== id);
-      if (prev.length >= maxArticles) return prev;
-      return [...prev, id];
-    });
-  };
-
-  const selectAllArticles = () => {
-    setSelectedArticleIds(availableArticles.slice(0, maxArticles).map((a: any) => a.id));
-  };
-
-  const clearAllArticles = () => {
-    setSelectedArticleIds([]);
-  };
-
-  // ---- Generate analysis handler (updated to use selected articles) ----
-  const handleGenerateAnalysis = async () => {
-    if (!selectedTicker) {
-      setGenError('Please select a ticker from your watchlist');
-      return;
-    }
-    if (!selectedModel) {
-      setGenError('Please select a model first');
-      return;
-    }
-
-    setGenerating(true);
-    setGenError(null);
-
-    try {
-      setAnalyzing(selectedTicker.toUpperCase());
-      const response = await apiFetch(`${API_BASE}/api/analysis/analyze_ticker`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ticker: selectedTicker.toUpperCase(),
-            max_articles: maxArticles,
-            days_back: daysBack,
-            model: selectedModel,
-            provider: selectedProvider,
-            ...promptVersionRequestFields(
-              selectedPromptVersion,
-            ),
-            article_ids: selectedArticleIds.length > 0 ? selectedArticleIds : undefined,
-          }),
-      });
-
-      await requireOk(response, 'Analysis failed');
-
-      // Analysis generated — refresh reports list so the new report appears at #1
-      setPage(1);
-      doFetch(1, limit, sort, tickerFilter);
-    } catch (e: any) {
-      setGenError(e.message || 'Unknown error');
-    } finally {
-      setGenerating(false);
-      clearAnalyzing();
-    }
-  };
 
   // ---- Delete handler (re-fetches to trigger re-numbering) ----
   const handleDeleteReport = async (reportId: number) => {
@@ -268,434 +142,106 @@ export default function ReportsPage() {
       await requireOk(res, 'Failed to delete report');
       // Re-fetch reports to trigger numbering recalculation
       await doFetch(page, limit, sort, tickerFilter);
+      fetchReportCompanies();
+      setCoverageRevision(value => value + 1);
     } catch (e) {
       console.error(e);
       alert('Could not delete report');
     }
   };
 
+  const applyCompanyFilter = (ticker: string) => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    setTickerFilter(ticker);
+    setDebouncedFilter(ticker);
+    setPage(1);
+  };
+
   const resetFilters = () => {
-    setTickerFilter('');
+    applyCompanyFilter('');
     setSort('newest');
     setPage(1);
   };
 
   const getSentimentColor = (sentiment: string) => {
     switch (sentiment) {
-      case 'Very Bullish': return '#10b981';
-      case 'Bullish': return '#34d399';
-      case 'Neutral': return '#f59e0b';
-      case 'Bearish': return '#f87171';
-      case 'Very Bearish': return '#ef4444';
-      default: return '#6b7280';
+      case 'Very Bullish': return '#166b52';
+      case 'Bullish': return '#287b61';
+      case 'Neutral': return '#805d17';
+      case 'Bearish': return '#b1364e';
+      case 'Very Bearish': return '#b1364e';
+      default: return 'var(--text-muted)';
     }
   };
 
   const hasActiveFilters = tickerFilter;
 
   return (
-    <div style={{ maxWidth: 900, margin: '0 auto', padding: '2rem', color: 'var(--foreground, #171717)' }}>
-
-      {/* ============================================================ */}
-      {/* SECTION: Generate New Analysis                               */}
-      {/* ============================================================ */}
-      <div style={{
-        padding: '1.5rem', borderRadius: '12px', marginBottom: '2rem',
-        background: 'linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)',
-        border: '1px solid #fed7aa',
-      }}
-      className="dark:bg-gradient-to-br dark:from-slate-800 dark:to-slate-900 dark:border-slate-700">
-        <h2 style={{ margin: '0 0 1rem', fontSize: '1.25rem', fontWeight: 700, color: '#374151' }}
-          className="dark:text-white">
-          Generate New Analysis Report
-        </h2>
-
-        {/* Step 1: Select Watchlist Ticker */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
-          <label htmlFor="ticker-select" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}
-            className="dark:text-gray-300">
-            1. Ticker:
-          </label>
-          <select
-            id="ticker-select"
-            value={selectedTicker}
-            onChange={(e) => setSelectedTicker(e.target.value)}
-            disabled={generating}
-            style={{
-              padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid #d1d5db',
-              background: '#fff', fontSize: '0.875rem', fontWeight: 500, color: '#374151',
-              minWidth: 160,
-            }}
-            className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
-          >
-            <option value="">— Select from watchlist —</option>
-            {watchlistTickers.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-            {watchlistTickers.length === 0 && (
-              <option value="">No watchlist items</option>
-            )}
-          </select>
+    <div className="workspace-page reports-workspace">
+      <div className="page-heading overview-heading">
+        <div>
+          <p className="eyebrow"><span className="accent-line" /> Research library</p>
+          <h1>Your research library.</h1>
+          <p>Keep your research current. Bring company news and analysis together.</p>
         </div>
-
-        {/* Step 2: Select Provider & Model */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
-          <label htmlFor="provider-select" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}
-            className="dark:text-gray-300">
-            2. Provider:
-          </label>
-          <select
-            id="provider-select"
-            value={selectedProvider}
-            onChange={(e) => {
-              const newProvider = e.target.value;
-              setSelectedProvider(newProvider);
-              // Auto-select first model from the new provider
-              const prov = providers.find((p: any) => p.id === newProvider);
-              if (prov?.models?.length > 0) {
-                setSelectedModel(prov.models[0].name || prov.models[0]);
-              } else {
-                setSelectedModel('');
-              }
-            }}
-            disabled={generating}
-            style={{
-              padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid #d1d5db',
-              background: '#fff', fontSize: '0.875rem', fontWeight: 500, color: '#374151',
-              minWidth: 120,
-              opacity: generating ? 0.5 : 1,
-              cursor: generating ? 'not-allowed' : 'pointer',
-            }}
-            className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
-          >
-           {providers.map((p: any) => (
-               <option key={p.id} value={p.id} disabled={!p.available}>
-                 {p.name} {!p.available ? '(offline)' : ''}
-               </option>
-             ))}
-            {providers.length === 0 && (
-              <option value="ollama">ollama (default)</option>
-            )}
-          </select>
-
-          {/* Provider status indicators */}
-          {providers.map((p: any) => (
-            <span key={p.id} style={{
-              display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
-              fontSize: '0.75rem', color: p.available ? '#10b981' : '#ef4444',
-            }}
-            className="dark:text-gray-400">
-              <span style={{
-                width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
-                background: p.available ? '#10b981' : '#ef4444',
-              }} />
-              {p.name} {p.available ? 'Ready' : 'Offline'}
-            </span>
-          ))}
-        </div>
-
-        {/* Step 2b: Model Selector (indented under provider) */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
-          <label htmlFor="model-select" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}
-            className="dark:text-gray-300">
-            Model:
-          </label>
-          <select
-            id="model-select"
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            disabled={generating}
-            style={{
-              padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid #d1d5db',
-              background: '#fff', fontSize: '0.875rem', fontWeight: 500, color: '#374151',
-              minWidth: 200,
-              opacity: generating ? 0.5 : 1,
-              cursor: generating ? 'not-allowed' : 'pointer',
-            }}
-            className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
-          >
-            <option value="">— Select a model —</option>
-            {(() => {
-              const selectedProv = providers.find((p: any) => p.id === selectedProvider);
-              const models = selectedProv?.models || [];
-              return models.map((m: any) => (
-                <option key={m.name} value={m.name}>{m.name}</option>
-              ));
-            })()}
-          </select>
-        </div>
-
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
-            <label htmlFor="prompt-version-select" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}
-              className="dark:text-gray-300">
-              Prompt Version:
-            </label>
-            <select
-              id="prompt-version-select"
-              value={selectedPromptVersion}
-              onChange={(event) => setSelectedPromptVersion(event.target.value as PromptVersion)}
-              disabled={generating}
-              style={{
-                padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid #d1d5db',
-                background: '#fff', fontSize: '0.875rem', fontWeight: 500, color: '#374151',
-                minWidth: 220,
-                opacity: generating ? 0.5 : 1,
-                cursor: generating ? 'not-allowed' : 'pointer',
-              }}
-              className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
-            >
-              {PROMPT_VERSION_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-        {/* Step 3: Days Back Slider */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
-          <label htmlFor="days-back" style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151', minWidth: '80px' }}
-            className="dark:text-gray-300">
-            3. Days Back:
-          </label>
-          <input
-            id="days-back"
-            type="range"
-            min={1}
-            max={14}
-            value={daysBack}
-            onChange={(e) => setDaysBack(Number(e.target.value))}
-            disabled={!selectedTicker || generating}
-            style={{ flex: 1, minWidth: 120, opacity: (!selectedTicker || generating) ? 0.5 : 1 }}
-          />
-          <span style={{ fontSize: '0.875rem', fontWeight: 600, color: '#f97316', minWidth: 40 }}
-            className="dark:text-orange-400">
-            {daysBack} day{daysBack > 1 ? 's' : ''}
-          </span>
-        </div>
-
-        {/* Step 4: Article Picker */}
-        {selectedTicker && (
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-              <label style={{ fontSize: '0.875rem', fontWeight: 500, color: '#374151' }}
-                className="dark:text-gray-300">
-                4. Select Articles
-              </label>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button
-                  onClick={selectAllArticles}
-                  disabled={loadingArticles || selectedArticleIds.length >= maxArticles}
-                  style={{
-                    padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid #d1d5db',
-                    background: 'white', fontSize: '0.75rem', cursor: 'pointer', color: '#374151',
-                  }}
-                  className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
-                >
-                  Select All
-                </button>
-                <button
-                  onClick={clearAllArticles}
-                  disabled={loadingArticles}
-                  style={{
-                    padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid #d1d5db',
-                    background: 'white', fontSize: '0.75rem', cursor: 'pointer', color: '#374151',
-                  }}
-                  className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
-                >
-                  Clear All
-                </button>
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '0.75rem' }}>
-              <ArticleSelectionMeter
-                selected={selectedArticleIds.length}
-                max={maxArticles}
-                available={availableArticles.length}
-                onMaxChange={setMaxArticles}
-              />
-            </div>
-
-            {/* Article Search */}
-            <input
-              type="text"
-              placeholder="Search articles by title or source..."
-              value={articleSearch}
-              onChange={(e) => setArticleSearch(e.target.value)}
-              style={{
-                width: '100%', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid #d1d5db',
-                fontSize: '0.8125rem', outline: 'none', marginBottom: '0.5rem', boxSizing: 'border-box',
-                background: 'white', color: '#374151',
-              }}
-              className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
-            />
-
-            <div style={{
-              maxHeight: 320, overflowY: 'auto', borderRadius: '8px', border: '1px solid #e5e7eb',
-              background: '#fafafa',
-            }}
-            className="dark:bg-slate-900 dark:border-slate-600">
-              {loadingArticles ? (
-                <div style={{ padding: '2rem', textAlign: 'center', color: '#9ca3af' }}>Loading articles...</div>
-              ) : availableArticles.length === 0 ? (
-                <div style={{ padding: '2rem', textAlign: 'center', color: '#9ca3af' }}>
-                  No articles found for {selectedTicker} in the last {daysBack} day{daysBack > 1 ? 's' : ''}
-                </div>
-              ) : (
-                (() => {
-                  // Filter by search
-                  const filtered = availableArticles.filter((a: any) => {
-                    if (!articleSearch) return true;
-                    const q = articleSearch.toLowerCase();
-                    return (a.title || '').toLowerCase().includes(q) ||
-                           (a.provider_name || '').toLowerCase().includes(q) ||
-                           (a.summary || '').toLowerCase().includes(q);
-                  });
-
-                  // Group by date
-                  const groups: Record<string, any[]> = {};
-                  filtered.forEach((a: any) => {
-                    const dateKey = easternDayLabel(a.pub_date, articleGroupingNow);
-                    if (!groups[dateKey]) groups[dateKey] = [];
-                    groups[dateKey].push(a);
-                  });
-
-                  const dateOrder = ['Today', 'Yesterday', ...Object.keys(groups).filter(k => k !== 'Today' && k !== 'Yesterday'), 'No Date'];
-                  const sortedKeys = Object.keys(groups).sort((a, b) => dateOrder.indexOf(a) - dateOrder.indexOf(b));
-
-                  return (
-                    <>
-                      {sortedKeys.map(dateKey => (
-                        <div key={dateKey}>
-                          {/* Date Group Header */}
-                          <div style={{
-                            padding: '0.4rem 0.75rem', fontSize: '0.6875rem', fontWeight: 700,
-                            color: '#6b7280', background: '#f3f4f6', borderBottom: '1px solid #e5e7eb',
-                            display: 'flex', alignItems: 'center', gap: '0.5rem',
-                          }}
-                          className="dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">
-                            <span>{dateKey}</span>
-                            <span style={{ fontSize: '0.625rem', fontWeight: 400, color: '#9ca3af' }}
-                              className="dark:text-slate-500">
-                              ({groups[dateKey].length})
-                            </span>
-                          </div>
-                          {/* Articles in this group */}
-                          {groups[dateKey].map((article: any) => {
-                            const isSelected = selectedArticleIds.includes(article.id);
-                            return (
-                              <div
-                                key={article.id}
-                                onClick={() => toggleArticle(article.id)}
-                                style={{
-                                  display: 'flex', alignItems: 'flex-start', gap: '0.5rem',
-                                  padding: '0.5rem 0.75rem', cursor: selectedArticleIds.length < maxArticles || isSelected ? 'pointer' : 'not-allowed',
-                                  background: isSelected ? '#fff7ed' : 'transparent',
-                                  borderBottom: '1px solid #f3f4f6',
-                                  opacity: (!isSelected && selectedArticleIds.length >= maxArticles) ? 0.4 : 1,
-                                }}
-                                className="dark:bg-slate-800 dark:border-slate-700 dark:bg-opacity-50"
-                              >
-                                {/* Checkbox */}
-                                <div style={{
-                                  width: 16, height: 16, borderRadius: 4, flexShrink: 0, marginTop: 2,
-                                  border: isSelected ? '2px solid #f97316' : '2px solid #d1d5db',
-                                  background: isSelected ? '#f97316' : 'white',
-                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                }}
-                                className="dark:border-slate-500 dark:bg-slate-800">
-                                  {isSelected && (
-                                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={3}>
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                    </svg>
-                                  )}
-                                </div>
-
-                                {/* Article info */}
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{
-                                    fontSize: '0.8125rem', fontWeight: 600, color: '#111827',
-                                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                                  }}
-                                  className="dark:text-gray-200">
-                                    {article.title || 'Untitled'}
-                                  </div>
-                                  <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.6875rem', color: '#9ca3af', marginTop: 2 }}
-                                    className="dark:text-slate-400">
-                                    {article.provider_name && (
-                                      <span style={{
-                                        display: 'inline-block', padding: '1px 6px', borderRadius: 4,
-                                        background: '#e5e7eb', fontSize: '0.625rem', fontWeight: 500,
-                                      }}
-                                      className="dark:bg-slate-700 dark:text-gray-300">
-                                        {article.provider_name}
-                                      </span>
-                                    )}
-                                    {article.pub_date && <span>{formatApiTimestamp(article.pub_date, { year: 'numeric', month: 'numeric', day: 'numeric' })}</span>}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </>
-                  );
-                })()
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Generate Button */}
-        <button
-          onClick={handleGenerateAnalysis}
-          disabled={generating || !selectedModel || !selectedTicker}
-          style={{
-            padding: '0.75rem 2rem', borderRadius: '8px', border: 'none',
-            background: generating || !selectedModel || !selectedTicker ? '#9ca3af' : '#f97316',
-            color: 'white', fontSize: '1rem', fontWeight: 600,
-            cursor: generating || !selectedModel || !selectedTicker ? 'not-allowed' : 'pointer',
-            width: '100%',
-          }}
-        >
-          {generating ? 'Generating Analysis Report...' : `Start AI Generated Analysis Report (${selectedArticleIds.length > 0 ? selectedArticleIds.length + ' articles' : 'auto-select'})`}
-        </button>
-
-        {/* Error */}
-        {genError && (
-          <div style={{
-            marginTop: '1rem', padding: '0.75rem 1rem', borderRadius: '8px',
-            background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: '0.875rem',
-          }}
-          className="dark:bg-red-900/30 dark:border-red-800 dark:text-red-400">
-            <strong>Error:</strong> {genError}
-          </div>
-        )}
       </div>
+      <ReportCoverageDashboard revision={coverageRevision} onSelectTicker={ticker => {
+        applyCompanyFilter(ticker);
+        document.getElementById('saved-reports')?.scrollIntoView({ behavior: 'smooth' });
+      }} />
 
       {/* ============================================================ */}
       {/* SECTION: My Reports (Saved) - Container Wrapper              */}
       {/* ============================================================ */}
-      <div style={{
+      <div id="saved-reports" style={{
         padding: '1.5rem', borderRadius: '12px', marginBottom: '2rem',
-        background: '#f9fafb', border: '1px solid #e5e7eb',
+        background: 'var(--section-bg)', border: '1px solid var(--card-border)',
       }}
       className="dark:bg-slate-800 dark:border-slate-700">
-        <h1 style={{ margin: '0 0 1rem', fontSize: '1.25rem', fontWeight: 700, color: '#374151' }}
+        <h2 style={{ margin: '0 0 1rem', fontSize: '1.125rem', fontWeight: 600, color: 'var(--text-primary)' }}
           className="dark:text-white">
-          Generated Analysis Reports
-        </h1>
+          Saved reports
+        </h2>
 
         {/* Filters */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.5rem', alignItems: 'center' }}>
+          <label htmlFor="report-company-filter" style={{ fontSize: '0.875rem', fontWeight: 600 }}>
+            Company
+          </label>
+          <select
+            id="report-company-filter"
+            value={tickerFilter.trim().toUpperCase()}
+            onChange={e => applyCompanyFilter(e.target.value)}
+            style={{
+              padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--card-border)',
+              fontSize: '0.875rem', background: 'var(--card-bg)', color: 'var(--text-secondary)',
+              maxWidth: '100%', flex: '1 1 260px', minWidth: 0,
+            }}
+            className="dark:bg-slate-900 dark:border-slate-600 dark:text-gray-200"
+          >
+            <option value="">All companies</option>
+            {tickerFilter.trim() && !companyOptions.some(company => company.ticker === tickerFilter.trim().toUpperCase()) && (
+              <option value={tickerFilter.trim().toUpperCase()}>{tickerFilter.trim().toUpperCase()}</option>
+            )}
+            {companyOptions.map(company => (
+              <option key={company.ticker} value={company.ticker}>
+                {company.company_name === company.ticker ? company.ticker : `${company.company_name} (${company.ticker})`} · {company.report_count} report{company.report_count !== 1 ? 's' : ''}
+              </option>
+            ))}
+          </select>
+        <button type="button" aria-expanded={showGenerator} aria-controls="report-generator-panel" onClick={() => { setGeneratorLoaded(true); setShowGenerator(value => !value); }} className="button-primary">
+          {showGenerator ? 'Close generator' : '+ New report'}
+        </button>
           <input
             type="text"
-            placeholder="Ticker..."
+            aria-label="Filter reports by ticker"
+            placeholder="Or enter a ticker…"
             value={tickerFilter}
-            onChange={e => { setTickerFilter(e.target.value); setPage(1); }}
+            onChange={e => setTickerFilter(e.target.value)}
             style={{
-              padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid #d1d5db',
+              padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--card-border)',
               fontSize: '0.875rem', outline: 'none', minWidth: '120px',
-              background: 'white', color: '#374151',
+              background: 'var(--card-bg)', color: 'var(--text-secondary)',
             }}
             className="dark:bg-slate-900 dark:border-slate-600 dark:text-gray-200"
           />
@@ -704,8 +250,8 @@ export default function ReportsPage() {
             value={sort}
             onChange={e => setSort(e.target.value as 'newest' | 'oldest')}
             style={{
-              padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid #d1d5db',
-              fontSize: '0.875rem', outline: 'none', background: 'white', color: '#374151',
+              padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--card-border)',
+              fontSize: '0.875rem', outline: 'none', background: 'var(--card-bg)', color: 'var(--text-secondary)',
             }}
             className="dark:bg-slate-900 dark:border-slate-600 dark:text-gray-200"
           >
@@ -716,26 +262,44 @@ export default function ReportsPage() {
           {hasActiveFilters && (
             <button onClick={resetFilters} style={{
               padding: '0.5rem 0.75rem', borderRadius: '6px', border: 'none',
-              background: '#e5e7eb', color: '#374151', fontSize: '0.875rem', cursor: 'pointer', fontWeight: 600,
+              background: 'var(--card-border)', color: 'var(--text-secondary)', fontSize: '0.875rem', cursor: 'pointer', fontWeight: 600,
             }}
             className="dark:bg-slate-700 dark:text-gray-200">
               Clear
             </button>
           )}
 
-          <span style={{ fontSize: '0.875rem', color: '#6b7280', marginLeft: 'auto' }}
+          <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginLeft: 'auto' }}
             className="dark:text-slate-400">
             {total} report{total !== 1 ? 's' : ''} found
           </span>
         </div>
 
+        <div id="report-generator-panel" hidden={!showGenerator}>
+          {generatorLoaded && (
+        <ReportGenerator onCompanyNames={setWatchlistCompanyNames} onGenerated={() => {
+          setPage(1);
+          doFetch(1, limit, sort, tickerFilter);
+          fetchReportCompanies();
+          setCoverageRevision(value => value + 1);
+        }} />
+          )}
+        </div>
+
+        {companyFilterError && (
+          <p role="status" style={{ fontSize: '0.875rem', marginTop: '-0.75rem', marginBottom: '1rem' }}>
+            Company choices are unavailable. You can still filter by ticker.{' '}
+            <button type="button" onClick={() => fetchReportCompanies()} className="underline">Retry</button>
+          </p>
+        )}
+
         {/* Fetch Error Banner */}
         {fetchError && (
           <div style={{
             marginBottom: '1rem', padding: '0.75rem 1rem', borderRadius: '8px',
-            background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: '0.875rem',
+            background: 'var(--negative-soft)', border: '1px solid var(--negative-border)', color: 'var(--negative)', fontSize: '0.875rem',
           }}
-          className="dark:bg-red-900/30 dark:border-red-800 dark:text-red-400">
+          className="dark:bg-negative-soft/30 dark:border-negative-border dark:text-negative">
             <strong>Error:</strong> {fetchError}
           </div>
         )}
@@ -744,15 +308,15 @@ export default function ReportsPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {loading && reports.length === 0 ? (
             Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} style={{ padding: '1rem', borderRadius: '8px', background: '#f3f4f6', border: '1px solid #e5e7eb' }}
+              <div key={i} style={{ padding: '1rem', borderRadius: '8px', background: 'var(--section-bg)', border: '1px solid var(--card-border)' }}
                 className="dark:bg-slate-800 dark:border-slate-700">
                 Loading...
               </div>
             ))
           ) : reports.length === 0 ? (
-            <div style={{ padding: '2rem', borderRadius: '8px', background: '#f9fafb', textAlign: 'center', color: '#6b7280' }}
+            <div style={{ padding: '2rem', borderRadius: '8px', background: 'var(--section-bg)', textAlign: 'center', color: 'var(--text-muted)' }}
               className="dark:bg-slate-800 dark:text-slate-400">
-              No reports found. Generate your first analysis using the form above.
+              {hasActiveFilters ? `No reports found for ${debouncedFilter || tickerFilter}. Try another company or clear the filter.` : 'No reports yet. Select “New report” above to create your first analysis.'}
             </div>
           ) : (
             reports.map((report) => (
@@ -761,7 +325,7 @@ export default function ReportsPage() {
                 style={{
                   display: 'flex', alignItems: 'center', gap: '1rem',
                   padding: '1rem', borderRadius: '8px',
-                  background: 'white', border: '1px solid #e5e7eb', cursor: 'pointer',
+                  background: 'var(--card-bg)', border: '1px solid var(--card-border)', cursor: 'pointer',
                   transition: 'box-shadow 0.15s ease, background 0.15s ease',
                 }}
                 className="dark:bg-slate-800 dark:border-slate-700"
@@ -771,11 +335,11 @@ export default function ReportsPage() {
               >
                 {/* Descriptive report label */}
                 <div style={{ minWidth: '170px' }}>
-                  <div style={{ fontWeight: 700, fontSize: '1.125rem', color: '#111827' }}
+                  <div style={{ fontWeight: 700, fontSize: '1.125rem', color: 'var(--text-primary)' }}
                     className="dark:text-white">
                     {report.ticker} Analysis
                   </div>
-                  <div style={{ marginTop: 2, fontSize: '0.75rem', color: '#6b7280' }}
+                  <div style={{ marginTop: 2, fontSize: '0.75rem', color: 'var(--text-muted)' }}
                     className="dark:text-slate-400">
                     {formatReportDateTime(report.created_at)}
                   </div>
@@ -792,39 +356,39 @@ export default function ReportsPage() {
 
                 {/* Confidence bar */}
                 <div style={{ flex: 1, maxWidth: '160px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#6b7280', marginBottom: '2px' }}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '2px' }}
                     className="dark:text-slate-400">
                     <span>Confidence</span>
                     <span style={{ fontWeight: 600 }}>{report.confidence_score}%</span>
                   </div>
-                  <div style={{ height: 4, borderRadius: 2, background: '#e5e7eb', overflow: 'hidden' }}
+                  <div style={{ height: 4, borderRadius: 2, background: 'var(--card-border)', overflow: 'hidden' }}
                     className="dark:bg-slate-600">
                     <div style={{
                       width: `${report.confidence_score}%`, height: '100%', borderRadius: 2,
-                      background: report.confidence_score > 70 ? '#10b981' : report.confidence_score > 40 ? '#f59e0b' : '#ef4444',
+                      background: report.confidence_score > 70 ? '#166b52' : report.confidence_score > 40 ? '#805d17' : '#b1364e',
                     }} />
                   </div>
                 </div>
 
                 {/* Price */}
                 {report.current_price_at_analysis != null && (
-                  <div style={{ fontSize: '0.875rem', color: '#374151', fontWeight: 500 }}
+                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', fontWeight: 500 }}
                     className="dark:text-gray-300">
                     ${Number(report.current_price_at_analysis).toFixed(2)}
                   </div>
                 )}
 
                 {/* Articles count */}
-                <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}
                   className="dark:text-slate-500">
                   <div>{formatArticlesSupplied(report.articles_count)}</div>
                   <div>{formatArticlesCited(report.articles_cited_count ?? 0)}</div>
                 </div>
 
                 {/* Prompt version & model */}
-                <div style={{ textAlign: 'right', fontSize: '0.75rem', color: '#9ca3af' }}
+                <div style={{ textAlign: 'right', fontSize: '0.75rem', color: 'var(--text-muted)' }}
                   className="dark:text-slate-500">
-                  <div style={{ fontWeight: 600, color: report.prompt_hash ? '#7c3aed' : '#9ca3af' }}>
+                  <div style={{ fontWeight: 600, color: report.prompt_hash ? 'var(--info)' : 'var(--text-muted)' }}>
                     {getPromptBadge(report.prompt_version, report.prompt_hash)}
                   </div>
                   <div>{report.model_used}</div>
@@ -835,10 +399,10 @@ export default function ReportsPage() {
                   onClick={(e) => { e.stopPropagation(); handleDeleteReport(report.id); }}
                   style={{
                     padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid #fca5a5',
-                    background: 'transparent', color: '#ef4444', fontSize: '0.75rem', cursor: 'pointer',
+                    background: 'transparent', color: 'var(--negative)', fontSize: '0.75rem', cursor: 'pointer',
                     display: 'flex', alignItems: 'center',
                   }}
-                  className="dark:border-red-800 dark:text-red-500"
+                  className="dark:border-negative-border dark:text-negative"
                   title="Delete report"
                 >
                   <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -847,7 +411,7 @@ export default function ReportsPage() {
                 </button>
 
                 {/* Arrow */}
-                <svg width="16" height="16" style={{ color: '#9ca3af', minWidth: '16px' }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg width="16" height="16" style={{ color: 'var(--text-muted)', minWidth: '16px' }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                 </svg>
               </div>
@@ -862,16 +426,16 @@ export default function ReportsPage() {
               onClick={() => setPage(p => Math.max(1, p - 1))}
               disabled={page <= 1 || loading}
               style={{
-                padding: '0.5rem 1rem', borderRadius: '6px', border: '1px solid #d1d5db',
-                background: page <= 1 ? '#f3f4f6' : 'white', cursor: page <= 1 ? 'not-allowed' : 'pointer',
-                fontSize: '0.875rem', color: '#374151',
+                padding: '0.5rem 1rem', borderRadius: '6px', border: '1px solid var(--card-border)',
+                background: page <= 1 ? 'var(--section-bg)' : 'white', cursor: page <= 1 ? 'not-allowed' : 'pointer',
+                fontSize: '0.875rem', color: 'var(--text-secondary)',
               }}
               className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200 dark:disabled:bg-slate-700"
             >
               ← Previous
             </button>
 
-            <span style={{ padding: '0.5rem 1rem', fontSize: '0.875rem', color: '#6b7280' }}
+            <span style={{ padding: '0.5rem 1rem', fontSize: '0.875rem', color: 'var(--text-muted)' }}
               className="dark:text-slate-400">
               Page {page}
             </span>
@@ -880,9 +444,9 @@ export default function ReportsPage() {
               onClick={() => setPage(p => p + 1)}
               disabled={!hasMore || loading}
               style={{
-                padding: '0.5rem 1rem', borderRadius: '6px', border: '1px solid #d1d5db',
-                background: !hasMore ? '#f3f4f6' : 'white', cursor: !hasMore ? 'not-allowed' : 'pointer',
-                fontSize: '0.875rem', color: '#374151',
+                padding: '0.5rem 1rem', borderRadius: '6px', border: '1px solid var(--card-border)',
+                background: !hasMore ? 'var(--section-bg)' : 'white', cursor: !hasMore ? 'not-allowed' : 'pointer',
+                fontSize: '0.875rem', color: 'var(--text-secondary)',
               }}
               className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200 dark:disabled:bg-slate-700"
             >

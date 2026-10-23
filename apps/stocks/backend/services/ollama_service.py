@@ -2538,7 +2538,7 @@ async def generate_correction_patch_set(
     provider: str,
     model: str,
 ) -> CorrectionPatchSet:
-    """Perform exactly one isolated structured patch generation."""
+    """Generate validated patches, with one feedback-driven retry on invalid output."""
 
     required_target_ids = derive_required_patch_targets(violations)
     prompt = build_patch_correction_prompt(
@@ -2554,37 +2554,55 @@ async def generate_correction_patch_set(
     }
     response_schema = build_request_local_patch_schema(required_target_ids)
     started = time.perf_counter()
-    raw_response = await ai.generate(
-        system_prompt=PATCH_CORRECTION_SYSTEM_PROMPT,
-        user_prompt=prompt,
-        temperature=0,
-        model=model,
-        response_schema=response_schema,
-        max_attempts=1,
-    )
-    try:
-        parsed = parse_correction_patch_set(raw_response)
-        validated = validate_correction_patch_set(
-            parsed,
-            registry,
-            required_target_ids,
-            article_count=len(request.news_articles),
-            authorized_article_indices_by_target=(
-                authorized_article_indices_by_target
-            ),
+    attempt_prompt = prompt
+    for attempt in range(1, 3):
+        raw_response = await ai.generate(
+            system_prompt=PATCH_CORRECTION_SYSTEM_PROMPT,
+            user_prompt=attempt_prompt,
+            temperature=0,
+            model=model,
+            response_schema=response_schema,
+            max_attempts=1,
         )
-    except AISemanticGroundingError:
-        logger.warning(
-            "[AI][PatchCorrectionGeneration] stage=patch_correction_generation "
-            "provider=%s model=%s required_target_count=%d response_chars=%d "
-            "schema_validation=false duration_s=%.3f",
-            provider,
-            model,
-            len(required_target_ids),
-            len(raw_response),
-            time.perf_counter() - started,
-        )
-        raise
+        try:
+            parsed = parse_correction_patch_set(raw_response)
+            validated = validate_correction_patch_set(
+                parsed,
+                registry,
+                required_target_ids,
+                article_count=len(request.news_articles),
+                authorized_article_indices_by_target=(
+                    authorized_article_indices_by_target
+                ),
+            )
+            break
+        except AISemanticGroundingError as exc:
+            # Include only backend validation labels, never raw model output or
+            # article content. The retry retains the original evidence boundary.
+            feedback = {
+                key: exc.details[key]
+                for key in ("failure_kind", "reason", "target_id")
+                if key in exc.details
+            }
+            logger.warning(
+                "[AI][PatchCorrectionGeneration] stage=patch_correction_generation "
+                "provider=%s model=%s required_target_count=%d response_chars=%d "
+                "schema_validation=false attempt=%d failure_kind=%s reason=%s duration_s=%.3f",
+                provider, model, len(required_target_ids), len(raw_response),
+                attempt, feedback.get("failure_kind"), feedback.get("reason"),
+                time.perf_counter() - started,
+            )
+            if attempt == 2:
+                raise
+            attempt_prompt = (
+                "The previous patch set was rejected by backend validation: "
+                + json.dumps(feedback, ensure_ascii=False)
+                + ". Return a complete corrected patch set for every original target. "
+                "A replacement must change the original proposition and resolve its "
+                "violations. Use DELETE only where the original parent constraints "
+                "permit it. All original schema and evidence restrictions still apply.\n\n"
+                + prompt
+            )
     logger.info(
         "[AI][PatchCorrectionGeneration] stage=patch_correction_generation "
         "provider=%s model=%s required_target_count=%d returned_patch_count=%d "

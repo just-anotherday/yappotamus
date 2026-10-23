@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import { fetchMarketReport } from '@/lib/api';
 import { formatApiTimestamp } from '@/lib/formatters';
 import { formatReportDateTime } from '@/lib/reportPresentation';
@@ -13,9 +14,9 @@ interface MarketReportCardProps {
 
 function sentimentColor(sentiment: string): string {
   const s = sentiment.toLowerCase();
-  if (s.includes('bullish')) return '#4caf50';
-  if (s.includes('bearish')) return '#f44336';
-  return '#9e9e9e';
+  if (s.includes('bullish')) return 'var(--positive)';
+  if (s.includes('bearish')) return 'var(--negative)';
+  return 'var(--text-muted)';
 }
 
 function sentimentEmoji(sentiment: string): string {
@@ -64,7 +65,7 @@ export default function MarketReportCard({ onHover }: MarketReportCardProps) {
     return (
       <div style={{
         padding: 24,
-        background: '#fff3e0',
+        background: 'var(--warning-soft)',
         borderRadius: 12,
         border: '1px solid #ffcc80',
         marginBottom: 24,
@@ -114,7 +115,7 @@ export default function MarketReportCard({ onHover }: MarketReportCardProps) {
         <div style={{
           padding: '6px 14px',
           borderRadius: 20,
-          background: sentimentColor(report.overall_sentiment) + '22',
+          background: `color-mix(in srgb, ${sentimentColor(report.overall_sentiment)} 13%, transparent)`,
           color: sentimentColor(report.overall_sentiment),
           fontSize: 13,
           fontWeight: 700,
@@ -156,8 +157,9 @@ export default function MarketReportCard({ onHover }: MarketReportCardProps) {
       </div>
 
       {/* Footer actions */}
+      <div style={{ marginBottom: 12 }}><ReportPdfButton report={report} /></div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Link href="/analysis/market-history" style={{ fontSize: 13, color: '#ff9800', fontWeight: 600 }}>
+        <Link href="/analysis/market-history" style={{ fontSize: 13, color: 'var(--warning)', fontWeight: 600 }}>
           View full report & history →
         </Link>
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>

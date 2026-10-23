@@ -30,18 +30,18 @@ export const formatPercent = (val: number | undefined | null) => {
 
 // Risk score badge class
 export const riskBadgeClass = (risk: number) => {
-  if (risk <= 3) return 'bg-green-100 text-green-800';
-  if (risk <= 5) return 'bg-yellow-100 text-yellow-800';
-  return 'bg-red-100 text-red-800';
+  if (risk <= 3) return 'bg-positive-soft text-positive';
+  if (risk <= 5) return 'bg-warning-soft text-warning';
+  return 'bg-negative-soft text-negative';
 };
 
 // Analyst recommendation badge class
 export const recommendationBadgeClass = (key: string) => {
-  if (key.includes('strong_buy')) return 'bg-green-100 text-green-800';
-  if (key.includes('buy')) return 'bg-blue-100 text-blue-800';
-  if (key.includes('hold')) return 'bg-yellow-100 text-yellow-800';
-  if (key.includes('sell')) return 'bg-red-100 text-red-800';
-  return 'bg-gray-100 text-gray-800';
+  if (key.includes('strong_buy')) return 'bg-positive-soft text-positive';
+  if (key.includes('buy')) return 'bg-info-soft text-info';
+  if (key.includes('hold')) return 'bg-warning-soft text-warning';
+  if (key.includes('sell')) return 'bg-negative-soft text-negative';
+  return 'bg-surface-muted text-secondary';
 };
 
 export const EASTERN_TIME_ZONE = 'America/New_York';
@@ -152,7 +152,7 @@ export function formatDate(dateStr: string | null | undefined): string {
 // ==============================================================================
 
 /** Check if a value is a placeholder/null/undefined/NaN/zero that should be hidden */
-export function isValidValue(val: any, allowZero: boolean = false): boolean {
+export function isValidValue(val: unknown, allowZero: boolean = false): boolean {
   if (val == null) return false;
   if (typeof val === 'string' && (val === '' || val === 'N/A' || val === 'null' || val === 'undefined')) return false;
   if (typeof val === 'number' && (isNaN(val) || (!allowZero && val === 0))) return false;

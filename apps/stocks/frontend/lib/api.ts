@@ -130,8 +130,8 @@ export const fetchNewsTickers = async (): Promise<string[]> => {
 // ==============================================================================
 
 /** Get the latest cached AI intelligence report for a company */
-export const fetchCompanyReport = async (ticker: string): Promise<CachedCompanyReport> => {
-  const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}`);
+export const fetchCompanyReport = async (ticker: string, signal?: AbortSignal): Promise<CachedCompanyReport> => {
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}`, { signal });
   await requireOk(res, `Failed to fetch cached report for ${ticker}`);
   return res.json();
 };
@@ -161,7 +161,7 @@ export const fetchMarketReport = async (): Promise<CachedMarketReport> => {
 
 /** Manually trigger a company report regeneration */
 export const triggerCompanyReportRegeneration = async (ticker: string, model?: string): Promise<{ status: string; ticker: string }> => {
-  const body: Record<string, any> = {};
+  const body: Record<string, unknown> = {};
   if (model) body.model = model;
   const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/regenerate`, {
     method: 'POST',
@@ -248,8 +248,8 @@ export interface ReportHistoryResponse {
   limit: number;
   entries: ReportHistoryEntry[];
 }
-export const fetchCompanyReportHistory = async (ticker: string, page = 1, limit = 20): Promise<ReportHistoryResponse> => {
-  const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/history?page=${page}&limit=${limit}`);
+export const fetchCompanyReportHistory = async (ticker: string, page = 1, limit = 20, signal?: AbortSignal): Promise<ReportHistoryResponse> => {
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/company/${ticker.toUpperCase()}/history?page=${page}&limit=${limit}`, { signal });
   await requireOk(res, `Failed to fetch report history for ${ticker}`);
   return res.json();
 };
@@ -326,7 +326,7 @@ export const fetchMarketPrices = async (
 export interface RiskSignalResponse {
   ticker: string;
   data_points: number;
-  signal: Record<string, any>;
+  signal: Record<string, unknown>;
   advanced_metrics: AdvancedRiskMetrics;
 }
 export const fetchRiskSignal = async (ticker: string): Promise<RiskSignalResponse> => {
@@ -367,6 +367,7 @@ export const fetchUnifiedReports = async (
   date_to?: string,
   page: number = 1,
   limit: number = 20,
+  signal?: AbortSignal,
 ): Promise<UnifiedReportListResponse> => {
   const params = new URLSearchParams();
   params.set('page', String(page));
@@ -377,7 +378,7 @@ export const fetchUnifiedReports = async (
   if (date_from) params.set('from', date_from);
   if (date_to) params.set('to', date_to);
 
-  const res = await apiFetch(`${API_BASE}/api/analysis/reports/unified?${params.toString()}`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/unified?${params.toString()}`, { signal });
   await requireOk(res, 'Failed to fetch unified intelligence reports');
   return res.json();
 };
@@ -406,8 +407,9 @@ export interface MarketReportHistoryResponse {
 export const fetchMarketReportHistory = async (
   page: number = 1,
   limit: number = 20,
+  signal?: AbortSignal,
 ): Promise<MarketReportHistoryResponse> => {
-  const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/history?page=${page}&limit=${limit}`);
+  const res = await apiFetch(`${API_BASE}/api/analysis/reports/market/history?page=${page}&limit=${limit}`, { signal });
   await requireOk(res, 'Failed to fetch market report history');
   return res.json();
 };

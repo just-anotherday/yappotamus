@@ -13,6 +13,10 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 
 ## Backend Deployment (Render)
 
+For owner-only Supabase email/password login, follow
+[the private login setup](docs/supabase-login.md) for both backend and frontend
+environment variables and the deployment order.
+
 ### Prerequisites
 - Render account + web service created
 - Supabase PostgreSQL instance running
@@ -24,7 +28,11 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 |----------|----------|-------------|
 | `DATABASE_URL` | **Yes** | Supabase PostgreSQL connection string |
 | `ENVIRONMENT` | **Yes** | Set to `production`; disables development reload behavior and the in-process news scheduler. |
-| `APP_ACCESS_TOKEN` | **Yes** | Private token used by the frontend for authenticated API/WebSocket access |
+| `AUTH_PROVIDER` | **Yes** for Supabase login | Set `supabase` for owner-only account login; defaults to legacy `token` mode. |
+| `SUPABASE_URL` | **Yes** for Supabase login | Supabase project URL. |
+| `SUPABASE_PUBLISHABLE_KEY` | **Yes** for Supabase login | Public project key, starting with `sb_publishable_`. No admin key is needed for login. |
+| `SUPABASE_ALLOWED_USER_ID` | **Yes** for Supabase login | Exact Supabase user UUID allowed to access the application. |
+| `APP_ACCESS_TOKEN` | Only in `token` mode | Legacy shared browser token; ignored in Supabase mode. |
 | `FINNHUB_API_KEY` | **Yes** | Market data API key |
 | `FINNHUB_REQUESTS_PER_MINUTE` | No | Defaults to and is capped at `45`, reserving 25% below Finnhub Free's 60/minute ceiling. |
 | `INTERNAL_JOB_TOKEN` | **Yes** for scheduled ingestion | Dedicated bearer token accepted only by `POST /internal/jobs/news-ingest`. |
@@ -38,8 +46,8 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 | `YFINANCE_CACHE_DIR` | No | Writable yfinance SQLite cache path. Defaults to OS temp; it is an optimization and can remain ephemeral on Render. |
 | `OPENAI_API_KEY` | **Yes** (prod) | OpenAI API key for AI analysis |
 | `AI_PROVIDER` | No | Set to `openai` (default: `ollama`) |
-| `OPENAI_MODEL` | No | Model name (default: `gpt-4o-mini`) |
-| `OPENAI_ALLOWED_MODELS` | **Yes** when OpenAI is used | Must include `OPENAI_MODEL` (for example `gpt-4o-mini`) |
+| `OPENAI_MODEL` | No | Model name (default: `gpt-6-luna`) |
+| `OPENAI_ALLOWED_MODELS` | **Yes** when OpenAI is used | Must include `OPENAI_MODEL` (for example `gpt-6-luna`) |
 | `CORS_ORIGINS` | **Yes** | Include `https://stocks.yapvibes.com` and the Worker preview domain |
 | `AI_STALE_JOB_RECOVERY_ENABLED` | No | Keep `false` until protected queue timestamps are verified |
 | `PORT` | No | Override default port 8000 |
@@ -180,6 +188,19 @@ causes the custom domain to return a 404 instead of invoking Next.js.
 |----------|----------|-------------|
 | `NEXT_PUBLIC_API_BASE` | **Yes** | `https://yapvibes-stocks-api.onrender.com` |
 | `NEXT_PUBLIC_WS_URL` | No | Optional override; normally derived as `wss://yapvibes-stocks-api.onrender.com/ws` |
+| `NEXT_PUBLIC_AUTH_PROVIDER` | **Yes** for private login | Set `supabase`, matching the backend. |
+| `NEXT_PUBLIC_SUPABASE_URL` | **Yes** for private login | Same project URL as backend `SUPABASE_URL`. |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | **Yes** for private login | Public project key; follow `docs/supabase-login.md`. |
+
+Install dependencies from the repository root and keep only the root
+`package-lock.json`. Stale lockfiles in `apps/stocks` or
+`apps/stocks/frontend` make OpenNext misidentify the monorepo root. The frontend
+sets `outputFileTracingRoot` to the repository root so standalone output includes
+hoisted dependencies and OpenNext can patch the Next.js runtime correctly.
+
+`.open-next` and `.wrangler` are generated output and local Worker state; do not
+commit them. After building, `wrangler dev --local` can verify the generated
+Worker without deploying it.
 
 ### Manual Deployment
 
@@ -188,7 +209,7 @@ cd apps/stocks/frontend
 npm run deploy:cf
 ```
 
-The two `NEXT_PUBLIC_*` values are compiled into the browser bundle, so set them
+The `NEXT_PUBLIC_*` values are compiled into the browser bundle, so set them
 as **build variables before building**. They are not secrets.
 
 The reports page offers both prompt v2.0 (Stable) and v3.0 (Experimental).
@@ -258,10 +279,23 @@ OLLAMA_MODEL=llama3.2
 ```env
 AI_PROVIDER=openai
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-6-luna
+OPENAI_ALLOWED_MODELS=gpt-6-luna
 ```
 
 No code changes needed to switch providers.
+
+The stock OpenAI adapter uses `reasoning_effort=none` for GPT-6 Luna to preserve
+the existing analysis sampling behavior, and sends output limits as
+`max_completion_tokens`. Restart the backend after changing environment values.
+For an existing deployment, update both model variables in its environment;
+deployment environment values take precedence over the application defaults.
+
+Saved analysis, company intelligence/history, and market reports include a
+**Download PDF** action. Export runs in the browser using the saved report data;
+it does not generate a new analysis or call OpenAI. The PDF includes metadata,
+all stored report sections and source references, and page numbers. Deploy the
+frontend with its `public/fonts` assets so the export fonts can load.
 
 ---
 

@@ -13,12 +13,12 @@ interface IntelligenceCardProps {
 
 function sentimentColor(sentiment: string): string {
   const s = sentiment.toLowerCase();
-  if (s.includes('very bullish')) return '#00c853';
-  if (s.includes('bullish')) return '#4caf50';
-  if (s.includes('neutral')) return '#ff9800';
-  if (s.includes('bearish')) return '#f44336';
-  if (s.includes('very bearish')) return '#b71c1c';
-  return '#9e9e9e';
+  if (s.includes('very bullish')) return 'var(--positive)';
+  if (s.includes('bullish')) return 'var(--positive)';
+  if (s.includes('neutral')) return 'var(--warning)';
+  if (s.includes('bearish')) return 'var(--negative)';
+  if (s.includes('very bearish')) return 'var(--negative)';
+  return 'var(--text-muted)';
 }
 
 function confidenceRing(score: number): string {
@@ -60,9 +60,9 @@ export default function IntelligenceCard({ report, onRegenerate, isProcessing, q
           <h3 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{report.ticker}</h3>
           <span
             style={{
-              background: color + '22',
+              background: `color-mix(in srgb, ${color} 13%, transparent)`,
               color,
-              border: `1px solid ${color}44`,
+              border: `1px solid color-mix(in srgb, ${color} 27%, transparent)`,
               borderRadius: 6,
               padding: '4px 10px',
               fontSize: 12,

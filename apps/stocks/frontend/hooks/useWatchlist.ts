@@ -7,20 +7,37 @@ import { useWatchlistConfig } from '@/lib/WatchlistConfigContext';
 import { fetchWatchlistData, fetchPostMarketPrices, apiAddToWatchlist, apiRemoveFromWatchlist, apiUpdateWatchlistOrder } from '@/lib/api';
 import type { WatchlistItem } from '@/types/stock';
 import { useExtendedHours } from '@/hooks/useExtendedHours';
-import { mergeWatchlistRefresh } from '@/lib/watchlistPresentation';
+import { getWatchlistDataWarning, mergeWatchlistRefresh } from '@/lib/watchlistPresentation';
+import { getAppToken } from '@/lib/apiFetch';
 
 const EXTENDED_HOURS_REFRESH_MS = 15_000;
 const PRICE_FLASH_MS = 1_000;
+const SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
+export type WatchlistRefreshResult =
+  | { status: 'completed'; count: number; partial: boolean }
+  | { status: 'failed'; message: string }
+  | { status: 'superseded' };
+let watchlistSnapshot: { token: string; items: WatchlistItem[]; order: string[]; refreshedAt: Date } | null = null;
+
+function currentSnapshot() {
+  const token = getAppToken();
+  if (!token || watchlistSnapshot?.token !== token
+    || Date.now() - watchlistSnapshot.refreshedAt.getTime() > SNAPSHOT_MAX_AGE_MS) {
+    watchlistSnapshot = null;
+  }
+  return watchlistSnapshot;
+}
 
 export function useWatchlist() {
-  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [snapshot] = useState(currentSnapshot);
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>(snapshot?.items ?? []);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [watchlistOrder, setWatchlistOrder] = useState<string[]>([]);
+  const [watchlistOrder, setWatchlistOrder] = useState<string[]>(snapshot?.order ?? []);
   const [pendingTickers, setPendingTickers] = useState<Set<string>>(new Set());
   const [isReordering, setIsReordering] = useState(false);
-  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(snapshot?.refreshedAt ?? null);
   const [postMarketFlash, setPostMarketFlash] = useState<Record<string, 'up' | 'down'>>({});
   const postMarketPricesRef = useRef<Record<string, number>>({});
   const flashTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -34,6 +51,14 @@ export function useWatchlist() {
   const { config } = useWatchlistConfig();
   const maxWatchlistSize = config?.max_watchlist_size ?? 50;
 
+  // Memory-only, session-scoped snapshot for navigation back to Home. Always revalidate.
+  useEffect(() => {
+    const token = getAppToken();
+    if (token && lastRefreshedAt && !watchlistLoading && pendingTickers.size === 0 && !isReordering) {
+      watchlistSnapshot = { token, items: watchlist, order: watchlistOrder, refreshedAt: lastRefreshedAt };
+    }
+  }, [watchlist, watchlistOrder, lastRefreshedAt, watchlistLoading, pendingTickers, isReordering]);
+
   const showToast = useCallback((msg: string, isError = false) => {
     if (isError) setError(msg);
     else setSuccessMessage(msg);
@@ -43,12 +68,12 @@ export function useWatchlist() {
     }, 3000);
   }, []);
 
-  const loadWatchlist = useCallback(async (tickers?: string, quiet = false) => {
+  const loadWatchlist = useCallback(async (tickers?: string, quiet = false): Promise<WatchlistRefreshResult> => {
     const generation = ++loadGenerationRef.current;
     if (!quiet) setWatchlistLoading(true);
     try {
       const data = await fetchWatchlistData(tickers);
-      if (generation !== loadGenerationRef.current || mutationGenerationRef.current > generation) return;
+      if (generation !== loadGenerationRef.current || mutationGenerationRef.current > generation) return { status: 'superseded' };
       const nextPrices: Record<string, number> = {};
 
       data.forEach(item => {
@@ -79,9 +104,18 @@ export function useWatchlist() {
 
       postMarketPricesRef.current = nextPrices;
       setWatchlist(previous => mergeWatchlistRefresh(previous, data));
+      setWatchlistOrder(previous => {
+        const tickers = data.map(item => item.ticker);
+        const existing = previous.filter(ticker => tickers.includes(ticker));
+        return [...existing, ...tickers.filter(ticker => !existing.includes(ticker))];
+      });
       setLastRefreshedAt(new Date());
+      return { status: 'completed', count: data.length, partial: data.some(item => getWatchlistDataWarning(item) != null) };
     } catch (err) {
-      if (!quiet) showToast(err instanceof Error ? err.message : 'Failed to load watchlist', true);
+      if (generation !== loadGenerationRef.current) return { status: 'superseded' };
+      const message = err instanceof Error ? err.message : 'Failed to load watchlist';
+      if (!quiet) showToast(message, true);
+      return { status: 'failed', message };
     } finally {
       if (!quiet && generation === loadGenerationRef.current) setWatchlistLoading(false);
     }
@@ -89,7 +123,9 @@ export function useWatchlist() {
 
   // Auto-load watchlist from DB on mount (no hardcoded defaults)
   useEffect(() => {
-    loadWatchlist();
+    // Cancel the discarded Strict Mode mount before it starts a second quote batch.
+    const timer = setTimeout(() => { void loadWatchlist(); }, 0);
+    return () => clearTimeout(timer);
   }, [loadWatchlist]);
 
   useEffect(() => {
@@ -176,7 +212,7 @@ export function useWatchlist() {
       pendingTickersRef.current.delete(normalized);
       setPendingTickers(new Set(pendingTickersRef.current));
     }
-  }, [watchlist, pendingTickers, showToast, maxWatchlistSize]);
+  }, [watchlist, showToast, maxWatchlistSize]);
 
   const removeTicker = useCallback(async (tickerToRemove: string) => {
     const normalized = tickerToRemove.toUpperCase();
@@ -202,17 +238,7 @@ export function useWatchlist() {
       pendingTickersRef.current.delete(normalized);
       setPendingTickers(new Set(pendingTickersRef.current));
     }
-  }, [pendingTickers, watchlist, watchlistOrder, showToast]);
-
-  // Sync watchlistOrder when watchlist changes (handles add/remove)
-  useEffect(() => {
-    const tickers = watchlist.map(w => w.ticker);
-    setWatchlistOrder(prev => {
-      const existing = prev.filter(t => tickers.includes(t));
-      const newTickers = tickers.filter(t => !existing.includes(t));
-      return [...existing, ...newTickers];
-    });
-  }, [watchlist]);
+  }, [watchlist, watchlistOrder, showToast]);
 
   const reorderWatchlist = useCallback(async (newOrder: string[]) => {
     if (isReorderingRef.current) return;
@@ -231,7 +257,7 @@ export function useWatchlist() {
       isReorderingRef.current = false;
       setIsReordering(false);
     }
-  }, [isReordering, watchlistOrder, showToast]);
+  }, [watchlistOrder, showToast]);
 
   return {
     watchlist,

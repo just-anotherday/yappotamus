@@ -9,6 +9,8 @@ import Link from 'next/link';
 import { useNews } from '@/hooks/useNews';
 import { fetchNewsTickers } from '@/lib/api';
 import { NewsCard } from '@/components/news/NewsCard';
+import NewsSync from '@/components/NewsSync';
+import { NEWS_SYNC_COMPLETED_EVENT } from '@/lib/newsSync';
 
 export default function AllNewsPage() {
   const [tickerFilter, setTickerFilter] = useState<string>('');
@@ -21,7 +23,14 @@ export default function AllNewsPage() {
     fetchNewsTickers()
       .then(tickers => { if (!cancelled) setAllTickers(tickers); })
       .catch(() => {});
-    return () => { cancelled = true; };
+    const refreshTickers = () => {
+      fetchNewsTickers().then(tickers => { if (!cancelled) setAllTickers(tickers); }).catch(() => {});
+    };
+    window.addEventListener(NEWS_SYNC_COMPLETED_EVENT, refreshTickers);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(NEWS_SYNC_COMPLETED_EVENT, refreshTickers);
+    };
   }, []);
 
   const {
@@ -56,44 +65,51 @@ export default function AllNewsPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-12">
+    <div className="workspace-page">
       {/* Breadcrumb */}
-      <nav className="flex items-center gap-2 text-sm text-gray-500 dark:text-slate-400 mb-4">
-        <Link href="/" className="hover:text-blue-600 dark:hover:text-indigo-400 transition-colors">
-          Dashboard
+      <nav className="flex items-center gap-2 text-sm text-muted dark:text-slate-400 mb-4">
+        <Link href="/" className="hover:text-accent dark:hover:text-accent transition-colors">
+          Overview
         </Link>
         <span>›</span>
-        <span className="font-medium text-gray-900 dark:text-gray-100">All News</span>
+        <span className="font-medium text-primary dark:text-gray-100">All News</span>
       </nav>
 
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">All News</h1>
+      <div className="page-heading">
+        <p className="eyebrow"><span className="accent-line" /> Market news</p>
+        <h1>The stories behind the numbers.</h1>
+        <p>Explore the latest coverage, or focus on the companies you follow.</p>
         {total > 0 && (
-          <p className="text-sm text-gray-500 dark:text-slate-400 mt-1">
+          <p className="text-sm text-muted dark:text-slate-400 mt-1">
             Showing {offset + 1}-{Math.min(offset + articles.length, total)} of {total} article{total !== 1 ? 's' : ''}
           </p>
         )}
       </div>
 
+      <div className="mb-6"><NewsSync /></div>
+
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 mb-8">
-        <label htmlFor="ticker-filter" className="text-sm font-medium text-gray-700 dark:text-slate-300">
+      <div className="surface news-filters">
+        <div className="news-filter-field">
+        <label htmlFor="ticker-filter" className="text-sm font-medium text-secondary dark:text-slate-300">
           Ticker:
         </label>
         <select
           id="ticker-filter"
           value={tickerFilter}
           onChange={(e) => handleTickerChange(e.target.value)}
-          className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-900 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-indigo-500"
+          className="px-3 py-2 rounded-lg border border-divider bg-card text-primary text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-accent"
         >
           <option value="">All Tickers</option>
           {allTickers.map(t => (
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
+        </div>
 
-        <label htmlFor="start-date" className="text-sm font-medium text-gray-700 dark:text-slate-300">
+        <div className="news-filter-field">
+        <label htmlFor="start-date" className="text-sm font-medium text-secondary dark:text-slate-300">
           From:
         </label>
         <input
@@ -101,10 +117,12 @@ export default function AllNewsPage() {
           type="date"
           value={startDate}
           onChange={(e) => { setStartDate(e.target.value); handleDateChange(); }}
-          className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-900 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-indigo-500"
+          className="px-3 py-2 rounded-lg border border-divider bg-card text-primary text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-accent"
         />
+        </div>
 
-        <label htmlFor="end-date" className="text-sm font-medium text-gray-700 dark:text-slate-300">
+        <div className="news-filter-field">
+        <label htmlFor="end-date" className="text-sm font-medium text-secondary dark:text-slate-300">
           To:
         </label>
         <input
@@ -112,13 +130,14 @@ export default function AllNewsPage() {
           type="date"
           value={endDate}
           onChange={(e) => { setEndDate(e.target.value); handleDateChange(); }}
-          className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-900 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-indigo-500"
+          className="px-3 py-2 rounded-lg border border-divider bg-card text-primary text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100 dark:focus:ring-accent"
         />
+        </div>
 
         {tickerFilter && (
           <Link
             href={`/news/${tickerFilter}`}
-            className="px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-blue-600 hover:bg-gray-100 transition-colors dark:border-slate-600 dark:text-indigo-400 dark:hover:bg-slate-700"
+            className="px-3 py-2 rounded-lg border border-divider text-sm font-medium text-accent hover:bg-surface-muted transition-colors dark:border-slate-600 dark:text-accent dark:hover:bg-slate-700"
           >
             View {tickerFilter} Detail →
           </Link>
@@ -128,23 +147,23 @@ export default function AllNewsPage() {
       {/* Loading State */}
       {loading && (
         <div className="flex flex-col items-center justify-center py-20">
-          <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4 dark:border-indigo-400 dark:border-t-indigo-600"></div>
-          <p className="text-gray-500 dark:text-slate-400 text-sm">Loading articles...</p>
+          <div className="w-10 h-10 border-4 border-info-border border-t-blue-600 rounded-full animate-spin mb-4 dark:border-info-border dark:border-t-indigo-600"></div>
+          <p className="text-muted dark:text-slate-400 text-sm">Loading articles...</p>
         </div>
       )}
 
       {/* Error State */}
       {!loading && error && (
         <div className="flex flex-col items-center justify-center py-20">
-          <div className="w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center mb-4">
-            <svg className="w-8 h-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <div className="w-16 h-16 rounded-full bg-negative-soft dark:bg-negative-soft/30 flex items-center justify-center mb-4">
+            <svg className="w-8 h-8 text-negative" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <p className="text-red-600 dark:text-red-400 text-sm mb-3">{error}</p>
+          <p className="text-negative dark:text-negative text-sm mb-3">{error}</p>
           <button
             onClick={() => refetch()}
-            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 dark:bg-indigo-600 dark:hover:bg-indigo-700 transition-colors"
+            className="px-4 py-2 rounded-lg bg-action text-white text-sm hover:bg-action-hover dark:bg-action dark:hover:bg-action-hover transition-colors"
           >
             Retry
           </button>
@@ -154,13 +173,13 @@ export default function AllNewsPage() {
       {/* Empty State */}
       {!loading && !error && articles.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20">
-          <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-slate-700 flex items-center justify-center mb-4">
-            <svg className="w-8 h-8 text-gray-400 dark:text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <div className="w-16 h-16 rounded-full bg-surface-muted dark:bg-slate-700 flex items-center justify-center mb-4">
+            <svg className="w-8 h-8 text-muted dark:text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 11a2 2 0 01-2-2V7m2 10a2 2 0 002-2V9a2 2 0 00-2-2h-4" />
             </svg>
           </div>
-          <p className="text-gray-500 dark:text-slate-400 text-sm">No news articles found.</p>
-          <p className="text-xs text-gray-400 dark:text-slate-500 mt-1">News updates every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly off-hours coverage.</p>
+          <p className="text-muted dark:text-slate-400 text-sm">No news articles found.</p>
+          <p className="text-xs text-muted dark:text-slate-500 mt-1">News updates every 15 minutes from 4 AM to 8 PM ET on weekdays, with hourly off-hours coverage.</p>
         </div>
       )}
 
@@ -189,8 +208,8 @@ export default function AllNewsPage() {
                 disabled={page <= 1}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                   page <= 1
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
-                    : 'bg-white text-gray-700 hover:bg-blue-50 hover:border-blue-300 border-gray-300 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-indigo-900 dark:hover:border-indigo-500 dark:border-slate-600'
+                    ? 'bg-surface-muted text-muted cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
+                    : 'bg-card text-secondary hover:bg-info-soft hover:border-info-border border-divider dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-info-soft dark:hover:border-info-border dark:border-slate-600'
                 }`}
               >
                 &laquo; First
@@ -200,8 +219,8 @@ export default function AllNewsPage() {
                 disabled={page <= 1}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                   page <= 1
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
-                    : 'bg-white text-gray-700 hover:bg-blue-50 hover:border-blue-300 border-gray-300 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-indigo-900 dark:hover:border-indigo-500 dark:border-slate-600'
+                    ? 'bg-surface-muted text-muted cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
+                    : 'bg-card text-secondary hover:bg-info-soft hover:border-info-border border-divider dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-info-soft dark:hover:border-info-border dark:border-slate-600'
                 }`}
               >
                 ← Prev
@@ -218,8 +237,8 @@ export default function AllNewsPage() {
                     onClick={() => setPage(p)}
                     className={`w-10 h-10 rounded-lg text-sm font-medium transition-colors ${
                       p === page
-                        ? 'bg-blue-600 text-white dark:bg-indigo-600'
-                        : 'bg-white border border-gray-300 text-gray-700 hover:bg-blue-50 dark:bg-slate-800 dark:border-slate-600 dark:text-gray-100 dark:hover:bg-indigo-900'
+                        ? 'bg-action text-white dark:bg-action'
+                        : 'bg-card border border-divider text-secondary hover:bg-info-soft dark:bg-slate-800 dark:border-slate-600 dark:text-gray-100 dark:hover:bg-info-soft'
                     }`}
                   >
                     {p}
@@ -232,8 +251,8 @@ export default function AllNewsPage() {
                 disabled={page >= totalPages}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                   page >= totalPages
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
-                    : 'bg-white text-gray-700 hover:bg-blue-50 hover:border-blue-300 border-gray-300 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-indigo-900 dark:hover:border-indigo-500 dark:border-slate-600'
+                    ? 'bg-surface-muted text-muted cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
+                    : 'bg-card text-secondary hover:bg-info-soft hover:border-info-border border-divider dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-info-soft dark:hover:border-info-border dark:border-slate-600'
                 }`}
               >
                 Next →
@@ -243,8 +262,8 @@ export default function AllNewsPage() {
                 disabled={page >= totalPages}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                   page >= totalPages
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
-                    : 'bg-white text-gray-700 hover:bg-blue-50 hover:border-blue-300 border-gray-300 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-indigo-900 dark:hover:border-indigo-500 dark:border-slate-600'
+                    ? 'bg-surface-muted text-muted cursor-not-allowed dark:bg-slate-700 dark:text-slate-500 dark:border-slate-600'
+                    : 'bg-card text-secondary hover:bg-info-soft hover:border-info-border border-divider dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-info-soft dark:hover:border-info-border dark:border-slate-600'
                 }`}
               >
                 Last &raquo;

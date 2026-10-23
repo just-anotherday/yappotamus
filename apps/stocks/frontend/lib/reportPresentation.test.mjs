@@ -65,7 +65,7 @@ test('report detail labels supplied and cited counts independently', async () =>
   );
   assert.match(source, /formatArticlesSupplied\(report\.articles_count\)/);
   assert.match(source, /formatArticlesCited\(report\.report_data\.articles_used\?\.length \?\? 0\)/);
-  assert.match(source, /Articles Cited in Analysis/);
+  assert.match(source, /<SourceArticles articles=\{data\.articles_used\}/);
   assert.doesNotMatch(source, /<strong>Articles:<\/strong>/);
   assert.doesNotMatch(source, /report\.days_back/);
   assert.match(source, /data\.news_summary\?\.length/);

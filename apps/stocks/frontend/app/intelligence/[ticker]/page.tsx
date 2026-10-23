@@ -3,27 +3,29 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import ReportPdfButton from '@/components/ReportPdfButton';
 import type { CachedCompanyReport, KeyRisk } from '@/types/stock';
 import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { fetchCompanyReport, triggerCompanyReportRegeneration } from '@/lib/api';
-import { formatApiTimestamp } from '@/lib/formatters';
+import SourceArticles from '@/components/intelligence/SourceArticles';
+import TickerResearchNotes from '@/components/TickerResearchNotes';
 import { formatReportDateTime, hasOutlook, hasTechnicalAnalysis } from '@/lib/reportPresentation';
 
 function sentimentColor(sentiment: string): string {
   const s = sentiment.toLowerCase();
-  if (s.includes('very bullish')) return '#00c853';
-  if (s.includes('bullish')) return '#4caf50';
-  if (s.includes('neutral')) return '#ff9800';
-  if (s.includes('bearish')) return '#f44336';
-  if (s.includes('very bearish')) return '#b71c1c';
-  return '#9e9e9e';
+  if (s.includes('very bullish')) return 'var(--positive)';
+  if (s.includes('bullish')) return 'var(--positive)';
+  if (s.includes('neutral')) return 'var(--warning)';
+  if (s.includes('bearish')) return 'var(--negative)';
+  if (s.includes('very bearish')) return 'var(--negative)';
+  return 'var(--text-muted)';
 }
 
 function severityColor(severity: string): string {
   const s = severity.toLowerCase();
-  if (s === 'high') return '#f44336';
-  if (s === 'medium') return '#ff9800';
-  return '#4caf50';
+  if (s === 'high') return 'var(--negative)';
+  if (s === 'medium') return 'var(--warning)';
+  return 'var(--positive)';
 }
 
 export default function IntelligenceDetail() {
@@ -36,21 +38,24 @@ export default function IntelligenceDetail() {
   const [error, setError] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
 
-  const loadReport = useCallback(async () => {
+  const loadReport = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchCompanyReport(ticker);
-      setReport(data);
+      const data = await fetchCompanyReport(ticker, signal);
+      if (!signal?.aborted) setReport(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load report');
+      if (!signal?.aborted) setError(err instanceof Error ? err.message : 'Failed to load report');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [ticker]);
 
   useEffect(() => {
-    if (ticker) loadReport();
+    if (!ticker) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => { void loadReport(controller.signal); }, 0);
+    return () => { clearTimeout(timer); controller.abort(); };
   }, [ticker, loadReport]);
 
   const handleRegenerate = async () => {
@@ -89,18 +94,19 @@ export default function IntelligenceDetail() {
   if (error) {
     return (
       <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 20px' }}>
-        <button onClick={() => router.back()} style={{ marginBottom: 16, background: 'none', border: 'none', color: '#2196f3', cursor: 'pointer' }}>
+        <button onClick={() => router.back()} style={{ marginBottom: 16, background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer' }}>
           ← Back
         </button>
-        <div style={{ padding: 24, background: '#ffebee', borderRadius: 12, border: '1px solid #ffcdd2' }}>
-          <h2 style={{ color: '#c62828', margin: '0 0 8px' }}>⚠️ Report Not Available</h2>
+        <TickerResearchNotes ticker={ticker} />
+        <div style={{ padding: 24, background: 'var(--negative-soft)', borderRadius: 12, border: '1px solid var(--negative-border)' }}>
+          <h2 style={{ color: 'var(--negative)', margin: '0 0 8px' }}>⚠️ Report Not Available</h2>
           <p style={{ margin: '0 0 16px' }}>{error}</p>
           <button
             onClick={handleRegenerate}
             disabled={regenerating}
             style={{
               padding: '10px 20px',
-              background: regenerating ? '#e0e0e0' : '#4caf50',
+              background: regenerating ? 'var(--card-border)' : 'var(--positive)',
               color: '#fff',
               border: 'none',
               borderRadius: 8,
@@ -124,8 +130,8 @@ export default function IntelligenceDetail() {
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '40px 20px' }}>
       {/* Back + Header */}
-      <Link href="/intelligence" style={{ textDecoration: 'none', color: '#2196f3', display: 'inline-block', marginBottom: 24 }}>
-        ← Back to Dashboard
+      <Link href="/analysis/reports" style={{ textDecoration: 'none', color: 'var(--accent)', display: 'inline-block', marginBottom: 24 }}>
+        ← Back to Analysis Reports
       </Link>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32, flexWrap: 'wrap', gap: 16 }}>
@@ -133,7 +139,8 @@ export default function IntelligenceDetail() {
           <h1 style={{ fontSize: 32, fontWeight: 800, margin: '0 0 4px', color: 'var(--text-primary)' }}>{ticker}</h1>
           <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: 13 }}>Last updated: {updated} · Model: {report.model_used} · {report.articles_count} articles analyzed</p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <ReportPdfButton report={report} />
           <Link href={`/intelligence/${ticker}/history`} style={{
             padding: '10px 20px',
             background: '#7c4dff',
@@ -152,7 +159,7 @@ export default function IntelligenceDetail() {
             disabled={regenerating}
             style={{
               padding: '10px 20px',
-              background: regenerating ? '#e0e0e0' : '#ff9800',
+              background: regenerating ? 'var(--card-border)' : 'var(--warning)',
               color: '#fff',
               border: 'none',
               borderRadius: 8,
@@ -165,9 +172,14 @@ export default function IntelligenceDetail() {
         </div>
       </div>
 
+      <div className="mb-5">
+        <a href="#report-sources" className="text-sm font-medium text-accent underline underline-offset-4 dark:text-accent">View supporting articles ({rd.articles_used?.length ?? 0}) ↓</a>
+      </div>
+      <TickerResearchNotes ticker={ticker} />
+
       {/* Sentiment + Confidence */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 32 }}>
-        <div style={{ padding: 24, background: color + '11', border: `1px solid ${color}33`, borderRadius: 12 }}>
+        <div style={{ padding: 24, background: `color-mix(in srgb, ${color} 7%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 20%, transparent)`, borderRadius: 12 }}>
           <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--text-muted)' }}>Overall Sentiment</p>
           <h2 style={{ margin: 0, color, fontSize: 28, fontWeight: 800 }}>{report.overall_sentiment}</h2>
         </div>
@@ -199,7 +211,7 @@ export default function IntelligenceDetail() {
           <div style={cardStyle}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {rd.key_catalysts.map((c, i) => (
-                <div key={i} style={{ padding: '10px 16px', background: 'var(--section-bg)', borderRadius: 8, borderLeft: '4px solid #4caf50', fontSize: 14, color: 'var(--text-primary)' }}>
+                <div key={i} style={{ padding: '10px 16px', background: 'var(--section-bg)', borderRadius: 8, borderLeft: '4px solid var(--positive)', fontSize: 14, color: 'var(--text-primary)' }}>
                   {c}
                 </div>
               ))}
@@ -242,10 +254,10 @@ export default function IntelligenceDetail() {
                 <p style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}><strong>Resistance:</strong> {rd.technical_analysis.resistance_levels.join(', ')}</p>
               )}
               {rd.technical_analysis.breakout_level && (
-                <p style={{ margin: '0 0 8px', color: '#4caf50' }}><strong>Breakout Level:</strong> {rd.technical_analysis.breakout_level}</p>
+                <p style={{ margin: '0 0 8px', color: 'var(--positive)' }}><strong>Breakout Level:</strong> {rd.technical_analysis.breakout_level}</p>
               )}
               {rd.technical_analysis.breakdown_level && (
-                <p style={{ margin: 0, color: '#f44336' }}><strong>Breakdown Level:</strong> {rd.technical_analysis.breakdown_level}</p>
+                <p style={{ margin: 0, color: 'var(--negative)' }}><strong>Breakdown Level:</strong> {rd.technical_analysis.breakdown_level}</p>
               )}
               </>
             )}
@@ -259,20 +271,20 @@ export default function IntelligenceDetail() {
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>🔭 Outlook</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
           {rd.outlook?.short_term && (
-            <div style={{ padding: 16, background: '#e3f2fd', borderRadius: 8 }}>
-              <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: '#1565c0' }}>Short Term (1-7 days)</p>
+            <div style={{ padding: 16, background: 'var(--info-soft)', borderRadius: 8 }}>
+              <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: 'var(--info)' }}>Short Term (1-7 days)</p>
               <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.short_term}</p>
             </div>
           )}
           {rd.outlook?.medium_term && (
-            <div style={{ padding: 16, background: '#fff3e0', borderRadius: 8 }}>
+            <div style={{ padding: 16, background: 'var(--warning-soft)', borderRadius: 8 }}>
               <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: '#e65100' }}>Medium Term (1-3 months)</p>
               <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.medium_term}</p>
             </div>
           )}
           {rd.outlook?.long_term && (
-            <div style={{ padding: 16, background: '#e8f5e9', borderRadius: 8 }}>
-              <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: '#2e7d32' }}>Long Term (6-12 months)</p>
+            <div style={{ padding: 16, background: 'var(--positive-soft)', borderRadius: 8 }}>
+              <p style={{ margin: '0 0 4px', fontSize: 12, fontWeight: 700, color: 'var(--positive)' }}>Long Term (6-12 months)</p>
               <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.long_term}</p>
             </div>
           )}
@@ -320,23 +332,7 @@ export default function IntelligenceDetail() {
         </section>
       )}
 
-      {/* Source Articles */}
-      {rd.articles_used?.length > 0 && (
-        <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>📚 Source Articles ({rd.articles_used.length})</h2>
-          <div style={cardStyle}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {rd.articles_used.map((a, i) => (
-                <a key={i} href={a.url || '#'} target="_blank" rel="noopener noreferrer"
-                  style={{ textDecoration: 'none', fontSize: 13, color: '#2196f3', padding: '4px 0' }}>
-                  {a.title}
-                  {a.published_at && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{formatApiTimestamp(a.published_at, { year: 'numeric', month: 'numeric', day: 'numeric' })}</span>}
-                </a>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
+      <SourceArticles articles={rd.articles_used} />
     </div>
   );
 }

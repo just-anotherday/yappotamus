@@ -53,8 +53,8 @@ export default function ArticleSelectionMeter({
             disabled={max <= minMax}
             aria-label="Decrease max selectable articles"
             style={{
-              width: 22, height: 22, borderRadius: 6, border: '1px solid #d1d5db',
-              background: 'white', color: '#374151', fontSize: '0.875rem', lineHeight: 1,
+              width: 22, height: 22, borderRadius: 6, border: '1px solid var(--card-border)',
+              background: 'var(--card-bg)', color: '#374151', fontSize: '0.875rem', lineHeight: 1,
               cursor: max <= minMax ? 'not-allowed' : 'pointer', opacity: max <= minMax ? 0.4 : 1,
             }}
             className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
@@ -71,8 +71,8 @@ export default function ArticleSelectionMeter({
             disabled={max >= maxMax}
             aria-label="Increase max selectable articles"
             style={{
-              width: 22, height: 22, borderRadius: 6, border: '1px solid #d1d5db',
-              background: 'white', color: '#374151', fontSize: '0.875rem', lineHeight: 1,
+              width: 22, height: 22, borderRadius: 6, border: '1px solid var(--card-border)',
+              background: 'var(--card-bg)', color: '#374151', fontSize: '0.875rem', lineHeight: 1,
               cursor: max >= maxMax ? 'not-allowed' : 'pointer', opacity: max >= maxMax ? 0.4 : 1,
             }}
             className="dark:bg-slate-800 dark:border-slate-600 dark:text-gray-200"
@@ -88,7 +88,7 @@ export default function ArticleSelectionMeter({
         aria-valuenow={selected}
         aria-valuemin={0}
         aria-valuemax={max}
-        style={{ height: 6, borderRadius: 3, background: '#e5e7eb', overflow: 'hidden' }}
+        style={{ height: 6, borderRadius: 3, background: 'var(--card-border)', overflow: 'hidden' }}
         className="dark:bg-slate-700"
       >
         <div

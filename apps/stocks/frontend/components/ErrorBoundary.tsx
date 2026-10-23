@@ -36,7 +36,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         this.props.fallback || (
           <div className="flex flex-col items-center justify-center min-h-[200px] p-8 text-center">
             <svg
-              className="w-12 h-12 text-red-500 dark:text-red-400 mb-4"
+              className="w-12 h-12 text-negative dark:text-negative mb-4"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -48,15 +48,15 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
               />
             </svg>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+            <h2 className="text-lg font-semibold text-primary dark:text-gray-100 mb-2">
               Something went wrong
             </h2>
-            <p className="text-sm text-gray-500 dark:text-slate-400 mb-4">
+            <p className="text-sm text-muted dark:text-slate-400 mb-4">
               {this.state.error?.message || 'An unexpected error occurred.'}
             </p>
             <button
               onClick={() => this.setState({ hasError: false, error: null })}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 dark:bg-indigo-600 text-white hover:bg-blue-700 dark:hover:bg-indigo-700 transition-colors"
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-action dark:bg-action text-white hover:bg-action-hover dark:hover:bg-action-hover transition-colors"
             >
               Try Again
             </button>

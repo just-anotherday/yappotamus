@@ -1089,6 +1089,9 @@ async def test_cold_etf_watchlist_uses_live_quote_when_fundamentals_are_unavaila
     async def unavailable_yfinance(_ticker):
         return None
 
+    async def unavailable_finnhub(_ticker):
+        return None
+
     market_data = MarketDataService()
     market_data.latest_quotes["SPY"] = {
         "ticker": "SPY",
@@ -1108,6 +1111,7 @@ async def test_cold_etf_watchlist_uses_live_quote_when_fundamentals_are_unavaila
     }
 
     monkeypatch.setattr(hybrid_data_service, "_yf_async", unavailable_yfinance)
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", unavailable_finnhub)
     monkeypatch.setattr(
         watchlist_router.MarketDataService,
         "get_instance",
@@ -1141,6 +1145,9 @@ async def test_cold_etf_price_only_quote_never_creates_session_baseline(monkeypa
     async def unavailable_yfinance(_ticker):
         return None
 
+    async def unavailable_finnhub(_ticker):
+        return None
+
     market_data = MarketDataService()
     market_data.latest_quotes["SPY"] = {
         "ticker": "SPY",
@@ -1148,6 +1155,7 @@ async def test_cold_etf_price_only_quote_never_creates_session_baseline(monkeypa
         "volume": 100,
     }
     monkeypatch.setattr(hybrid_data_service, "_yf_async", unavailable_yfinance)
+    monkeypatch.setattr(hybrid_data_service, "finnhub_get_stock_price", unavailable_finnhub)
     monkeypatch.setattr(
         watchlist_router.MarketDataService,
         "get_instance",
