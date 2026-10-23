@@ -14,6 +14,7 @@ from typing import List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.models.asset import Asset, AssetTicker
 from backend.services.finnhub_service import fetch_company_profile
@@ -27,7 +28,7 @@ async def _get_or_create_asset(session: AsyncSession, ticker: str) -> Optional[A
 
     # Check if asset already exists with this ticker
     existing_ticker = await session.execute(
-        select(AssetTicker).where(
+        select(AssetTicker).options(selectinload(AssetTicker.asset)).where(
             AssetTicker.ticker == ticker_upper,
             AssetTicker.active_to.is_(None),
         )
@@ -146,7 +147,7 @@ async def get_asset_by_ticker(session: AsyncSession, ticker: str) -> Optional[As
 
     # Fallback: check asset_tickers table
     at_result = await session.execute(
-        select(AssetTicker).where(
+        select(AssetTicker).options(selectinload(AssetTicker.asset)).where(
             AssetTicker.ticker == ticker_upper,
             AssetTicker.active_to.is_(None),
         )

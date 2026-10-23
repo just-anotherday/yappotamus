@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import faulthandler
 import json
 import os
 import sys
@@ -33,15 +34,16 @@ from backend.config.database import async_session_factory
 from backend.routers import analysis as analysis_router
 from backend.services.market_data_service import parse_download_quotes
 from backend.services.news_ingestion_service import fetch_and_ingest_watchlist_once
+from backend.services.watchlist_service import get_all_tickers
 
 
 EASTERN = ZoneInfo("America/New_York")
-REPORT_TICKERS = ("SPCX", "AMD", "NVDA", "SPY")
 REPORT_MODEL = "qwen3.8:27b"
 REPORT_ARTICLE_LIMIT = 50
 REPORT_DAYS_BACK = 14
 REPORT_PROMPT_VERSION = "3.0"
 REPORT_MAX_ATTEMPTS = 2
+RUNTIME_STARTUP_TIMEOUT_SECONDS = 30
 ALEMBIC_INI = STOCKS_ROOT / "alembic.ini"
 ALEMBIC_UPGRADE_COMMAND = "python -m alembic upgrade head"
 
@@ -73,6 +75,13 @@ async def _database_migration_revisions() -> tuple[str, ...]:
             text("SELECT version_num FROM alembic_version ORDER BY version_num")
         )
         return tuple(row[0] for row in result.all())
+
+
+async def _watchlist_report_tickers() -> tuple[str, ...]:
+    """Read the current report targets from the ordered database watchlist."""
+    async with async_session_factory() as session:
+        tickers = await get_all_tickers(session)
+    return tuple(dict.fromkeys(ticker.strip().upper() for ticker in tickers))
 
 
 def _revision_ancestors(
@@ -160,9 +169,9 @@ async def _run_schema_preflight() -> bool:
     return False
 
 
-def _fetch_report_quotes() -> dict[str, dict[str, Any]]:
+def _fetch_report_quotes(tickers: tuple[str, ...]) -> dict[str, dict[str, Any]]:
     frame = yf.download(
-        tickers=list(REPORT_TICKERS),
+        tickers=list(tickers),
         period="5d",
         interval="1m",
         group_by="column",
@@ -172,7 +181,7 @@ def _fetch_report_quotes() -> dict[str, dict[str, Any]]:
         threads=True,
         timeout=15,
     )
-    quotes = parse_download_quotes(frame, list(REPORT_TICKERS))
+    quotes = parse_download_quotes(frame, list(tickers))
     for ticker, quote in quotes.items():
         quote.update(
             ticker=ticker,
@@ -259,7 +268,7 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
             "dry_run_completed",
             news_action="run",
             reports_action="run" if is_weekday else "skip_weekend",
-            report_tickers=list(REPORT_TICKERS),
+            report_ticker_source="database_watchlist",
             model=REPORT_MODEL,
             max_articles=REPORT_ARTICLE_LIMIT,
         )
@@ -271,6 +280,25 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
     if preflight_only:
         _event("daily_pipeline_preflight_completed")
         return 0
+
+    try:
+        report_tickers = await _watchlist_report_tickers()
+    except Exception as exc:
+        _event(
+            "daily_pipeline_failed",
+            reason="watchlist_read_failed",
+            exception_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return 1
+    if not report_tickers:
+        _event("daily_pipeline_failed", reason="watchlist_empty")
+        return 1
+    _event(
+        "report_watchlist_loaded",
+        ticker_count=len(report_tickers),
+        tickers=list(report_tickers),
+    )
 
     news_summary = await fetch_and_ingest_watchlist_once(
         async_session_factory,
@@ -296,14 +324,28 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
         _event("daily_pipeline_completed", reports_generated=0)
         return 0
 
-    quotes = await asyncio.to_thread(_fetch_report_quotes)
-    missing_quotes = sorted(set(REPORT_TICKERS) - set(quotes))
-    if missing_quotes:
-        _event("daily_pipeline_failed", reason="missing_market_quotes", tickers=missing_quotes)
+    try:
+        quotes = await asyncio.to_thread(_fetch_report_quotes, report_tickers)
+    except Exception as exc:
+        _event(
+            "daily_pipeline_failed",
+            reason="market_quote_fetch_failed",
+            exception_type=type(exc).__name__,
+            error=str(exc),
+        )
         return 1
 
     outcomes = []
-    for ticker in REPORT_TICKERS:
+    for ticker in report_tickers:
+        if ticker not in quotes:
+            outcome = {
+                "ticker": ticker,
+                "status": "failed",
+                "failure_kind": "missing_market_quote",
+            }
+            _event("report_failed", **outcome)
+            outcomes.append(outcome)
+            continue
         outcomes.append(await _generate_report(ticker, quotes[ticker]))
 
     failures = [item for item in outcomes if item["status"] != "completed"]
@@ -329,9 +371,24 @@ def main() -> int:
         help="Validate the local database migration state without running ingestion or reports.",
     )
     args = parser.parse_args()
-    return asyncio.run(
-        run(dry_run=args.dry_run, preflight_only=args.preflight_only)
+    _event(
+        "runtime_startup_started",
+        timeout_seconds=RUNTIME_STARTUP_TIMEOUT_SECONDS,
+        diagnostic="If event-loop startup stalls, run from Windows Task Scheduler or a shell with local socket access.",
     )
+    # Windows asyncio creates a local socket pair before entering the coroutine.
+    # Restricted execution can block there, so an asyncio timeout cannot help.
+    # Limit only loop startup; full-watchlist report generation is unrestricted.
+    faulthandler.dump_traceback_later(RUNTIME_STARTUP_TIMEOUT_SECONDS, exit=True)
+
+    async def start():
+        faulthandler.cancel_dump_traceback_later()
+        return await run(dry_run=args.dry_run, preflight_only=args.preflight_only)
+
+    try:
+        return asyncio.run(start())
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == "__main__":

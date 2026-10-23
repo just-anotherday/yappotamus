@@ -2132,7 +2132,10 @@ async def test_report_84_correction_revalidates_and_remaps_the_corrected_selecte
         rule="technical_role_grounding",
         section="technical_analysis",
     )
-    client = _SequencedClient([initial, invalid, corrected, _valid_review(final_claim)])
+    client = _SequencedClient(
+        [initial, invalid, corrected, corrected]
+        if retain_resistance else [initial, invalid, corrected, _valid_review(final_claim)]
+    )
     await _install_client(monkeypatch, "ollama", client)
 
     if retain_resistance:
@@ -2142,7 +2145,7 @@ async def test_report_84_correction_revalidates_and_remaps_the_corrected_selecte
                     request, provider="ollama", model="test-model"
                 )
         assert exc_info.value.details["reason"] == "replacement_no_op"
-        assert len(client.calls) == 3
+        assert len(client.calls) == 4
         return
 
     with caplog.at_level("INFO", logger="backend.services.ollama_service"):
@@ -6979,7 +6982,7 @@ async def test_phase_c_generation_uses_one_request_local_schema_call(caplog):
 
 
 @pytest.mark.asyncio
-async def test_phase_c_model_like_no_op_response_is_rejected_after_one_call():
+async def test_phase_c_model_like_no_op_response_is_rejected_after_bounded_retry():
     _, registry = _phase_b_report_and_registry()
     target_id = "technical_analysis.trend.segment_0"
     target = registry.get(target_id)
@@ -7015,11 +7018,51 @@ async def test_phase_c_model_like_no_op_response_is_rejected_after_one_call():
             model="test-model",
         )
 
-    assert len(client.calls) == 1
-    assert client.calls[0]["max_attempts"] == 1
+    assert len(client.calls) == 2
+    assert all(call["max_attempts"] == 1 for call in client.calls)
+    assert "replacement_no_op" in client.calls[1]["user_prompt"]
+    assert client.calls[1]["response_schema"] == client.calls[0]["response_schema"]
     assert exc_info.value.details["failure_kind"] == "correction_patch_schema_invalid"
     assert exc_info.value.details["reason"] == "replacement_no_op"
     assert exc_info.value.details["target_id"] == target_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_kind", ["no_op", "malformed", "attribution"])
+async def test_phase_c_patch_retry_recovers_with_original_evidence_boundary(invalid_kind):
+    _, registry = _phase_b_report_and_registry()
+    target_id = "bull_case[0].segment_0"
+    original = registry.get(target_id).original_target_text
+    valid_patch = {
+        "target_id": target_id,
+        "operation": "REPLACE",
+        "replacement": "Supplied evidence supports a conditional interpretation.",
+        "article_indices_used": [1],
+    }
+    invalid_patch = dict(valid_patch)
+    if invalid_kind == "no_op":
+        invalid_patch["replacement"] = original
+    elif invalid_kind == "attribution":
+        invalid_patch["article_indices_used"] = [2]
+    invalid_response = (
+        "not json" if invalid_kind == "malformed"
+        else json.dumps({"patches": [invalid_patch]})
+    )
+    client = SimpleNamespace(generate=AsyncMock(side_effect=[
+        invalid_response, json.dumps({"patches": [valid_patch]}),
+    ]))
+    result = await ollama_service.generate_correction_patch_set(
+        client, _request(), registry,
+        [_phase_c_violation(target_id, section="bull_case")],
+        [_phase_c_claim(target_id, section="bull_case", indices=[1])],
+        provider="ollama", model="test-model",
+    )
+    first, retry = [call.kwargs for call in client.generate.call_args_list]
+    assert retry["user_prompt"].endswith(first["user_prompt"])
+    assert retry["response_schema"] == first["response_schema"]
+    assert "previous patch set was rejected" in retry["user_prompt"]
+    assert result.patches[0].replacement == valid_patch["replacement"]
+    assert result.patches[0].article_indices_used == [1]
 
 
 @pytest.mark.asyncio
@@ -7089,7 +7132,9 @@ async def test_phase_d_unmappable_legacy_scalar_fails_before_correction_provider
 
 @pytest.mark.asyncio
 async def test_phase_d_incomplete_patch_set_has_no_final_review_or_fallback(monkeypatch):
-    client = _SequencedClient([_report(), _invalid_review(), {"patches": []}])
+    client = _SequencedClient([
+        _report(), _invalid_review(), {"patches": []}, {"patches": []},
+    ])
     await _install_client(monkeypatch, "ollama", client)
 
     with pytest.raises(AISemanticGroundingError) as exc_info:
@@ -7100,11 +7145,11 @@ async def test_phase_d_incomplete_patch_set_has_no_final_review_or_fallback(monk
     assert exc_info.value.details["failure_kind"] == (
         "correction_patch_incomplete_target_set"
     )
-    assert len(client.calls) == 3
+    assert len(client.calls) == 4
     assert sum(
         call["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT
         for call in client.calls
-    ) == 1
+    ) == 2
 
 
 @pytest.mark.asyncio

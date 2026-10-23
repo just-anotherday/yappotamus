@@ -4,7 +4,7 @@
 // CONTEXT: WatchlistConfigContext - Global cached config from /api/watchlist/config
 // ==============================================================================
 
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
 import { getWatchlistConfig } from '@/lib/api';
 import type { WatchlistConfig } from '@/types/stock';
 
@@ -25,21 +25,15 @@ export function WatchlistConfigProvider({ children }: { children: React.ReactNod
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchConfig = useCallback(async () => {
-    try {
-      const data = await getWatchlistConfig();
-      setConfig(data);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load watchlist config');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    fetchConfig();
-  }, [fetchConfig]);
+    let active = true;
+    void getWatchlistConfig().then(data => {
+      if (active) { setConfig(data); setError(null); }
+    }).catch(err => {
+      if (active) setError(err instanceof Error ? err.message : 'Failed to load watchlist config');
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
 
   return (
     <WatchlistConfigContext.Provider value={{ config, loading, error }}>

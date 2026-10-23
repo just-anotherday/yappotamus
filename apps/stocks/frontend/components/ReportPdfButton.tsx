@@ -27,7 +27,7 @@ export default function ReportPdfButton({ report }: { report: ReportPdfSource })
           cursor: busy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
         {busy ? 'Preparing PDF…' : 'Download PDF'}
       </button>
-      {error && <p role="alert" style={{ fontSize: 12, color: '#dc2626', margin: '6px 0' }}>{error}</p>}
+      {error && <p role="alert" style={{ fontSize: 12, color: 'var(--negative)', margin: '6px 0' }}>{error}</p>}
     </div>
   );
 }

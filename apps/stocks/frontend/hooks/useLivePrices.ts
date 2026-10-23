@@ -97,7 +97,7 @@ export function useLivePrices() {
       setConnected(false);
 
       // Only reconnect if not an intentional close (code 1000)
-      if (event.code === 4401) {
+      if (event.code === 4401 || event.code === 4403) {
         stoppedRef.current = true;
         invalidateAppToken();
         return;

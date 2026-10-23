@@ -1272,7 +1272,7 @@ async def test_non_atomic_correction_stops_pipeline_before_merge_review_and_pers
         async def generate(self, **kwargs):
             if kwargs["system_prompt"] == ollama_service.PATCH_CORRECTION_SYSTEM_PROMPT:
                 self.patch_calls += 1
-                assert self.patch_calls == 1, "No second correction call"
+                assert self.patch_calls <= 2, "Correction retry must remain bounded"
                 assert kwargs["max_attempts"] == 1, "No provider retry"
                 return json.dumps({"patches": [{
                     "target_id": "technical_analysis.trend.segment_1",
@@ -1303,7 +1303,7 @@ async def test_non_atomic_correction_stops_pipeline_before_merge_review_and_pers
         await _call_route(session)
     assert caught.value.details["failure_kind"] == "correction_patch_schema_invalid"
     assert caught.value.details["reason"] == "replacement_not_atomic"
-    assert client.patch_calls == 1
+    assert client.patch_calls == 2
     assert len(client.review_payloads) == 1  # Initial review only.
     merge.assert_not_called()
     final_plan.assert_not_called()

@@ -9,6 +9,7 @@ import { getAppWebSocketProtocols, invalidateAppToken } from '@/lib/apiFetch';
 import { NEWS_WS_URL } from '@/lib/serviceUrls';
 import { ReconnectingWebSocket } from '@/lib/reconnectingWebSocket';
 import type { NewsArticle } from '@/types/stock';
+import { NEWS_SYNC_COMPLETED_EVENT } from '@/lib/newsSync';
 
 interface UseNewsReturn {
   articles: NewsArticle[];
@@ -82,11 +83,21 @@ export function useNews(
   }, [page]);
 
   useEffect(() => {
+    const onSynced = () => { void loadData(1); };
+    window.addEventListener(NEWS_SYNC_COMPLETED_EVENT, onSynced);
+    return () => window.removeEventListener(NEWS_SYNC_COMPLETED_EVENT, onSynced);
+  }, [loadData]);
+
+  useEffect(() => {
     const protocols = getAppWebSocketProtocols();
     if (!protocols) return;
 
     const connection = new ReconnectingWebSocket({
-      createSocket: () => new WebSocket(NEWS_WS_URL, protocols),
+      createSocket: () => {
+        const currentProtocols = getAppWebSocketProtocols();
+        if (!currentProtocols) throw new Error('No active session');
+        return new WebSocket(NEWS_WS_URL, currentProtocols);
+      },
       onUnauthorized: invalidateAppToken,
       onMessage: (event) => {
         try {

@@ -1,4 +1,5 @@
 import { normalizeFetchError } from '@/lib/apiError';
+import { getSupabaseAuth, usesSupabaseAuth } from '@/lib/supabaseAuth';
 
 // ==============================================================================
 // APP ACCESS TOKEN - single-user auth (sessionStorage-backed fetch wrapper)
@@ -52,7 +53,16 @@ export function invalidateAppToken(): void {
 /** Drop-in replacement for `fetch` that attaches the app access token and
  * reacts to a 401 by clearing the token and notifying the auth gate. */
 export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  const token = getAppToken();
+  // getSession refreshes an expired session before making the API request.
+  // Authorization is enforced independently by the backend.
+  let token = getAppToken();
+  if (usesSupabaseAuth) {
+    const { data, error } = await getSupabaseAuth().auth.getSession();
+    if (error) throw normalizeFetchError(error);
+    token = data.session?.access_token ?? null;
+    if (token) setAppToken(token);
+    else clearAppToken();
+  }
   const headers = new Headers(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
@@ -63,7 +73,7 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
     throw normalizeFetchError(error);
   }
 
-  if (res.status === 401) {
+  if (res.status === 401 || (usesSupabaseAuth && res.status === 403)) {
     invalidateAppToken();
   }
 

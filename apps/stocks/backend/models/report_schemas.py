@@ -13,6 +13,12 @@ from pydantic import BaseModel, ConfigDict, field_serializer
 from backend.lib.timestamps import utc_isoformat
 
 
+class ReportCompanyOption(BaseModel):
+    ticker: str
+    company_name: str
+    report_count: int
+
+
 class ReportSummaryOut(BaseModel):
     """Slim representation for list pagination."""
     model_config = ConfigDict(from_attributes=True)

@@ -3,6 +3,7 @@
 // ==============================================================================
 
 import { useState, useRef, useEffect } from "react";
+import { articleLink } from "@/lib/articleEvidence";
 import type { WatchlistItem } from "@/types/stock";
 import { formatCurrency } from "@/lib/formatters";
 import { formatMarketSize, formatWatchlistNumber, getMarketSizeLabel } from "@/lib/watchlistPresentation";
@@ -51,14 +52,14 @@ export default function TickerTooltip({ item }: Props) {
       onMouseLeave={handleMouseLeave}
     >
       <div
-        className={`w-[340px] bg-white shadow-2xl rounded-xl border border-gray-200 overflow-hidden transition-all duration-200 pointer-events-auto ${
+        className={`w-[340px] bg-card shadow-2xl rounded-xl border border-divider overflow-hidden transition-all duration-200 pointer-events-auto ${
           show ? "opacity-100 scale-100 visible" : "opacity-0 scale-95 invisible"
         }`}
       >
         {/* Header */}
         <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-3">
           <p className="text-white font-bold text-base">{item.ticker}</p>
-          <p className="text-blue-100 text-sm truncate">{item.company_name || "Unknown Company"}</p>
+          <p className="text-info text-sm truncate">{item.company_name || "Unknown Company"}</p>
         </div>
 
         {/* Body */}
@@ -67,12 +68,12 @@ export default function TickerTooltip({ item }: Props) {
           {(item.sector || item.industry) && (
             <div className="flex gap-2 flex-wrap">
               {item.sector && (
-                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-medium">
+                <span className="px-2 py-0.5 bg-info-soft text-info rounded-full font-medium">
                   {item.sector}
                 </span>
               )}
               {item.industry && (
-                <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full font-medium">
+                <span className="px-2 py-0.5 bg-info-soft text-info rounded-full font-medium">
                   {item.industry}
                 </span>
               )}
@@ -80,38 +81,38 @@ export default function TickerTooltip({ item }: Props) {
           )}
 
           {/* Description */}
-          <p className="text-gray-600 leading-relaxed">{summary}</p>
+          <p className="text-secondary leading-relaxed">{summary}</p>
 
           {/* Metrics Grid */}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1 border-t border-gray-100">
-            <span className="text-gray-500 font-medium">Employees</span>
-            <span className="text-gray-900 font-semibold text-right">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1 border-t border-divider">
+            <span className="text-muted font-medium">Employees</span>
+            <span className="text-primary font-semibold text-right">
               {item.full_time_employees != null ? item.full_time_employees.toLocaleString() : "N/A"}
             </span>
 
-            <span className="text-gray-500 font-medium">{getMarketSizeLabel(item)}</span>
-            <span className="text-gray-900 font-semibold text-right">
+            <span className="text-muted font-medium">{getMarketSizeLabel(item)}</span>
+            <span className="text-primary font-semibold text-right">
               {formatMarketSize(item)}
             </span>
 
             {item.average_analyst_rating && (
               <>
-                <span className="text-gray-500 font-medium">Analyst Rating</span>
-                <span className="text-gray-900 font-semibold text-right">{item.average_analyst_rating}</span>
+                <span className="text-muted font-medium">Analyst Rating</span>
+                <span className="text-primary font-semibold text-right">{item.average_analyst_rating}</span>
               </>
             )}
 
             {item.forward_pe != null && (
               <>
-                <span className="text-gray-500 font-medium">Forward P/E</span>
-                <span className="text-gray-900 font-semibold text-right">{formatWatchlistNumber(item.forward_pe, 1)}</span>
+                <span className="text-muted font-medium">Forward P/E</span>
+                <span className="text-primary font-semibold text-right">{formatWatchlistNumber(item.forward_pe, 1)}</span>
               </>
             )}
 
             {(item.fifty_two_week_low != null && item.fifty_two_week_high != null) && (
               <>
-                <span className="text-gray-500 font-medium">52W Range</span>
-                <span className="text-gray-900 font-semibold text-right">
+                <span className="text-muted font-medium">52W Range</span>
+                <span className="text-primary font-semibold text-right">
                   {formatCurrency(item.fifty_two_week_low)} – {formatCurrency(item.fifty_two_week_high)}
                 </span>
               </>
@@ -120,12 +121,12 @@ export default function TickerTooltip({ item }: Props) {
 
           {/* Website Link */}
           {item.website && (
-            <div className="pt-1 border-t border-gray-100">
+            <div className="pt-1 border-t border-divider">
               <a
-                href={item.website}
+                href={articleLink(item.website)?.href || '#'}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                className="inline-flex items-center gap-1.5 text-accent hover:text-info font-medium transition-colors"
               >
                 <span>Website</span>
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

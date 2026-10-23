@@ -13,6 +13,10 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 
 ## Backend Deployment (Render)
 
+For owner-only Supabase email/password login, follow
+[the private login setup](docs/supabase-login.md) for both backend and frontend
+environment variables and the deployment order.
+
 ### Prerequisites
 - Render account + web service created
 - Supabase PostgreSQL instance running
@@ -24,7 +28,11 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
 |----------|----------|-------------|
 | `DATABASE_URL` | **Yes** | Supabase PostgreSQL connection string |
 | `ENVIRONMENT` | **Yes** | Set to `production`; disables development reload behavior and the in-process news scheduler. |
-| `APP_ACCESS_TOKEN` | **Yes** | Private token used by the frontend for authenticated API/WebSocket access |
+| `AUTH_PROVIDER` | **Yes** for Supabase login | Set `supabase` for owner-only account login; defaults to legacy `token` mode. |
+| `SUPABASE_URL` | **Yes** for Supabase login | Supabase project URL. |
+| `SUPABASE_PUBLISHABLE_KEY` | **Yes** for Supabase login | Public project key, starting with `sb_publishable_`. No admin key is needed for login. |
+| `SUPABASE_ALLOWED_USER_ID` | **Yes** for Supabase login | Exact Supabase user UUID allowed to access the application. |
+| `APP_ACCESS_TOKEN` | Only in `token` mode | Legacy shared browser token; ignored in Supabase mode. |
 | `FINNHUB_API_KEY` | **Yes** | Market data API key |
 | `FINNHUB_REQUESTS_PER_MINUTE` | No | Defaults to and is capped at `45`, reserving 25% below Finnhub Free's 60/minute ceiling. |
 | `INTERNAL_JOB_TOKEN` | **Yes** for scheduled ingestion | Dedicated bearer token accepted only by `POST /internal/jobs/news-ingest`. |
@@ -180,6 +188,19 @@ causes the custom domain to return a 404 instead of invoking Next.js.
 |----------|----------|-------------|
 | `NEXT_PUBLIC_API_BASE` | **Yes** | `https://yapvibes-stocks-api.onrender.com` |
 | `NEXT_PUBLIC_WS_URL` | No | Optional override; normally derived as `wss://yapvibes-stocks-api.onrender.com/ws` |
+| `NEXT_PUBLIC_AUTH_PROVIDER` | **Yes** for private login | Set `supabase`, matching the backend. |
+| `NEXT_PUBLIC_SUPABASE_URL` | **Yes** for private login | Same project URL as backend `SUPABASE_URL`. |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | **Yes** for private login | Public project key; follow `docs/supabase-login.md`. |
+
+Install dependencies from the repository root and keep only the root
+`package-lock.json`. Stale lockfiles in `apps/stocks` or
+`apps/stocks/frontend` make OpenNext misidentify the monorepo root. The frontend
+sets `outputFileTracingRoot` to the repository root so standalone output includes
+hoisted dependencies and OpenNext can patch the Next.js runtime correctly.
+
+`.open-next` and `.wrangler` are generated output and local Worker state; do not
+commit them. After building, `wrangler dev --local` can verify the generated
+Worker without deploying it.
 
 ### Manual Deployment
 
@@ -188,7 +209,7 @@ cd apps/stocks/frontend
 npm run deploy:cf
 ```
 
-The two `NEXT_PUBLIC_*` values are compiled into the browser bundle, so set them
+The `NEXT_PUBLIC_*` values are compiled into the browser bundle, so set them
 as **build variables before building**. They are not secrets.
 
 The reports page offers both prompt v2.0 (Stable) and v3.0 (Experimental).

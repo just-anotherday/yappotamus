@@ -263,6 +263,15 @@ def create_app() -> FastAPI:
     )
     app.state.started_at = time.time()
 
+    @app.middleware("http")
+    async def private_response_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Owner data and authentication responses must not survive in HTTP caches.
+        if request.url.path.startswith(("/api/", "/internal/")):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     # ---------- Rate Limiting Middleware (SEC-003 / TD-004) ----------
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next):

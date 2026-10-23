@@ -12,6 +12,13 @@ from backend import main as backend_main
 from backend.main import app
 
 
+def test_private_api_responses_cannot_be_cached():
+    response = TestClient(app).get("/api/auth/verify")
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
 def test_health_liveness_is_lightweight(monkeypatch):
     monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
     monkeypatch.delenv("RENDER_GIT_BRANCH", raising=False)

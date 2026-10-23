@@ -4,6 +4,24 @@ The existing `YapVibes Stocks Daily News and Reports` task calls
 `run_daily_news_and_reports_task.ps1` at 20:30 Eastern. The older Codex
 automation must remain paused. Ollama is managed independently.
 
+The older Codex run's silent hang was reproduced in restricted execution:
+Windows asyncio blocked in `socket._fallback_socketpair` while constructing its
+event loop, before the pipeline coroutine could emit a stage event. The same
+database preflight passed outside the sandbox. Use the existing Windows task
+for scheduled runs; a manual diagnostic needs local socket and database access.
+The Python entry point now emits `runtime_startup_started` and exits with a
+stack diagnostic if event-loop startup exceeds 30 seconds. This watchdog is
+cancelled as soon as the coroutine starts and does not limit report runtime.
+
+The pipeline reads report targets from the current database watchlist on every
+run, using the same ordered list and 100-ticker ceiling as the application.
+News is collected daily; reports run on weekdays in America/New_York using
+`qwen3.8:27b`, prompt v3, and up to 50 articles per ticker. Each ticker receives
+an outcome in the final JSON log summary. Missing quotes or a failed report
+do not stop attempts for the remaining tickers; any failure makes the run exit
+nonzero. A scheduled run therefore confirms complete coverage only when its
+summary reports zero failures. An empty or unreadable watchlist fails the run.
+
 The development entry point remains `.venv\Scripts\python.exe run.py`.
 It enables reload outside production. For the scheduled task,
 `run_task_backend.py` uses the same `backend.main:app` and

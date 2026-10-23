@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { articleLink } from '@/lib/articleEvidence';
 import ReportPdfButton from '@/components/ReportPdfButton';
 import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { fetchCompanyReportHistory } from '@/lib/api';
@@ -13,19 +14,19 @@ import type { ArticleReference, FinancialAnalysisReport, KeyRisk } from '@/types
 
 function sentimentColor(sentiment: string): string {
   const s = sentiment.toLowerCase();
-  if (s.includes('very bullish')) return '#00c853';
-  if (s.includes('bullish')) return '#4caf50';
-  if (s.includes('neutral')) return '#ff9800';
-  if (s.includes('bearish')) return '#f44336';
-  if (s.includes('very bearish')) return '#b71c1c';
-  return '#9e9e9e';
+  if (s.includes('very bullish')) return 'var(--positive)';
+  if (s.includes('bullish')) return 'var(--positive)';
+  if (s.includes('neutral')) return 'var(--warning)';
+  if (s.includes('bearish')) return 'var(--negative)';
+  if (s.includes('very bearish')) return 'var(--negative)';
+  return 'var(--text-muted)';
 }
 
 function severityColor(severity: string): string {
   const s = severity.toLowerCase();
-  if (s === 'high') return '#f44336';
-  if (s === 'medium') return '#ff9800';
-  return '#4caf50';
+  if (s === 'high') return 'var(--negative)';
+  if (s === 'medium') return 'var(--warning)';
+  return 'var(--positive)';
 }
 
 function renderReportData(rd: FinancialAnalysisReport) {
@@ -55,7 +56,7 @@ function renderReportData(rd: FinancialAnalysisReport) {
           <div style={cardStyle}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {rd.key_catalysts.map((c: string, i: number) => (
-                <div key={i} style={{ padding: '8px 12px', background: 'var(--section-bg)', borderRadius: 6, borderLeft: '4px solid #4caf50', fontSize: 13, color: 'var(--text-primary)' }}>
+                <div key={i} style={{ padding: '8px 12px', background: 'var(--section-bg)', borderRadius: 6, borderLeft: '4px solid var(--positive)', fontSize: 13, color: 'var(--text-primary)' }}>
                   {c}
                 </div>
               ))}
@@ -105,20 +106,20 @@ function renderReportData(rd: FinancialAnalysisReport) {
           <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 8, color: 'var(--text-primary)' }}>🔭 Outlook</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
             {rd.outlook.short_term && (
-              <div style={{ padding: 12, background: '#e3f2fd', borderRadius: 8 }}>
-                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#1565c0' }}>Short Term</p>
+              <div style={{ padding: 12, background: 'var(--info-soft)', borderRadius: 8 }}>
+                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: 'var(--info)' }}>Short Term</p>
                 <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.short_term}</p>
               </div>
             )}
             {rd.outlook.medium_term && (
-              <div style={{ padding: 12, background: '#fff3e0', borderRadius: 8 }}>
+              <div style={{ padding: 12, background: 'var(--warning-soft)', borderRadius: 8 }}>
                 <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#e65100' }}>Medium Term</p>
                 <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.medium_term}</p>
               </div>
             )}
             {rd.outlook.long_term && (
-              <div style={{ padding: 12, background: '#e8f5e9', borderRadius: 8 }}>
-                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#2e7d32' }}>Long Term</p>
+              <div style={{ padding: 12, background: 'var(--positive-soft)', borderRadius: 8 }}>
+                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: 'var(--positive)' }}>Long Term</p>
                 <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{rd.outlook.long_term}</p>
               </div>
             )}
@@ -163,8 +164,8 @@ function renderReportData(rd: FinancialAnalysisReport) {
           <div style={cardStyle}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {rd.articles_used.map((a: ArticleReference, i: number) => (
-                <a key={i} href={a.url || '#'} target="_blank" rel="noopener noreferrer"
-                  style={{ textDecoration: 'none', fontSize: 12, color: '#2196f3', padding: '2px 0' }}>
+                <a key={i} href={articleLink(a.url)?.href || '#'} target="_blank" rel="noopener noreferrer"
+                  style={{ textDecoration: 'none', fontSize: 12, color: 'var(--accent)', padding: '2px 0' }}>
                   {a.title}
                   {a.published_at && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{formatApiTimestamp(a.published_at, { year: 'numeric', month: 'numeric', day: 'numeric' })}</span>}
                 </a>
@@ -193,7 +194,6 @@ function renderReportData(rd: FinancialAnalysisReport) {
 
 export default function ReportHistoryPage() {
   const params = useParams();
-  const router = useRouter();
   const ticker = typeof params.ticker === 'string' ? params.ticker.toUpperCase() : '';
 
   const [history, setHistory] = useState<ReportHistoryResponse | null>(null);
@@ -202,21 +202,24 @@ export default function ReportHistoryPage() {
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchCompanyReportHistory(ticker, page, 50);
-      setHistory(data);
+      const data = await fetchCompanyReportHistory(ticker, page, 50, signal);
+      if (!signal?.aborted) setHistory(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load report history');
+      if (!signal?.aborted) setError(err instanceof Error ? err.message : 'Failed to load report history');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [ticker, page]);
 
   useEffect(() => {
-    if (ticker) loadHistory();
+    if (!ticker) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => { void loadHistory(controller.signal); }, 0);
+    return () => { clearTimeout(timer); controller.abort(); };
   }, [ticker, loadHistory]);
 
   if (!ticker) {
@@ -228,9 +231,9 @@ export default function ReportHistoryPage() {
       {/* Breadcrumb + Header */}
       <div style={{ marginBottom: 32 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, marginBottom: 12 }}>
-          <Link href="/intelligence" style={{ textDecoration: 'none', color: '#2196f3' }}>Dashboard</Link>
+          <Link href="/analysis/reports" style={{ textDecoration: 'none', color: 'var(--accent)' }}>Analysis Reports</Link>
           <span style={{ color: 'var(--text-muted)' }}>/</span>
-          <Link href={`/intelligence/${ticker}`} style={{ textDecoration: 'none', color: '#2196f3' }}>{ticker} Report</Link>
+          <Link href={`/intelligence/${ticker}`} style={{ textDecoration: 'none', color: 'var(--accent)' }}>{ticker} Report</Link>
           <span style={{ color: 'var(--text-muted)' }}>/</span>
           <span style={{ color: 'var(--text-muted)' }}>History</span>
         </div>
@@ -252,8 +255,8 @@ export default function ReportHistoryPage() {
 
       {/* Error */}
       {error && (
-        <div style={{ padding: 24, background: '#ffebee', borderRadius: 12, border: '1px solid #ffcdd2' }}>
-          <h2 style={{ color: '#c62828', margin: '0 0 8px' }}>⚠️ Error</h2>
+        <div style={{ padding: 24, background: 'var(--negative-soft)', borderRadius: 12, border: '1px solid var(--negative-border)' }}>
+          <h2 style={{ color: 'var(--negative)', margin: '0 0 8px' }}>⚠️ Error</h2>
           <p style={{ margin: 0 }}>{error}</p>
         </div>
       )}
@@ -318,7 +321,7 @@ export default function ReportHistoryPage() {
                     >
                       <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{dateStr}</span>
                       <span style={{
-                        background: color + '22',
+                        background: `color-mix(in srgb, ${color} 13%, transparent)`,
                         color,
                         borderRadius: 4,
                         padding: '3px 8px',
@@ -365,8 +368,8 @@ export default function ReportHistoryPage() {
                 disabled={page <= 1}
                 style={{
                   padding: '8px 16px',
-                  background: page <= 1 ? '#e0e0e0' : '#2196f3',
-                  color: page <= 1 ? '#9e9e9e' : '#fff',
+                  background: page <= 1 ? 'var(--card-border)' : '#2b6178',
+                  color: page <= 1 ? 'var(--text-muted)' : '#fff',
                   border: 'none',
                   borderRadius: 6,
                   cursor: page <= 1 ? 'not-allowed' : 'pointer',
@@ -383,8 +386,8 @@ export default function ReportHistoryPage() {
                 disabled={(page * 50) >= history.total}
                 style={{
                   padding: '8px 16px',
-                  background: (page * 50) >= history.total ? '#e0e0e0' : '#2196f3',
-                  color: (page * 50) >= history.total ? '#9e9e9e' : '#fff',
+                  background: (page * 50) >= history.total ? 'var(--card-border)' : '#2b6178',
+                  color: (page * 50) >= history.total ? 'var(--text-muted)' : '#fff',
                   border: 'none',
                   borderRadius: 6,
                   cursor: (page * 50) >= history.total ? 'not-allowed' : 'pointer',

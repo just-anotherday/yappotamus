@@ -18,7 +18,7 @@ finnhub-python==2.4.2
 websocket-client==1.8.0
 
 # Environment configuration
-python-dotenv==1.1.0
+python-dotenv==1.2.2
 
 # Rate limiting (SEC-003 / TD-004)
 slowapi==0.1.9
@@ -30,6 +30,8 @@ httpx==0.27.0
 
 # Fallback market data (ETFs, non-US symbols when Finnhub fails)
 yfinance>=0.2.41
+# Security floor for BeautifulSoup's selector dependency (used by yfinance).
+soupsieve>=2.9.0
 
 # Local LLM integration (Ollama for financial news analysis)
 ollama==0.6.2

@@ -3,11 +3,11 @@
 // Matches the watchlist StockCard style for /news/[ticker] page
 // ==============================================================================
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { fetchStock } from '@/lib/api';
 import { useLivePrices } from '@/hooks/useLivePrices';
 import { formatCurrency, formatLargeNumber } from '@/lib/formatters';
-import type { StockData, LiveQuote } from '@/types/stock';
+import type { StockData } from '@/types/stock';
 
 interface TickerHeaderProps {
   ticker: string;
@@ -36,39 +36,36 @@ export default function TickerHeader({ ticker }: TickerHeaderProps) {
 
   // Flash class based on price direction (use a ref-style state to avoid flickering)
   const [flash, setFlash] = useState<'up' | 'down' | ''>('');
-  const prevPriceRef: { current: number | null } = { current: displayPrice };
+  const prevPriceRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (displayPrice === null || displayPrice === undefined) return;
-    if (prevPriceRef.current !== null && displayPrice !== prevPriceRef.current) {
-      if (displayPrice > prevPriceRef.current) {
-        setFlash('up');
-      } else {
-        setFlash('down');
-      }
-      setTimeout(() => setFlash(''), 1000);
-    }
+    const previous = prevPriceRef.current;
     prevPriceRef.current = displayPrice;
+    if (displayPrice == null || previous == null || displayPrice === previous) return;
+    const direction = displayPrice > previous ? 'up' : 'down';
+    const start = setTimeout(() => setFlash(direction), 0);
+    const stop = setTimeout(() => setFlash(''), 1000);
+    return () => { clearTimeout(start); clearTimeout(stop); };
   }, [displayPrice]);
 
-  const flashClass = flash === 'up' ? 'bg-green-200 dark:bg-green-900/40 animate-pulse' : flash === 'down' ? 'bg-red-200 dark:bg-red-900/40 animate-pulse' : '';
-  const changeColor = displayChange > 0 ? 'text-green-600 dark:text-green-400' : displayChange < 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-slate-400';
+  const flashClass = flash === 'up' ? 'bg-positive-soft dark:bg-positive-soft/40 animate-pulse' : flash === 'down' ? 'bg-negative-soft dark:bg-negative-soft/40 animate-pulse' : '';
+  const changeColor = displayChange > 0 ? 'text-positive dark:text-positive' : displayChange < 0 ? 'text-negative dark:text-negative' : 'text-muted dark:text-slate-400';
 
   return (
     <div className="max-w-7xl mx-auto w-full">
       {/* Main header card - mirrors StockCard layout */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-600 p-6 mb-4">
+      <div className="bg-card dark:bg-slate-800 rounded-xl shadow-sm border border-divider dark:border-slate-600 p-6 mb-4">
         <div className="flex items-center justify-between">
           {/* Left: Company + Ticker */}
           <div>
-            <h2 className="text-3xl font-bold text-gray-900 dark:text-white">{company}</h2>
-            <p className="text-blue-600 dark:text-blue-400 text-lg font-semibold">{ticker}</p>
+            <h2 className="text-3xl font-bold text-primary dark:text-white">{company}</h2>
+            <p className="text-accent dark:text-accent text-lg font-semibold">{ticker}</p>
           </div>
           {/* Right: Live Price + Change */}
           <div className={`text-right px-6 py-4 rounded-xl transition-all duration-300 ${flashClass}`}>
             {displayPrice !== null ? (
               <>
-                <p className="text-3xl font-bold text-gray-900 dark:text-white">
+                <p className="text-3xl font-bold text-primary dark:text-white">
                   {formatCurrency(displayPrice)}
                 </p>
                 <p className={`text-lg font-medium mt-1 ${changeColor}`}>
@@ -76,7 +73,7 @@ export default function TickerHeader({ ticker }: TickerHeaderProps) {
                 </p>
               </>
             ) : (
-              <p className="text-gray-400 dark:text-slate-500 text-lg">Loading price...</p>
+              <p className="text-muted dark:text-slate-500 text-lg">Loading price...</p>
             )}
           </div>
         </div>
@@ -85,35 +82,35 @@ export default function TickerHeader({ ticker }: TickerHeaderProps) {
       {/* Metrics grid - mirrors StockCard metrics */}
       {stockData && (
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-600 p-5">
-            <p className="text-gray-500 dark:text-slate-400 text-sm">Previous Close</p>
-            <p className="text-xl font-semibold mt-1 text-gray-900 dark:text-white">{formatCurrency(stockData.previous_close)}</p>
+          <div className="bg-card dark:bg-slate-800 rounded-xl shadow-sm border border-divider dark:border-slate-600 p-5">
+            <p className="text-muted dark:text-slate-400 text-sm">Previous Close</p>
+            <p className="text-xl font-semibold mt-1 text-primary dark:text-white">{formatCurrency(stockData.previous_close)}</p>
           </div>
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-600 p-5">
-            <p className="text-gray-500 dark:text-slate-400 text-sm">Volume</p>
-            <p className="text-xl font-semibold mt-1 text-gray-900 dark:text-white">{stockData.volume.toLocaleString()}</p>
+          <div className="bg-card dark:bg-slate-800 rounded-xl shadow-sm border border-divider dark:border-slate-600 p-5">
+            <p className="text-muted dark:text-slate-400 text-sm">Volume</p>
+            <p className="text-xl font-semibold mt-1 text-primary dark:text-white">{stockData.volume.toLocaleString()}</p>
           </div>
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-600 p-5">
-            <p className="text-gray-500 dark:text-slate-400 text-sm">Market Cap</p>
-            <p className="text-xl font-semibold mt-1 text-gray-900 dark:text-white">{formatLargeNumber(stockData.market_cap)}</p>
+          <div className="bg-card dark:bg-slate-800 rounded-xl shadow-sm border border-divider dark:border-slate-600 p-5">
+            <p className="text-muted dark:text-slate-400 text-sm">Market Cap</p>
+            <p className="text-xl font-semibold mt-1 text-primary dark:text-white">{formatLargeNumber(stockData.market_cap)}</p>
           </div>
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-600 p-5">
-            <p className="text-gray-500 dark:text-slate-400 text-sm">52 Week High</p>
-            <p className="text-xl font-semibold mt-1 text-gray-900 dark:text-white">{formatCurrency(stockData.fifty_two_week_high)}</p>
+          <div className="bg-card dark:bg-slate-800 rounded-xl shadow-sm border border-divider dark:border-slate-600 p-5">
+            <p className="text-muted dark:text-slate-400 text-sm">52 Week High</p>
+            <p className="text-xl font-semibold mt-1 text-primary dark:text-white">{formatCurrency(stockData.fifty_two_week_high)}</p>
           </div>
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-600 p-5">
-            <p className="text-gray-500 dark:text-slate-400 text-sm">52 Week Low</p>
-            <p className="text-xl font-semibold mt-1 text-gray-900 dark:text-white">{formatCurrency(stockData.fifty_two_week_low)}</p>
+          <div className="bg-card dark:bg-slate-800 rounded-xl shadow-sm border border-divider dark:border-slate-600 p-5">
+            <p className="text-muted dark:text-slate-400 text-sm">52 Week Low</p>
+            <p className="text-xl font-semibold mt-1 text-primary dark:text-white">{formatCurrency(stockData.fifty_two_week_low)}</p>
           </div>
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-600 p-5">
-            <p className="text-gray-500 dark:text-slate-400 text-sm">P/E Ratio</p>
-            <p className="text-xl font-semibold mt-1 text-gray-900 dark:text-white">{stockData.pe_ratio?.toFixed(2) || 'N/A'}</p>
+          <div className="bg-card dark:bg-slate-800 rounded-xl shadow-sm border border-divider dark:border-slate-600 p-5">
+            <p className="text-muted dark:text-slate-400 text-sm">P/E Ratio</p>
+            <p className="text-xl font-semibold mt-1 text-primary dark:text-white">{stockData.pe_ratio?.toFixed(2) || 'N/A'}</p>
           </div>
         </div>
       )}
 
       {fetchError && (
-        <p className="mt-3 text-xs text-red-500 dark:text-red-400">Failed to load fundamentals: {fetchError}</p>
+        <p className="mt-3 text-xs text-negative dark:text-negative">Failed to load fundamentals: {fetchError}</p>
       )}
     </div>
   );

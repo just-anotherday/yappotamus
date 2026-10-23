@@ -78,7 +78,7 @@ export class ReconnectingWebSocket {
       if (this.socket !== socket) return;
       this.socket = null;
       if (this.stopped) return;
-      if (event.code === 4401) {
+      if (event.code === 4401 || event.code === 4403) {
         this.stopped = true;
         this.options.onUnauthorized?.();
         return;

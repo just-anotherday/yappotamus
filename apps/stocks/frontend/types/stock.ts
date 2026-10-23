@@ -246,14 +246,14 @@ export interface TickerResearchProfile {
   ticker: string;
   securityType: SecurityType;
 
-  fundamentals: Record<string, any>;
-  valuation: Record<string, any>;
-  ownership: Record<string, any>;
-  analystData: Record<string, any>;
-  technicals: Record<string, any>;
+  fundamentals: Record<string, unknown>;
+  valuation: Record<string, unknown>;
+  ownership: Record<string, unknown>;
+  analystData: Record<string, unknown>;
+  technicals: Record<string, unknown>;
 
-  etfData?: Record<string, any>;
-  cryptoData?: Record<string, any>;
+  etfData?: Record<string, unknown>;
+  cryptoData?: Record<string, unknown>;
 
   news: Array<{
     title: string;
@@ -451,7 +451,7 @@ export interface AIQueueStatus {
 export interface CachedMarketReport {
   id: number;
   report_date: string | null;
-  report_data: Record<string, any>;
+  report_data: { summary_text?: string; [key: string]: unknown };
   overall_sentiment: string;
   risk_level: string;
   confidence_score: number | null;

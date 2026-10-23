@@ -10,6 +10,7 @@ if str(STOCKS_ROOT) not in sys.path:
     sys.path.insert(0, str(STOCKS_ROOT))
 
 os.environ.setdefault("APP_ACCESS_TOKEN", "test-app-token")
+os.environ.setdefault("AUTH_PROVIDER", "token")
 os.environ.setdefault("MAINTENANCE_API_TOKEN", "test-maintenance-token")
 os.environ.setdefault(
     "DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test"

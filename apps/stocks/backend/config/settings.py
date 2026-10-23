@@ -114,6 +114,18 @@ class Settings:
 
     # ----- Access Control -----
     @property
+    def AUTH_PROVIDER(self) -> str:
+        return os.getenv("AUTH_PROVIDER", "token").strip().lower()
+
+    @property
+    def SUPABASE_PUBLISHABLE_KEY(self) -> str:
+        return os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip()
+
+    @property
+    def SUPABASE_ALLOWED_USER_ID(self) -> str:
+        return os.getenv("SUPABASE_ALLOWED_USER_ID", "").strip()
+
+    @property
     def APP_ACCESS_TOKEN(self) -> Optional[str]:
         return os.getenv("APP_ACCESS_TOKEN") or None
 
@@ -524,7 +536,22 @@ class Settings:
             raise EnvironmentError(
                 "NEWS_STALE_AFTER_MINUTES must be >= NEWS_OFF_HOURS_INTERVAL_MINUTES"
             )
-        if not self.APP_ACCESS_TOKENS:
+        if self.AUTH_PROVIDER not in {"token", "supabase"}:
+            raise EnvironmentError("AUTH_PROVIDER must be token or supabase")
+        if self.AUTH_PROVIDER == "supabase":
+            from urllib.parse import urlparse
+            from uuid import UUID
+
+            parsed = urlparse(self.SUPABASE_URL or "")
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise EnvironmentError("SUPABASE_URL must be an HTTPS project URL")
+            if not self.SUPABASE_PUBLISHABLE_KEY.startswith("sb_publishable_"):
+                raise EnvironmentError("SUPABASE_PUBLISHABLE_KEY is required for Supabase Auth")
+            try:
+                UUID(self.SUPABASE_ALLOWED_USER_ID)
+            except ValueError as exc:
+                raise EnvironmentError("SUPABASE_ALLOWED_USER_ID must be your user UUID") from exc
+        elif not self.APP_ACCESS_TOKENS:
             raise EnvironmentError(
                 "APP_ACCESS_TOKEN or APP_ACCESS_TOKENS is required"
             )

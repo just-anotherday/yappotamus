@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useCallback, useSyncExternalStore } from 'react';
 
 type Theme = 'light' | 'dark';
 
@@ -11,22 +11,28 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType>({ theme: 'dark', toggleTheme: () => {} });
 
-export function ThemeProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const [theme, setTheme] = useState<Theme>('dark');
-  const initialized = useRef(false);
+let volatileTheme: Theme = 'dark';
+const THEME_CHANGED = 'yapvibes:theme-changed';
 
-  // Load saved theme from localStorage on mount (no SSR flicker)
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('theme') as Theme | null;
-      if (saved === 'light' || saved === 'dark') {
-        setTheme(saved);
-      }
-    } catch {
-      // ignore storage errors
-    }
-    initialized.current = true;
-  }, []);
+function themeSnapshot(): Theme {
+  try {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+  } catch { /* Keep theme controls usable when browser storage is blocked. */ }
+  return volatileTheme;
+}
+function subscribeToTheme(onChange: () => void) {
+  window.addEventListener('storage', onChange);
+  window.addEventListener(THEME_CHANGED, onChange);
+  return () => {
+    window.removeEventListener('storage', onChange);
+    window.removeEventListener(THEME_CHANGED, onChange);
+  };
+}
+const serverTheme = (): Theme => 'dark';
+
+export function ThemeProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const theme = useSyncExternalStore(subscribeToTheme, themeSnapshot, serverTheme);
 
   // Apply the dark class to <html> so Tailwind dark: variants work
   useEffect(() => {
@@ -41,11 +47,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }): Reac
   }, [theme]);
 
   const toggleTheme = useCallback(() => {
-    setTheme(prev => {
-      const next = prev === 'dark' ? 'light' : 'dark';
-      try { localStorage.setItem('theme', next); } catch { /* ignore */ }
-      return next;
-    });
+    volatileTheme = themeSnapshot() === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', volatileTheme); } catch { /* Memory fallback. */ }
+    window.dispatchEvent(new Event(THEME_CHANGED));
   }, []);
 
   return (

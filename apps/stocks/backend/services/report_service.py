@@ -8,17 +8,37 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.lib.timestamps import utc_now_naive
 from backend.models.report import AnalysisReportModel
-from backend.models.report_schemas import ReportSummaryOut
+from backend.models.report_schemas import ReportCompanyOption, ReportSummaryOut
+from backend.models.asset import Asset
+from backend.models.ai_reports import AICompanyReport  # Register Asset's related mapper.
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+
+
+async def list_report_companies(session: AsyncSession) -> List[ReportCompanyOption]:
+    """Company choices across all saved reports, independent of pagination/watchlist."""
+    company_name = func.coalesce(
+        func.nullif(Asset.name, ""), AnalysisReportModel.ticker
+    )
+    result = await session.execute(
+        select(
+            AnalysisReportModel.ticker,
+            company_name.label("company_name"),
+            func.count(AnalysisReportModel.id).label("report_count"),
+        )
+        .outerjoin(Asset, Asset.primary_ticker == AnalysisReportModel.ticker)
+        .group_by(AnalysisReportModel.ticker, Asset.name)
+        .order_by(func.lower(company_name), AnalysisReportModel.ticker)
+    )
+    return [ReportCompanyOption(**row._mapping) for row in result.all()]
 
 
 def count_cited_articles(report_data: Any) -> int:
@@ -109,25 +129,26 @@ async def list_reports(
 
     # Data query — consecutive numbering via row_number = offset + index + 1
     direction = AnalysisReportModel.created_at.desc() if sort == "newest" else AnalysisReportModel.created_at.asc()
-    stmt = select(AnalysisReportModel).order_by(direction).limit(limit).offset(offset)
+    # Count citations in PostgreSQL; don't transfer/decode entire report JSON bodies.
+    articles_used = AnalysisReportModel.report_data["articles_used"]
+    cited_count = case(
+        (func.jsonb_typeof(articles_used) == "array", func.jsonb_array_length(articles_used)),
+        else_=0,
+    ).label("articles_cited_count")
+    stmt = select(
+        AnalysisReportModel.id, AnalysisReportModel.ticker,
+        AnalysisReportModel.overall_sentiment, AnalysisReportModel.confidence_score,
+        AnalysisReportModel.articles_count, cited_count,
+        AnalysisReportModel.model_used, AnalysisReportModel.prompt_version,
+        AnalysisReportModel.prompt_hash, AnalysisReportModel.current_price_at_analysis,
+        AnalysisReportModel.created_at,
+    ).order_by(direction).limit(limit).offset(offset)
     stmt = apply_where(stmt)
 
-    rows = list((await session.execute(stmt)).scalars().all())
+    rows = (await session.execute(stmt)).mappings().all()
     summaries = []
     for idx, r in enumerate(rows):
-        data = {
-            "id": r.id,
-            "ticker": r.ticker,
-            "overall_sentiment": r.overall_sentiment,
-            "confidence_score": r.confidence_score,
-            "articles_count": r.articles_count,
-            "articles_cited_count": count_cited_articles(r.report_data),
-            "model_used": r.model_used,
-            "prompt_version": r.prompt_version,
-            "prompt_hash": r.prompt_hash,
-            "current_price_at_analysis": r.current_price_at_analysis,
-            "created_at": r.created_at,
-        }
+        data = dict(r)
         data["report_number"] = offset + idx + 1
         summaries.append(ReportSummaryOut(**data))
     return summaries, total
