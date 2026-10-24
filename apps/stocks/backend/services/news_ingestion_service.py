@@ -24,7 +24,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 import httpx
 from requests.exceptions import Timeout as RequestsTimeout
@@ -34,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.models.news import NewsArticle
+from backend.lib.timestamps import EASTERN
 from backend.models.news_ingestion_state import NewsIngestionState
 from backend.models.news_schemas import NewsArticleIngest
 from backend.services.finnhub_service import (
@@ -63,7 +63,7 @@ _ARTICLE_DB_CHUNK_SIZE = 250
 # request whose async waiter was cancelled before its synchronous timeout expires.
 _finnhub_company_news_lock = threading.Lock()
 _NEWS_JOB_NAME = "production-watchlist-news"
-_NEW_YORK = ZoneInfo("America/New_York")
+_NEW_YORK = EASTERN
 
 
 @dataclass(frozen=True)

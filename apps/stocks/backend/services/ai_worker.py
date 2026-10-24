@@ -23,7 +23,7 @@ from sqlalchemy import select, update, and_, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config.settings import settings
-from backend.lib.timestamps import utc_isoformat
+from backend.lib.timestamps import EASTERN, eastern_date, eastern_day_bounds, utc_isoformat, utc_now_naive
 from backend.models.analysis import (
     FinancialAnalysisRequest,
     NewsArticleRequest,
@@ -1010,9 +1010,11 @@ class AIWorker:
     async def _handle_market_report(self, job) -> dict:
         """Daily market-wide intelligence summary."""
         logger.info("[AIWorker] Processing daily market report")
+        report_now = utc_now_naive()
+        today = eastern_date(report_now)
+        today_start, today_end = eastern_day_bounds(today)
 
         async with self.get_session_factory() as session:
-            from sqlalchemy import func
             from backend.models.ai_reports import AIMarketReport
 
             # 1. Gather all company reports (latest per asset)
@@ -1103,7 +1105,7 @@ class AIWorker:
             # Collect top headlines from recent articles
             recent_articles = await session.execute(
                 select(NewsArticle.title, NewsArticle.ticker)
-                .where(NewsArticle.pub_date >= datetime.utcnow() - timedelta(days=1))
+                .where(NewsArticle.pub_date >= today_start, NewsArticle.pub_date < today_end)
                 .order_by(NewsArticle.pub_date.desc())
                 .limit(5)
             )
@@ -1132,10 +1134,10 @@ class AIWorker:
             }
 
             # 5. Store daily market report
-            today = datetime.utcnow().date()
             existing = await session.execute(
                 select(AIMarketReport).where(
-                    func.date(AIMarketReport.report_date) == today
+                    AIMarketReport.report_date >= today_start,
+                    AIMarketReport.report_date < today_end,
                 )
             )
 
@@ -1149,7 +1151,7 @@ class AIWorker:
                 logger.info("[AIWorker] Updated daily market report for %s", today)
             else:
                 new_report = AIMarketReport(
-                    report_date=datetime.utcnow(),
+                    report_date=report_now,
                     report_data=report_dict,
                     overall_sentiment=overall_sentiment,
                     risk_level=risk_level,
@@ -1248,12 +1250,10 @@ async def enqueue_job(session: AsyncSession, job_type: str, target_type: str, ta
 # ------------------------------------------------------------------
 async def _daily_market_report_loop(get_session_factory):
     """Background loop that enqueues one market_report job per day."""
-    from zoneinfo import ZoneInfo
-    est = ZoneInfo("US/Eastern")
     last_date = None
 
     while True:
-        now_est = datetime.now(est)
+        now_est = datetime.now(EASTERN)
         current_date = now_est.date()
 
         # Only enqueue once per calendar day

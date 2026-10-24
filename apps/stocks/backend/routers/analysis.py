@@ -24,7 +24,7 @@ from backend.models.analysis import (
 from backend.models.news import NewsArticle
 from backend.config.database import get_async_session
 from backend.lib.tickers import normalize_ticker
-from backend.lib.timestamps import utc_isoformat
+from backend.lib.timestamps import utc_isoformat, utc_now_naive
 from backend.services.report_service import create_report
 from backend.services.ollama_service import (
     get_analysis_prompt_pipeline,
@@ -145,7 +145,7 @@ async def analysis_get_available_articles(
     from backend.models.news_schemas import NewsArticleOut
 
     from sqlalchemy import select, case
-    cutoff = datetime.now() - timedelta(days=days_back)
+    cutoff = utc_now_naive() - timedelta(days=days_back)
     # Use CASE to fall back to imported_at when pub_date is NULL
     effective_date = case(
         (NewsArticle.pub_date.isnot(None), NewsArticle.pub_date),
@@ -262,7 +262,7 @@ async def analysis_analyze_ticker(
         # Auto-selection: most recent articles filtered by recency
         from datetime import timedelta
         from sqlalchemy import case
-        cutoff = datetime.now() - timedelta(days=days_back)
+        cutoff = utc_now_naive() - timedelta(days=days_back)
         # Use CASE to fall back to imported_at when pub_date is NULL
         effective_date = case(
             (NewsArticle.pub_date.isnot(None), NewsArticle.pub_date),

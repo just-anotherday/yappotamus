@@ -6,14 +6,14 @@ Detail endpoint returns complete report_data.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config.database import get_async_session
-from backend.lib.timestamps import utc_isoformat
+from backend.lib.timestamps import eastern_day_bounds, utc_isoformat
 from backend.models.report_schemas import (
     AnalysisReportDetail,
     ReportPaginationResponse,
@@ -33,11 +33,19 @@ router = APIRouter(prefix="/api/analysis/reports", tags=["analysis reports"])
 
 
 def _parse_date(value: Optional[str], label: str) -> Optional[datetime]:
-    """Parse an ISO date string; returns None on failure."""
+    """Resolve calendar filters in Eastern time and explicit ISO instants in UTC."""
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if len(value) == 10:
+            start, end = eastern_day_bounds(parsed.date())
+            return end if label == "to_date" else start
+        # Explicit instants preserve their offset; legacy naive API instants are UTC.
+        return (
+            parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
+            .astimezone(timezone.utc).replace(tzinfo=None)
+        )
     except (ValueError, AttributeError):
         raise HTTPException(status_code=400, detail=f"Invalid {label} format")
 
@@ -60,6 +68,7 @@ async def reports_list(
         sentiment=sentiment,
         from_date=_parse_date(from_date, "from_date"),
         to_date=_parse_date(to_date, "to_date"),
+        to_date_exclusive=bool(to_date and len(to_date) == 10),
         page=page,
         limit=limit,
         sort=sort,
@@ -548,14 +557,13 @@ async def get_pipeline_status(
         news_total_row = await session.execute(select(func.count(NewsArticle.id)))
         news_total = news_total_row.scalar() or 0
 
-        now_local = datetime.now()
-        today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        # Use COALESCE-style logic: pub_date may be NULL so check IS NOT NULL first.
-        # A row counts if either pub_date OR imported_at falls on today.
+        today_start, today_end = eastern_day_bounds()
+        # A row counts if either publication or ingestion falls within today's
+        # Eastern midnights. The exclusive end also excludes future-day records.
         news_today_row = await session.execute(
             select(func.count(NewsArticle.id)).where(
-                ((NewsArticle.pub_date.isnot(None)) & (NewsArticle.pub_date >= today_start)) |
-                (NewsArticle.imported_at >= today_start)
+                ((NewsArticle.pub_date >= today_start) & (NewsArticle.pub_date < today_end)) |
+                ((NewsArticle.imported_at >= today_start) & (NewsArticle.imported_at < today_end))
             )
         )
         news_today = news_today_row.scalar() or 0
@@ -584,8 +592,8 @@ async def get_pipeline_status(
             recent_articles_row = await session.execute(
                 select(NewsArticle.id, NewsArticle.title, NewsArticle.ticker, NewsArticle.pub_date, NewsArticle.article_url)
                 .where(
-                    ((NewsArticle.pub_date.isnot(None)) & (NewsArticle.pub_date >= today_start)) |
-                    (NewsArticle.imported_at >= today_start)
+                    ((NewsArticle.pub_date >= today_start) & (NewsArticle.pub_date < today_end)) |
+                    ((NewsArticle.imported_at >= today_start) & (NewsArticle.imported_at < today_end))
                 )
                 .order_by(NewsArticle.imported_at.desc())
                 .limit(10)
@@ -610,8 +618,8 @@ async def get_pipeline_status(
                 ta_row = await session.execute(
                     select(func.count(NewsArticle.id)).where(
                         NewsArticle.ticker == ticker,
-                        ((NewsArticle.pub_date.isnot(None)) & (NewsArticle.pub_date >= today_start)) |
-                        (NewsArticle.imported_at >= today_start)
+                        ((NewsArticle.pub_date >= today_start) & (NewsArticle.pub_date < today_end)) |
+                        ((NewsArticle.imported_at >= today_start) & (NewsArticle.imported_at < today_end))
                     )
                 )
                 articles_today_count = ta_row.scalar() or 0

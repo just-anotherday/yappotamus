@@ -1,14 +1,11 @@
 """Fast, database-only watchlist coverage and recent news summaries."""
 import re
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.lib.timestamps import utc_isoformat
-
-EASTERN = ZoneInfo("America/New_York")
+from backend.lib.timestamps import EASTERN, utc_isoformat
 NEWS_EVENTS = (
     ("Earnings", r"\b(earnings|quarterly results|profit warning|guidance)\b"),
     ("Deal", r"\b(acquisition|acquire[sd]?|merger|takeover)\b"),

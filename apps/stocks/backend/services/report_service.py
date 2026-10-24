@@ -97,6 +97,7 @@ async def list_reports(
     page: int = 1,
     limit: int = DEFAULT_PAGE_SIZE,
     sort: str = "newest",
+    to_date_exclusive: bool = False,
 ) -> Tuple[List[ReportSummaryOut], int]:
     """Return (summaries, total_count) with pagination.
 
@@ -114,7 +115,10 @@ async def list_reports(
     if from_date:
         conditions.append(AnalysisReportModel.created_at >= from_date)
     if to_date:
-        conditions.append(AnalysisReportModel.created_at <= to_date)
+        conditions.append(
+            AnalysisReportModel.created_at < to_date if to_date_exclusive
+            else AnalysisReportModel.created_at <= to_date
+        )
 
     def apply_where(stmt):
         """Apply filter conditions to a statement (avoids reusing clause objects)."""

@@ -10,7 +10,7 @@ Handles:
 
 import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import yfinance as yf
@@ -18,6 +18,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.price_history import DailyOHLCV, IntradayOHLCV, MarketTrackerInfo
+from backend.lib.timestamps import eastern_date, utc_now_naive
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +271,7 @@ async def get_close_prices(
     ticker = ticker.upper()
     
     if days:
-        cutoff = date.today() - timedelta(days=days * 1.5)  # extra buffer for weekends/holidays
+        cutoff = eastern_date() - timedelta(days=days * 1.5)  # extra buffer for weekends/holidays
         stmt = (
             select(DailyOHLCV.close)
             .where(
@@ -304,7 +305,7 @@ async def get_full_ohlcv_records(
     ticker = ticker.upper()
     
     if days:
-        cutoff = date.today() - timedelta(days=days * 1.5)
+        cutoff = eastern_date() - timedelta(days=days * 1.5)
         stmt = (
             select(DailyOHLCV)
             .where(
@@ -367,7 +368,7 @@ async def fetch_and_store_intraday(
         return 0
 
     # Purge old intraday data (>7 days) for this ticker
-    cutoff = datetime.now() - timedelta(days=14)
+    cutoff = utc_now_naive() - timedelta(days=14)
     await session.execute(
         delete(IntradayOHLCV).where(
             IntradayOHLCV.ticker == ticker,
@@ -419,7 +420,7 @@ async def get_intraday_bars(
     # Determine cutoff based on period
     period_days = {"1D": 2, "5D": 7}
     days_back = period_days.get(period, 2)
-    cutoff = datetime.now() - timedelta(days=days_back)
+    cutoff = utc_now_naive() - timedelta(days=days_back)
 
     stmt = (
         select(IntradayOHLCV)

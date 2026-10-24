@@ -1,7 +1,32 @@
-"""Helpers for serializing database timestamps at API boundaries."""
+"""UTC database instants, Eastern calendar boundaries, and API serialization."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import overload
+from zoneinfo import ZoneInfo
+
+EASTERN = ZoneInfo("America/New_York")
+
+
+def eastern_date(now: datetime | None = None) -> date:
+    """Return the app's calendar date; legacy naive instants represent UTC."""
+    instant = now if now is not None else datetime.now(timezone.utc)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(EASTERN).date()
+
+
+def eastern_day_bounds(day: date | None = None) -> tuple[datetime, datetime]:
+    """Eastern midnight-to-midnight as a half-open UTC-naive DB range.
+
+    Convert each midnight separately so DST days correctly span 23 or 25 hours.
+    Stored instants remain UTC; only calendar-day interpretation uses Eastern.
+    """
+    day = day if day is not None else eastern_date()
+    return tuple(
+        datetime.combine(value, time.min, tzinfo=EASTERN)
+        .astimezone(timezone.utc).replace(tzinfo=None)
+        for value in (day, day + timedelta(days=1))
+    )
 
 
 def utc_now_naive() -> datetime:
