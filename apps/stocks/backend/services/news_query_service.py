@@ -13,6 +13,7 @@ from sqlalchemy import select, func, case as sa_case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.news import NewsArticle
+from backend.lib.timestamps import eastern_day_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,8 @@ async def query_news(
     Args:
         session: Async SQLAlchemy session.
         ticker: Filter by ticker symbol (case-insensitive).
-        start_date: Filter from this date (YYYY-MM-DD).
-        end_date: Filter until this date (YYYY-MM-DD).
+        start_date: Filter from this Eastern calendar date (YYYY-MM-DD).
+        end_date: Include all of this Eastern calendar date (YYYY-MM-DD).
         limit: Max results per page.
         offset: Pagination offset.
 
@@ -61,18 +62,17 @@ async def query_news(
 
     if start_date:
         try:
-            sd = datetime.strptime(start_date, "%Y-%m-%d")
+            sd, _ = eastern_day_bounds(datetime.strptime(start_date, "%Y-%m-%d").date())
             stmt = stmt.where(effective_date >= sd)
         except ValueError:
             logger.warning(f"[NewsQuery] Ignoring malformed start_date: {start_date}")
 
     if end_date:
         try:
-            ed = datetime.strptime(end_date, "%Y-%m-%d")
+            _, ed = eastern_day_bounds(datetime.strptime(end_date, "%Y-%m-%d").date())
             # Half-open next-day boundary includes fractional timestamps in the
             # final second and avoids precision-specific comparisons.
-            from datetime import timedelta
-            stmt = stmt.where(effective_date < ed + timedelta(days=1))
+            stmt = stmt.where(effective_date < ed)
         except ValueError:
             logger.warning(f"[NewsQuery] Ignoring malformed end_date: {end_date}")
 

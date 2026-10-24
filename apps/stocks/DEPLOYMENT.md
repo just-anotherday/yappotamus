@@ -9,6 +9,20 @@ Frontend (Next.js 16)          Backend (FastAPI/Python 3.12)
                               OpenAI API (production AI)
 ```
 
+### Application time policy
+
+Calendar days, date-only news/report filters, daily market-report grouping, and
+daily price-history lookbacks use `America/New_York`. Both midnights are converted
+separately to UTC so daylight-saving days correctly span 23 or 25 hours. A selected
+end date includes the whole Eastern day and excludes the next midnight.
+
+Database instants and elapsed-time windows remain UTC. API instants include their
+UTC offset, and the frontend displays them in Eastern time. Do not set the server
+or database session timezone to Eastern to implement calendar-day behavior.
+
+The activity counter includes articles published **or** imported during that
+Eastern day; it is not solely a count of newly inserted records.
+
 ---
 
 ## Backend Deployment (Render)
