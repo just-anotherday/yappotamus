@@ -133,5 +133,7 @@ async def test_daily_market_report_groups_by_eastern_day(monkeypatch):
     daily_query = next(stmt for stmt in statements if "FROM ai_market_reports" in str(stmt))
     assert set(daily_query.compile().params.values()) == {
         datetime(2026, 10, 23, 4), datetime(2026, 10, 24, 4),
+        1,  # Older UTC-day runs can leave multiple reports in one Eastern day.
     }
+    assert "ORDER BY ai_market_reports.report_date DESC, ai_market_reports.id DESC" in str(daily_query)
     assert added[0].report_date == now  # Store the UTC instant, not Eastern wall time.

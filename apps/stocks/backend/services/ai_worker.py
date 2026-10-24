@@ -1138,7 +1138,7 @@ class AIWorker:
                 select(AIMarketReport).where(
                     AIMarketReport.report_date >= today_start,
                     AIMarketReport.report_date < today_end,
-                )
+                ).order_by(AIMarketReport.report_date.desc(), AIMarketReport.id.desc()).limit(1)
             )
 
             existing_report = existing.scalar_one_or_none()
