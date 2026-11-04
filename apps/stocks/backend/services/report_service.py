@@ -85,6 +85,8 @@ async def create_report(
         ticker.upper(),
     )
     await session.flush()
+    from backend.services.report_publishing import queue_report
+    await queue_report(session, obj)
     return obj.id
 
 
