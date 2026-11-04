@@ -355,7 +355,19 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
         reports_failed=len(failures),
         outcomes=outcomes,
     )
-    return 0 if not failures else 1
+    code = 0 if not failures else 1
+    from backend.config.settings import settings
+    from backend.services.report_publishing import publish_pending
+    if settings.REPORT_PUBLISH_URL:
+        try:
+            publication = await publish_pending(limit=500)
+            _event("report_publishing_completed", **publication)
+            if publication["failed"]:
+                code = code or 1
+        except Exception as exc:
+            _event("report_publishing_failed", exception_type=type(exc).__name__)
+            code = code or 1
+    return code
 
 
 def main() -> int:

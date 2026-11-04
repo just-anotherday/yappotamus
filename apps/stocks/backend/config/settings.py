@@ -114,6 +114,14 @@ class Settings:
 
     # ----- Access Control -----
     @property
+    def REPORT_PUBLISH_URL(self) -> str:
+        return os.getenv("REPORT_PUBLISH_URL", "").strip()
+
+    @property
+    def REPORT_PUBLISH_TOKEN(self) -> str:
+        return os.getenv("REPORT_PUBLISH_TOKEN", "").strip()
+
+    @property
     def AUTH_PROVIDER(self) -> str:
         return os.getenv("AUTH_PROVIDER", "token").strip().lower()
 

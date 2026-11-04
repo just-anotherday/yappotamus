@@ -51,6 +51,7 @@ from backend.routers import auth as auth_router
 from backend.routers import intelligence as intelligence_router
 from backend.routers import maintenance_intelligence as maintenance_intelligence_router
 from backend.routers import internal_jobs as internal_jobs_router
+from backend.routers import report_publications as report_publications_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -193,6 +194,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("[Startup] Task-managed backend: background workers and schedules disabled.")
 
+    # Also run in the task-managed backend, which lives for the daily pipeline.
+    from backend.services.report_publishing import publishing_loop, publishing_target
+    if publishing_target():
+        app.state._report_publishing_task = asyncio.create_task(publishing_loop())
+
     # ---- Memory diagnostic at startup completion ----
     if settings.MEMORY_DIAGNOSTICS_ENABLED:
         log_memory(
@@ -228,7 +234,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("[Shutdown] Failed to stop AI Worker: %s", e)
 
-    for task_name in ("_post_market_task", "_market_report_task"):
+    for task_name in ("_post_market_task", "_market_report_task", "_report_publishing_task"):
         task = getattr(app.state, task_name, None)
         if task:
             task.cancel()
@@ -490,6 +496,7 @@ def create_app() -> FastAPI:
     app.include_router(websocket_router.router)
     app.include_router(analysis_router.router, dependencies=_auth_dep)
     app.include_router(analysis_reports_router.router, dependencies=_auth_dep)
+    app.include_router(report_publications_router.router)
     app.include_router(markets_router.router, prefix="/api/markets", dependencies=_auth_dep)
     app.include_router(intelligence_router.router, dependencies=_auth_dep)
     app.include_router(maintenance_intelligence_router.router)
