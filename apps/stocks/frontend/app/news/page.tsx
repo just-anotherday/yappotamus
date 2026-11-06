@@ -16,6 +16,7 @@ export default function AllNewsPage() {
   const [tickerFilter, setTickerFilter] = useState<string>('');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+  const [readingView, setReadingView] = useState('all');
   const [allTickers, setAllTickers] = useState<string[]>([]);
 
   useEffect(() => {
@@ -53,6 +54,7 @@ export default function AllNewsPage() {
     50,
     startDate || null,
     endDate || null,
+    readingView,
   );
 
   const handleTickerChange = (value: string) => {
@@ -90,6 +92,13 @@ export default function AllNewsPage() {
       <div className="mb-6"><NewsSync /></div>
 
       {/* Filters */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <label htmlFor="reading-view" className="text-sm font-medium">Reading list</label>
+        <select id="reading-view" value={readingView} onChange={event => setReadingView(event.target.value)} className="rounded-lg border border-divider bg-card p-2 text-sm">
+          <option value="all">All articles</option><option value="saved">Saved for later</option><option value="unread">Unread</option><option value="saved-unread">Saved and unread</option>
+        </select>
+        <button type="button" onClick={()=>void refetch()} className="text-sm underline">Refresh reading list</button>
+      </div>
       <div className="surface news-filters">
         <div className="news-filter-field">
         <label htmlFor="ticker-filter" className="text-sm font-medium text-secondary dark:text-slate-300">

@@ -388,6 +388,10 @@ export interface OllamaConfigStatus {
 // ==============================================================================
 
 export interface ReportSummary {
+  previous_report_id?: number | null;
+  previous_sentiment?: string | null;
+  previous_confidence?: number | null;
+  previous_created_at?: string | null;
   id: number;
   report_number: number; // Consecutive rank (1=newest when sorted desc)
   ticker: string;

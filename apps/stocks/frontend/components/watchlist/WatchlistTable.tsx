@@ -13,6 +13,7 @@ import { EASTERN_TIME_ZONE, formatShares, riskBadgeClass, recommendationBadgeCla
 import type { WatchlistItem, LiveQuote } from '@/types/stock';
 import TickerTooltip from './TickerTooltip';
 import TickerResearchNotes from '@/components/TickerResearchNotes';
+import { confirmResearchNoteClose } from '@/lib/researchNotes';
 import { useExtendedHours } from '@/hooks/useExtendedHours';
 import type { WatchlistRefreshResult } from '@/hooks/useWatchlist';
 import {
@@ -98,6 +99,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
   const reorderEnabled = canReorderWatchlist(sort, search, direction) && !isReordering;
 
   const toggleExpand = (ticker: string) => {
+    if (expandedTickers.has(ticker) && !confirmResearchNoteClose(ticker)) return;
     setExpandedTickers(prev => {
       const next = new Set([...prev].filter(value => watchlist.some(item => item.ticker === value)));
       if (next.has(ticker)) {
@@ -111,6 +113,7 @@ export default function WatchlistTable({ watchlist, livePrices, priceFlash, post
 
   const toggleExpandAll = () => {
     if (allExpanded) {
+      if (!confirmResearchNoteClose()) return;
       setExpandedTickers(new Set());
     } else {
       setExpandedTickers(new Set(watchlist.map(item => item.ticker)));

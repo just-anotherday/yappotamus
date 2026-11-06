@@ -8,8 +8,9 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, or_, cast, Text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from backend.lib.timestamps import utc_now_naive
 from backend.models.report import AnalysisReportModel
@@ -100,6 +101,7 @@ async def list_reports(
     limit: int = DEFAULT_PAGE_SIZE,
     sort: str = "newest",
     to_date_exclusive: bool = False,
+    query: Optional[str] = None,
 ) -> Tuple[List[ReportSummaryOut], int]:
     """Return (summaries, total_count) with pagination.
 
@@ -113,7 +115,12 @@ async def list_reports(
     if ticker:
         conditions.append(AnalysisReportModel.ticker == ticker.upper())
     if sentiment:
-        conditions.append(AnalysisReportModel.overall_sentiment.ilike(f"%{sentiment}%"))
+        conditions.append(AnalysisReportModel.overall_sentiment == sentiment)
+    if query:
+        # Escape SQL wildcard characters so user text is a literal substring.
+        term = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{term}%"
+        conditions.append(or_(AnalysisReportModel.ticker.ilike(pattern, escape="\\"), cast(AnalysisReportModel.report_data, Text).ilike(pattern, escape="\\")))
     if from_date:
         conditions.append(AnalysisReportModel.created_at >= from_date)
     if to_date:
@@ -141,6 +148,9 @@ async def list_reports(
         (func.jsonb_typeof(articles_used) == "array", func.jsonb_array_length(articles_used)),
         else_=0,
     ).label("articles_cited_count")
+    prior = aliased(AnalysisReportModel)
+    def previous_value(column):
+        return select(column).where(prior.ticker == AnalysisReportModel.ticker, or_(prior.created_at < AnalysisReportModel.created_at, (prior.created_at == AnalysisReportModel.created_at) & (prior.id < AnalysisReportModel.id))).order_by(prior.created_at.desc(), prior.id.desc()).limit(1).correlate(AnalysisReportModel).scalar_subquery()
     stmt = select(
         AnalysisReportModel.id, AnalysisReportModel.ticker,
         AnalysisReportModel.overall_sentiment, AnalysisReportModel.confidence_score,
@@ -148,6 +158,10 @@ async def list_reports(
         AnalysisReportModel.model_used, AnalysisReportModel.prompt_version,
         AnalysisReportModel.prompt_hash, AnalysisReportModel.current_price_at_analysis,
         AnalysisReportModel.created_at,
+        previous_value(prior.id).label("previous_report_id"),
+        previous_value(prior.overall_sentiment).label("previous_sentiment"),
+        previous_value(prior.confidence_score).label("previous_confidence"),
+        previous_value(prior.created_at).label("previous_created_at"),
     ).order_by(direction).limit(limit).offset(offset)
     stmt = apply_where(stmt)
 

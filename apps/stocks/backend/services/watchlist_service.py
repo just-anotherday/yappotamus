@@ -23,6 +23,11 @@ async def seed_defaults(session: AsyncSession) -> int:
     if exists:
         return 0
 
+    # An intentionally cleared shared list must stay empty across restarts.
+    from backend.models.daily_updates import DailyUpdateState
+    if await session.get(DailyUpdateState, 1) is not None:
+        return 0
+
     for idx, ticker in enumerate(DEFAULT_TICKERS):
         row = WatchlistModel(ticker=normalize_ticker(ticker), position=idx)
         session.add(row)
@@ -32,13 +37,25 @@ async def seed_defaults(session: AsyncSession) -> int:
     return len(DEFAULT_TICKERS)
 
 
-async def get_all_tickers(session: AsyncSession) -> List[str]:
+async def get_all_tickers(session: AsyncSession, *, purpose: str | None = None) -> List[str]:
     """Return all ticker symbols ordered by position."""
     # Enforce the same supported ceiling on readers as on API mutations so a
     # direct database mistake cannot create unbounded provider fan-out.
     stmt = select(WatchlistModel.ticker).order_by(WatchlistModel.position).limit(MAX_WATCHLIST_SIZE)
+    if purpose == "news":
+        stmt = stmt.where(WatchlistModel.news_enabled.is_(True))
+    elif purpose == "reports":
+        stmt = stmt.where(WatchlistModel.reports_enabled.is_(True))
     result = await session.execute(stmt)
     return [row[0] for row in result.all()]
+
+
+async def get_news_tickers(session: AsyncSession) -> List[str]:
+    return await get_all_tickers(session, purpose="news")
+
+
+async def get_report_tickers(session: AsyncSession) -> List[str]:
+    return await get_all_tickers(session, purpose="reports")
 
 
 async def count(session: AsyncSession) -> int:

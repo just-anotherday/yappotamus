@@ -12,6 +12,7 @@ const navigation = [
   { href: '/', label: 'Overview', icon: 'dashboard' },
   { href: '/analysis/reports', label: 'Research', icon: 'reports' },
   { href: '/news', label: 'Market news', icon: 'news' },
+  { href: '/daily-updates', label: 'Daily updates', icon: 'activity' },
   { href: '/activity', label: 'Activity', icon: 'activity' },
 ] as const;
 

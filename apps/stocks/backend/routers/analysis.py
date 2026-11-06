@@ -33,7 +33,17 @@ from backend.services.ollama_service import (
     check_ollama_connection,
     _get_timeout_for_model,
 )
+from contextvars import ContextVar
 from backend.services.hybrid_data_service import get_hybrid_stock_price
+
+report_quote_override = ContextVar("report_quote_override", default=None)
+
+async def _analysis_quote(ticker):
+    quote = report_quote_override.get()
+    if quote is not None and quote.get("ticker", "").upper() == ticker.upper():
+        return dict(quote)
+    return await get_hybrid_stock_price(ticker)
+
 from backend.services.market_data_observability import current_correlation_id
 from backend.services.market_data_errors import (
     MarketDataUnavailableError,
@@ -298,7 +308,7 @@ async def analysis_analyze_ticker(
     # 2. Fetch current price data
     try:
         price_info = await asyncio.wait_for(
-            get_hybrid_stock_price(ticker.upper()),
+            _analysis_quote(ticker.upper()),
             timeout=30,
         )
     except Exception as e:

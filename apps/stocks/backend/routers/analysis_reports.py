@@ -53,6 +53,7 @@ def _parse_date(value: Optional[str], label: str) -> Optional[datetime]:
 @router.get("/", response_model=ReportPaginationResponse)
 async def reports_list(
     ticker: Optional[str] = Query(None),
+    q: Optional[str] = Query(None, max_length=200),
     sentiment: Optional[str] = Query(None),
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to"),
@@ -62,9 +63,12 @@ async def reports_list(
     session: AsyncSession = Depends(get_async_session),
 ):
     """List saved reports with filtering and pagination."""
+    if from_date and to_date and _parse_date(from_date, "from_date") > _parse_date(to_date, "to_date"):
+        raise HTTPException(400, "The start date must be on or before the end date")
     summaries, total = await list_reports(
         session=session,
         ticker=ticker,
+        query=q,
         sentiment=sentiment,
         from_date=_parse_date(from_date, "from_date"),
         to_date=_parse_date(to_date, "to_date"),

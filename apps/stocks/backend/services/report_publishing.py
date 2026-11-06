@@ -21,6 +21,30 @@ from backend.models.report_publication import ReportPublication, ReportPublicati
 
 logger = logging.getLogger(__name__)
 MAX_PUBLICATION_BYTES = 2 * 1024 * 1024
+PUBLICATION_TIMEOUT = httpx.Timeout(20.0, connect=10.0, read=90.0)
+PUBLICATION_ATTEMPT_SECONDS = 110
+PUBLICATION_PASS_SECONDS = 240
+
+
+async def _upload_report(client, url, body):
+    """Allow a slow receiver and retry transient failures with the same UUID."""
+    for attempt in range(2):
+        try:
+            # HTTPX read timeouts apply between chunks; also cap total elapsed time.
+            async with asyncio.timeout(PUBLICATION_ATTEMPT_SECONDS):
+                response = await client.put(
+                    url, content=body,
+                    headers={"Authorization": f"Bearer {settings.REPORT_PUBLISH_TOKEN}", "Content-Type": "application/json"},
+                )
+                response.raise_for_status()
+                return response
+        except (httpx.TransportError, TimeoutError):
+            if attempt:
+                raise
+        except httpx.HTTPStatusError as exc:
+            if attempt or exc.response.status_code not in {502, 503, 504}:
+                raise
+        await asyncio.sleep(2)
 
 
 class PublishedReport(BaseModel):
@@ -115,8 +139,8 @@ async def publish_pending(*, session_factory=async_session_factory, transport=No
     result = {"published": 0, "failed": 0}
     if not target:
         return result
-    deadline = time.monotonic() + 60
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=False, transport=transport) as client:
+    deadline = time.monotonic() + PUBLICATION_PASS_SECONDS
+    async with httpx.AsyncClient(timeout=PUBLICATION_TIMEOUT, follow_redirects=False, transport=transport) as client:
         for _ in range(limit):
             if time.monotonic() >= deadline:
                 break
@@ -137,11 +161,10 @@ async def publish_pending(*, session_factory=async_session_factory, transport=No
                         body = json.dumps(item.payload, allow_nan=False).encode()
                         if len(body) > MAX_PUBLICATION_BYTES:
                             raise ValueError("payload_too_large")
-                        response = await client.put(
+                        response = await _upload_report(client,
                             f"{target}/api/internal/report-publications/{item.id}",
-                            content=body, headers={"Authorization": f"Bearer {settings.REPORT_PUBLISH_TOKEN}", "Content-Type": "application/json"},
+                            body,
                         )
-                        response.raise_for_status()
                         ack = response.json()
                         if ack.get("publication_id") != str(item.id) or ack.get("status") not in {"published", "duplicate"}:
                             raise ValueError("invalid_acknowledgement")
@@ -152,14 +175,14 @@ async def publish_pending(*, session_factory=async_session_factory, transport=No
                         item.published_at = utc_now_naive()
                         item.last_error = None
                         result["published"] += 1
-                    except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+                    except (httpx.HTTPError, TimeoutError, ValueError, TypeError, AttributeError) as exc:
                         # Never persist/log response bodies, URLs, tokens, or report text.
                         item.last_error = f"http_{exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
                         item.next_attempt_at = utc_now_naive() + timedelta(seconds=min(3600, 30 * 2 ** min(item.attempts - 1, 7)))
                         result["failed"] += 1
                         # An unavailable receiver or credential affects every report.
                         # Commit this retry and let the next pass handle the backlog.
-                        if isinstance(exc, httpx.HTTPError):
+                        if isinstance(exc, (httpx.HTTPError, TimeoutError)):
                             break
     return result
 

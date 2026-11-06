@@ -122,6 +122,10 @@ class Settings:
         return os.getenv("REPORT_PUBLISH_TOKEN", "").strip()
 
     @property
+    def DAILY_UPDATES_SYNC_ENABLED(self) -> bool:
+        return os.getenv("DAILY_UPDATES_SYNC_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+
+    @property
     def AUTH_PROVIDER(self) -> str:
         return os.getenv("AUTH_PROVIDER", "token").strip().lower()
 

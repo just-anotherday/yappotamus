@@ -5,6 +5,7 @@ import Link from "next/link";
 import { articleLink } from '@/lib/articleEvidence';
 import { timeAgo, formatDate } from "@/lib/formatters";
 import type { NewsArticle } from "@/types/stock";
+import { ArticleReadingControls } from '@/components/ArticleReading';
 
 // Fallback thumbnail image
 const FALLBACK_THUMBNAIL = "/news_image.png";
@@ -123,6 +124,7 @@ export function NewsCard({ article, articleNumber, totalArticles, selected, onTo
           </div>
         </div>
 
+        <ArticleReadingControls articleId={article.id} />
         {/* Read Article link */}
         {articleUrl && (
           <a

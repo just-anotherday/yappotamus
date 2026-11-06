@@ -32,6 +32,7 @@ from backend.config.database import Base, DATABASE_URL
 from backend.models.news import NewsArticle  # noqa: F401
 from backend.models.news_ingestion_state import NewsIngestionState  # noqa: F401
 from backend.models.watchlist import WatchlistModel  # noqa: F401
+from backend.models.daily_updates import DailyUpdateState  # noqa: F401
 from backend.models.report import AnalysisReportModel  # noqa: F401
 from backend.models.report_publication import ReportPublication, ReportPublicationReceipt  # noqa: F401
 from backend.models.research import ResearchNote, ArticleReadingState, ReportRun  # noqa: F401

@@ -12,7 +12,7 @@ Table:
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, DateTime, func
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, func
 
 from backend.config.database import Base
 
@@ -25,6 +25,11 @@ class WatchlistModel(Base):
     ticker = Column(String(10), unique=True, nullable=False)
     position = Column(Integer, default=0, nullable=False)
     added_at = Column(DateTime, server_default=func.now())
+    news_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    reports_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    news_pending = Column(Boolean, nullable=False, default=True, server_default="true")
+    news_status = Column(String(40), nullable=False, default="pending", server_default="pending")
+    news_checked_at = Column(DateTime)
 
     def __repr__(self):
         return f"<Watchlist ticker={self.ticker} position={self.position}>"

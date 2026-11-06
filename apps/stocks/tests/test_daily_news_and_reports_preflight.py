@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -60,12 +61,45 @@ def test_startup_watchdog_is_cancelled_before_pipeline(daily_runner, monkeypatch
 
 
 @pytest.fixture
-def daily_runner():
+def daily_runner(monkeypatch):
+    # Generation-only tests must never inherit the machine's live publishing target.
+    monkeypatch.setenv("REPORT_PUBLISH_URL", "")
     spec = importlib.util.spec_from_file_location("daily_news_runner_test", SCRIPT_PATH)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "create_run", AsyncMock(return_value=1))
+    monkeypatch.setattr(module, "progress_run", AsyncMock())
+    monkeypatch.setattr(module, "finish_run", AsyncMock())
     return module
+
+
+@pytest.mark.asyncio
+async def test_daily_run_flushes_uploads_without_regenerating(daily_runner, monkeypatch):
+    from backend.services import report_publishing
+    monkeypatch.setenv("REPORT_PUBLISH_URL", "https://cloud.example.test")
+    monkeypatch.setenv("REPORT_PUBLISH_TOKEN", "x" * 40)
+    generate = AsyncMock(return_value=0)
+    publish = AsyncMock(return_value={"published": 2, "failed": 0})
+    monkeypatch.setattr(daily_runner, "_execute_pipeline", generate)
+    monkeypatch.setattr(report_publishing, "publish_pending", publish)
+    assert await daily_runner.execute_tracked_run(("AMD",), 1, collect_news=True) == 0
+    assert generate.await_count == 1
+    publish.assert_awaited_once_with(limit=500)
+    daily_runner.finish_run.assert_awaited_once_with(1, failed=False)
+
+
+@pytest.mark.asyncio
+async def test_daily_upload_failure_preserves_successful_generation(daily_runner, monkeypatch):
+    from backend.services import report_publishing
+    monkeypatch.setenv("REPORT_PUBLISH_URL", "https://cloud.example.test")
+    monkeypatch.setenv("REPORT_PUBLISH_TOKEN", "x" * 40)
+    generate = AsyncMock(return_value=0)
+    monkeypatch.setattr(daily_runner, "_execute_pipeline", generate)
+    monkeypatch.setattr(report_publishing, "publish_pending", AsyncMock(side_effect=RuntimeError("unavailable")))
+    assert await daily_runner.execute_tracked_run(("AMD",), 1, collect_news=True) == 1
+    assert generate.await_count == 1
+    daily_runner.finish_run.assert_awaited_once_with(1, failed=False)
 
 
 class _Revision:
@@ -215,11 +249,40 @@ async def test_daily_reports_cover_dynamic_watchlist_and_continue_after_failure(
 
 
 @pytest.mark.asyncio
-async def test_empty_watchlist_fails_before_ingestion(daily_runner, monkeypatch, capsys):
+async def test_empty_report_list_still_allows_news_collection(daily_runner, monkeypatch, capsys):
     monkeypatch.setattr(daily_runner, "_run_schema_preflight", AsyncMock(return_value=True))
     monkeypatch.setattr(daily_runner, "_watchlist_report_tickers", AsyncMock(return_value=()))
+    ingestion = AsyncMock(return_value={"status": "completed"})
+    monkeypatch.setattr(daily_runner, "fetch_and_ingest_watchlist_once", ingestion)
+    assert await daily_runner.run() == 0
+    ingestion.assert_awaited_once()
+    assert "reports_skipped" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_unavailable_live_settings_prevent_stale_daily_generation(daily_runner, monkeypatch, capsys):
+    from backend.services import daily_updates
+    monkeypatch.setattr(daily_runner, "_run_schema_preflight", AsyncMock(return_value=True))
+    monkeypatch.setattr(daily_updates, "sync_config", AsyncMock(side_effect=RuntimeError("offline")))
     ingestion = AsyncMock()
     monkeypatch.setattr(daily_runner, "fetch_and_ingest_watchlist_once", ingestion)
     assert await daily_runner.run() == 1
     ingestion.assert_not_awaited()
-    assert "watchlist_empty" in capsys.readouterr().out
+    daily_runner.create_run.assert_not_awaited()
+    assert "live_settings_unavailable" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_scheduled_quotes_are_isolated_between_concurrent_requests(daily_runner, monkeypatch):
+    async def generate(ticker, quote):
+        await asyncio.sleep(0)
+        received = await daily_runner.analysis_router._analysis_quote(ticker)
+        assert received == quote
+        return {"ticker": ticker, "status": "completed"}
+
+    monkeypatch.setattr(daily_runner, "_generate_report_with_quote", generate)
+    await asyncio.gather(
+        daily_runner._generate_report("AMD", {"ticker": "AMD", "price": 100}),
+        daily_runner._generate_report("NVDA", {"ticker": "NVDA", "price": 200}),
+    )
+    assert daily_runner.analysis_router.report_quote_override.get() is None
