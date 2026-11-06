@@ -35,12 +35,14 @@ export function useNews(
   limit: number = 50,
   startDate?: string | null,
   endDate?: string | null,
+  view: string = 'all',
 ): UseNewsReturn {
   const [articles, setArticles] = useState<NewsArticle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPageState] = useState(1);
+  const loadGeneration = useRef(0);
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const offset = (page - 1) * limit;
@@ -48,22 +50,30 @@ export function useNews(
 
   const loadData = useCallback(
     async (targetPage: number) => {
+      const generation = ++loadGeneration.current;
       setLoading(true);
       setError(null);
       try {
         const off = (targetPage - 1) * limit;
-        const data = await fetchDbNews(ticker, limit, off, startDate, endDate);
+        let data = await fetchDbNews(ticker, limit, off, startDate, endDate, view);
+        let actualPage = targetPage;
+        if (targetPage > 1 && data.articles.length === 0) {
+          actualPage = Math.max(1, Math.ceil(data.total / limit));
+          data = await fetchDbNews(ticker, limit, (actualPage - 1) * limit, startDate, endDate, view);
+        }
+        if (generation !== loadGeneration.current) return;
         setArticles(data.articles);
         setTotal(data.total);
-        setPageState(targetPage);
+        setPageState(actualPage);
       } catch (err: unknown) {
+        if (generation !== loadGeneration.current) return;
         const message = err instanceof Error ? err.message : 'Failed to fetch news articles';
         setError(message);
       } finally {
-        setLoading(false);
+        if (generation === loadGeneration.current) setLoading(false);
       }
     },
-    [ticker, limit, startDate, endDate],
+    [ticker, limit, startDate, endDate, view],
   );
 
   // Schedule the initial load so React Strict Mode can cancel the first
@@ -72,12 +82,18 @@ export function useNews(
     const initialLoadTimer = setTimeout(() => {
       void loadData(1);
     }, 0);
-    return () => clearTimeout(initialLoadTimer);
+    return () => { clearTimeout(initialLoadTimer); loadGeneration.current++; };
   }, [loadData]);
 
   // WebSocket: listen for "news_refresh" events from backend after ingestion cycles
   const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageRef = useRef(page);
+  useEffect(() => {
+    if (view === 'all') return;
+    const refreshReading = () => { void loadData(pageRef.current); };
+    window.addEventListener('research-reading-updated', refreshReading);
+    return () => window.removeEventListener('research-reading-updated', refreshReading);
+  }, [view, loadData]);
   useEffect(() => {
     pageRef.current = page;
   }, [page]);

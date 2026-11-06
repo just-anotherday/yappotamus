@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, Body, Depends
+from fastapi import APIRouter, HTTPException, Body, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -117,10 +117,15 @@ async def get_watchlist(
 
 @router.post("/add", response_model=WatchlistResponse)
 async def add_to_watchlist(
+    http_request: Request,
     request: AddTickerRequest = Body(...),
     session: AsyncSession = Depends(get_async_session),
 ):
     """Add a single ticker to the persistent watchlist (idempotent)."""
+    from backend.routers.daily_updates import proxy_owner
+    proxied = await proxy_owner(http_request, "/api/watchlist", body=request.model_dump())
+    if proxied is not None:
+        return proxied
     try:
         ticker = normalize_ticker(request.ticker)
     except ValueError as e:
@@ -139,21 +144,7 @@ async def add_to_watchlist(
     # Subscribe to live WS updates for the new ticker
     market_data.subscribe([ticker])
 
-    # TD-007 fix: Track background task properly with error handling
-    async def _ingest_with_tracking(ticker_sym: str):
-        try:
-            async with async_session_factory() as news_session:
-                await fetch_and_ingest_news(ticker_sym, news_session, limit=20)
-            logger.info("[Watchlist] Background news ingestion for %s complete.", ticker_sym)
-        except Exception as e:
-            logger.error("[Watchlist] Background news ingestion for %s failed: %s", ticker_sym, e)
-
-    # Create tracked task (TD-007 fix)
-    task = asyncio.create_task(_ingest_with_tracking(ticker))
-    task.add_done_callback(
-        lambda t: logger.warning("Background ingest task exception: %s", t.exception()) 
-        if t.cancelled() is False and t.exception() else None
-    )
+    # Initial news is a durable pending request, processed by the daily-updates worker.
 
     # Fetch full watchlist data for the ticker
     try:
@@ -180,10 +171,15 @@ async def add_to_watchlist(
 
 @router.put("/order")
 async def update_watchlist_order(
+    http_request: Request,
     tickers: list[str] = Body(..., embed=True),
     session: AsyncSession = Depends(get_async_session),
 ):
     """Update the visual ordering of watchlist tickers."""
+    from backend.routers.daily_updates import proxy_owner
+    proxied = await proxy_owner(http_request, "/api/watchlist/order", body={"tickers": tickers})
+    if proxied is not None:
+        return proxied
     validated: list[str] = []
     for t in tickers:
         try:
@@ -202,6 +198,7 @@ async def update_watchlist_order(
 
 @router.delete("/{ticker}", response_model=WatchlistResponse)
 async def remove_from_watchlist(
+    http_request: Request,
     ticker: str,
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -211,6 +208,12 @@ async def remove_from_watchlist(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    from backend.routers.daily_updates import proxy_owner
+    from backend.services.daily_updates import ensure_state
+    proxied = await proxy_owner(http_request, f"/api/watchlist/{ticker}")
+    if proxied is not None:
+        return proxied
+    await ensure_state(session)
     try:
         await remove_ticker(session, ticker)
     except KeyError as e:
@@ -218,6 +221,8 @@ async def remove_from_watchlist(
             status_code=404,
             detail=f"{ticker} is not in your watchlist."
         )
+
+    MarketDataService.get_instance().unsubscribe([ticker])
 
     return WatchlistResponse(
         success=True,

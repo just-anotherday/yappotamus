@@ -44,8 +44,13 @@ From `apps/stocks`:
 .venv\Scripts\python.exe scripts\publish_reports.py --backfill
 ```
 
-Each command sends at most 500 due reports in a pass of roughly one minute
-(plus the final bounded request). An HTTP failure stops that pass. Repeat for a larger backlog; failed
+Each command sends at most 500 due reports in a pass of up to four minutes
+plus the final bounded upload. Uploads allow 90 seconds between response chunks,
+with a 110-second total cap per attempt. Network failures, total timeouts, and
+HTTP 502/503/504 receive one retry after two seconds, using the same publication
+UUID to prevent duplicates after a lost acknowledgement. Authentication and other
+HTTP failures are not retried immediately. An exhausted HTTP/network failure
+stops that pass and keeps the report queued. Repeat for a larger backlog; failed
 items respect backoff. Exit status 1 means reports remain pending. The owner-only
 `GET /api/analysis/publishing/status` endpoint on the local API shows pending,
 retrying, published, and last successful upload time. It contains no credentials.
@@ -59,8 +64,10 @@ describes that server's outbound queue, not your computer's queue.
 - Only outbound HTTPS from the computer is needed. No local database port,
   router forwarding, or inbound tunnel is needed.
 - `PUT /api/internal/report-publications/{uuid}` accepts only the dedicated
-  publishing token. It cannot use that credential to list, read, or delete
-  reports, or call generation endpoints. Existing owner authentication still
+  publishing token. The same token also supports the narrow Daily Updates
+  settings-read and worker-acknowledgement endpoints described in
+  [shared Daily Updates](DAILY_UPDATES.md). It cannot list, read, or delete
+  reports, edit ticker preferences, or call generation endpoints. Existing owner authentication still
   protects web report viewing.
 - Request bodies are limited to 2 MiB. Redirects are never followed. Receipts
   deduplicate deliveries atomically, including after a lost acknowledgement.
@@ -72,9 +79,11 @@ describes that server's outbound queue, not your computer's queue.
   Existing items fail until the original origin is restored; moving publication
   history to another deployment requires an explicit queue migration.
 - This publishes immutable report snapshots only. It does not sync local news
-  article rows, watchlists, research notes, report-run history, deletions, or the
+  article rows, research notes, report-run history, deletions, or the
   separate company/sector/market intelligence cache. Citation text and source
   URLs travel inside report JSON; local article IDs do not identify cloud rows.
   Do not configure local development to use the production database.
+- Shared watchlist/preferences synchronization is a separate opt-in path; see
+  [Daily Updates](DAILY_UPDATES.md). Report publishing alone does not enable it.
 - Disable local publishing by clearing `REPORT_PUBLISH_URL`; pending rows stay
   intact. Rotate the publishing token on both sides if needed.

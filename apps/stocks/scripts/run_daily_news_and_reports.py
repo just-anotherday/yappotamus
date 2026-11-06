@@ -34,7 +34,9 @@ from backend.config.database import async_session_factory
 from backend.routers import analysis as analysis_router
 from backend.services.market_data_service import parse_download_quotes
 from backend.services.news_ingestion_service import fetch_and_ingest_watchlist_once
-from backend.services.watchlist_service import get_all_tickers
+from backend.services.watchlist_service import get_report_tickers as get_all_tickers
+from backend.config.settings import settings
+from backend.services.report_run_service import create_run, progress_run, finish_run
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -195,12 +197,14 @@ def _fetch_report_quotes(tickers: tuple[str, ...]) -> dict[str, dict[str, Any]]:
 
 
 async def _generate_report(ticker: str, quote: dict[str, Any]) -> dict[str, Any]:
-    async def quote_override(requested_ticker: str) -> dict[str, Any] | None:
-        if requested_ticker.upper() != ticker:
-            return None
-        return dict(quote)
+    token = analysis_router.report_quote_override.set(dict(quote))
+    try:
+        return await _generate_report_with_quote(ticker, quote)
+    finally:
+        analysis_router.report_quote_override.reset(token)
 
-    analysis_router.get_hybrid_stock_price = quote_override
+
+async def _generate_report_with_quote(ticker: str, quote: dict[str, Any]) -> dict[str, Any]:
     last_error: Exception | None = None
 
     for attempt in range(1, REPORT_MAX_ATTEMPTS + 1):
@@ -282,6 +286,15 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
         return 0
 
     try:
+        from backend.services.daily_updates import sync_config
+        config = await sync_config()
+        if config is not None:
+            _event("daily_settings_received", revision=config.revision, ticker_count=len(config.tickers))
+    except Exception as exc:
+        _event("daily_pipeline_failed", reason="live_settings_unavailable", exception_type=type(exc).__name__)
+        return 1
+
+    try:
         report_tickers = await _watchlist_report_tickers()
     except Exception as exc:
         _event(
@@ -291,39 +304,70 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
             error=str(exc),
         )
         return 1
-    if not report_tickers:
-        _event("daily_pipeline_failed", reason="watchlist_empty")
-        return 1
+    # Empty/all-paused settings are intentional: news can still run independently.
     _event(
         "report_watchlist_loaded",
         ticker_count=len(report_tickers),
         tickers=list(report_tickers),
     )
 
-    news_summary = await fetch_and_ingest_watchlist_once(
-        async_session_factory,
-        force=True,
-        trigger_kind="auto",
-    )
-    _event(
-        "news_collection_completed",
-        status=news_summary.get("status"),
-        tickers=news_summary.get("tickers"),
-        articles_returned=news_summary.get("articles_returned"),
-        articles_inserted=news_summary.get("articles_inserted"),
-        duplicates_ignored=news_summary.get("duplicates_ignored"),
-        provider_successes=news_summary.get("provider_successes"),
-        provider_failures=news_summary.get("provider_failures"),
-    )
-    if news_summary.get("status") not in {"completed", "skipped_cadence"}:
-        _event("daily_pipeline_failed", reason="news_collection_incomplete")
-        return 1
+    run_id = await create_run(report_tickers if is_weekday else ())
+    return await execute_tracked_run(report_tickers, run_id, collect_news=True, is_weekday=is_weekday)
 
-    if not is_weekday:
-        _event("reports_skipped", reason="weekend")
+
+async def execute_tracked_run(report_tickers, run_id, *, collect_news, is_weekday=True):
+    await progress_run(run_id, status="running", stage="news" if collect_news else "market_quotes")
+    try:
+        code = await _execute_pipeline(report_tickers, run_id, collect_news=collect_news, is_weekday=is_weekday)
+        await finish_run(run_id, failed=bool(code))
+        # Flush before the task launcher shuts down its temporary backend.
+        # Upload errors leave the durable queue intact and do not regenerate reports.
+        from backend.services.report_publishing import publish_pending, publishing_target
+        if settings.REPORT_PUBLISH_URL:
+            try:
+                publishing_target()
+                publication = await publish_pending(limit=500)
+                _event("report_publishing_completed", **publication)
+                if publication["failed"]:
+                    return code or 1
+            except Exception as exc:
+                _event("report_publishing_failed", exception_type=type(exc).__name__)
+                return code or 1
+        return code
+    except BaseException as exc:
+        await progress_run(run_id, stage=f"Stopped: {type(exc).__name__}")
+        await finish_run(run_id, interrupted=True)
+        raise
+
+
+async def _execute_pipeline(report_tickers, run_id, *, collect_news, is_weekday):
+    if collect_news:
+        news_summary = await fetch_and_ingest_watchlist_once(
+            async_session_factory,
+            force=True,
+            trigger_kind="auto",
+        )
+        _event(
+            "news_collection_completed",
+            status=news_summary.get("status"),
+            tickers=news_summary.get("tickers"),
+            articles_returned=news_summary.get("articles_returned"),
+            articles_inserted=news_summary.get("articles_inserted"),
+            duplicates_ignored=news_summary.get("duplicates_ignored"),
+            provider_successes=news_summary.get("provider_successes"),
+            provider_failures=news_summary.get("provider_failures"),
+        )
+        await progress_run(run_id, news_counts={key: news_summary.get(key) for key in ("articles_returned", "articles_inserted", "duplicates_ignored", "provider_failures")})
+        if news_summary.get("status") not in {"completed", "skipped_cadence"}:
+            _event("daily_pipeline_failed", reason="news_collection_incomplete")
+            return 1
+
+    if not is_weekday or not report_tickers:
+        _event("reports_skipped", reason="weekend" if not is_weekday else "no_enabled_tickers")
         _event("daily_pipeline_completed", reports_generated=0)
         return 0
 
+    await progress_run(run_id, stage="market_quotes")
     try:
         quotes = await asyncio.to_thread(_fetch_report_quotes, report_tickers)
     except Exception as exc:
@@ -337,6 +381,7 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
 
     outcomes = []
     for ticker in report_tickers:
+        await progress_run(run_id, stage="reports", current_ticker=ticker)
         if ticker not in quotes:
             outcome = {
                 "ticker": ticker,
@@ -345,8 +390,10 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
             }
             _event("report_failed", **outcome)
             outcomes.append(outcome)
+            await progress_run(run_id, outcomes=list(outcomes))
             continue
         outcomes.append(await _generate_report(ticker, quotes[ticker]))
+        await progress_run(run_id, outcomes=list(outcomes))
 
     failures = [item for item in outcomes if item["status"] != "completed"]
     _event(
@@ -355,19 +402,7 @@ async def run(*, dry_run: bool = False, preflight_only: bool = False) -> int:
         reports_failed=len(failures),
         outcomes=outcomes,
     )
-    code = 0 if not failures else 1
-    from backend.config.settings import settings
-    from backend.services.report_publishing import publish_pending
-    if settings.REPORT_PUBLISH_URL:
-        try:
-            publication = await publish_pending(limit=500)
-            _event("report_publishing_completed", **publication)
-            if publication["failed"]:
-                code = code or 1
-        except Exception as exc:
-            _event("report_publishing_failed", exception_type=type(exc).__name__)
-            code = code or 1
-    return code
+    return 0 if not failures else 1
 
 
 def main() -> int:

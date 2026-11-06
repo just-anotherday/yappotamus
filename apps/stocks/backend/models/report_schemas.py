@@ -35,6 +35,10 @@ class ReportSummaryOut(BaseModel):
     prompt_version: str
     prompt_hash: Optional[str] = None
     created_at: datetime
+    previous_report_id: Optional[int] = None
+    previous_sentiment: Optional[str] = None
+    previous_confidence: Optional[int] = None
+    previous_created_at: Optional[datetime] = None
 
     @field_serializer("created_at", when_used="json")
     def serialize_created_at(self, value: datetime) -> str:

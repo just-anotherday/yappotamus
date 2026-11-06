@@ -1,5 +1,9 @@
 # Windows daily task lifecycle
 
+Saved analysis reports can now publish automatically to the hosted backend.
+See [report publishing setup](../docs/REPORT_PUBLISHING.md) for the dedicated
+credential, deployment migration, retries, status endpoint, and history backfill.
+
 The existing `YapVibes Stocks Daily News and Reports` task calls
 `run_daily_news_and_reports_task.ps1` at 20:30 Eastern. The older Codex
 automation must remain paused. Ollama is managed independently.
@@ -21,6 +25,29 @@ an outcome in the final JSON log summary. Missing quotes or a failed report
 do not stop attempts for the remaining tickers; any failure makes the run exit
 nonzero. A scheduled run therefore confirms complete coverage only when its
 summary reports zero failures. An empty or unreadable watchlist fails the run.
+
+## Research workspace run tracking
+
+Apply Alembic migration `2026_10_28_research_workspace` before using these
+features. The daily pipeline now persists a `report_runs` record, stage, current
+ticker, ingestion counts, and each completed/failed outcome. Existing logs are
+not imported as successful runs. The research page polls this record every
+15 seconds and refreshes the library when an active run finishes.
+
+The authenticated `POST /api/research/runs/{id}/retry` endpoint reserves a new
+run and retries only failed or unfinished tickers still in the current watchlist.
+It skips news ingestion and never repeats successful outcomes from that run.
+The database permits only one queued/running daily or retry run at a time.
+Retries execute in the backend process; keep it running until they finish.
+If that process is forcibly stopped, six hours without progress marks the run
+interrupted and makes its unfinished tickers eligible for another retry.
+Ordinary interactive single-report generation is separate from this run history.
+
+Notes and saved/read article state use owner-scoped backend endpoints. Supabase
+mode uses the remotely verified allowed user ID; legacy token mode has one shared
+owner. New tables have RLS enabled and no browser-role table grants. Notes use
+optimistic versions to reject conflicting edits. Browser-only notes require an
+explicit import and remain intact locally until the user removes them.
 
 The development entry point remains `.venv\Scripts\python.exe run.py`.
 It enables reload outside production. For the scheduled task,

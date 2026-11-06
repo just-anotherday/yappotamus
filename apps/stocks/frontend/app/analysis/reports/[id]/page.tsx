@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import ReportPdfButton from '@/components/ReportPdfButton';
+import ReportChanges from '@/components/ReportChanges';
 import { useParams, useRouter } from 'next/navigation';
 import NeedsMoreResearchSection from '@/components/intelligence/NeedsMoreResearchSection';
 import { API_BASE } from '@/lib/serviceUrls';
@@ -386,6 +387,7 @@ export default function ReportDetailPage() {
       </div>
       <TickerResearchNotes ticker={report.ticker} />
 
+      <ReportChanges reportId={report.id} />
       {/* Report content */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
         {renderReportContent(report.report_data)}

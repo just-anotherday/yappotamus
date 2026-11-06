@@ -3,6 +3,7 @@ import asyncio
 import os
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -68,6 +69,63 @@ async def test_disabled_publishing_never_opens_a_connection():
     def forbidden():
         raise AssertionError("Disabled publishing touched the database")
     assert await publishing.publish_pending(session_factory=forbidden) == {"published": 0, "failed": 0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "connection", 502, 503, 504])
+async def test_upload_retries_transient_failure_with_identical_request(monkeypatch, failure):
+    calls = []
+    pause = AsyncMock()
+    monkeypatch.setattr(publishing.asyncio, "sleep", pause)
+
+    def receiver(request):
+        calls.append(request)
+        assert request.extensions["timeout"]["read"] == 90
+        assert request.extensions["timeout"]["connect"] == 10
+        if len(calls) == 1:
+            if failure == "timeout":
+                raise httpx.ReadTimeout("slow receiver", request=request)
+            if failure == "connection":
+                raise httpx.ConnectError("unavailable", request=request)
+            return httpx.Response(failure)
+        return httpx.Response(200, json={"status": "published"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(receiver), timeout=publishing.PUBLICATION_TIMEOUT) as client:
+        response = await publishing._upload_report(client, ORIGIN + "/api/internal/report-publications/" + str(uuid4()), b'{"report":"test"}')
+    assert response.status_code == 200 and len(calls) == 2
+    assert calls[0].url == calls[1].url and calls[0].content == calls[1].content
+    pause.assert_awaited_once_with(2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [307, 401, 403, 409, 422])
+async def test_upload_does_not_retry_permanent_errors_or_follow_redirects(status):
+    calls = []
+
+    def receiver(request):
+        calls.append(request)
+        return httpx.Response(status, headers={"Location": "https://other.example.test"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(receiver), follow_redirects=False) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await publishing._upload_report(client, ORIGIN, b"test")
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_upload_total_timeout_is_bounded_and_retried_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(publishing, "PUBLICATION_ATTEMPT_SECONDS", 0.01)
+    monkeypatch.setattr(publishing.asyncio, "sleep", AsyncMock())
+
+    async def stalled(request):
+        calls.append(request)
+        await asyncio.Event().wait()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(stalled)) as client:
+        with pytest.raises(TimeoutError):
+            await publishing._upload_report(client, ORIGIN, b"test")
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio
@@ -178,6 +236,28 @@ async def test_delivery_lost_ack_retry_and_cloud_visibility(databases):
         assert await session.scalar(select(func.count()).select_from(ReportPublication)) == 1
         item = await session.scalar(select(ReportPublication))
         assert item.published_at and item.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_lost_ack_recovers_in_same_pass_without_duplicate(databases, monkeypatch):
+    local, cloud, app = databases
+    await enqueue(local)
+    asgi = httpx.ASGITransport(app)
+    calls = []
+    monkeypatch.setattr(publishing.asyncio, "sleep", AsyncMock())
+
+    async def receiver(request):
+        calls.append(request)
+        async with httpx.AsyncClient(transport=asgi, base_url=ORIGIN) as client:
+            response = await client.send(request)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("Lost acknowledgement", request=request)
+        return response
+
+    assert await publishing.publish_pending(session_factory=local, transport=httpx.MockTransport(receiver)) == {"published": 1, "failed": 0}
+    assert len(calls) == 2 and calls[0].url == calls[1].url
+    async with cloud() as session:
+        assert await session.scalar(select(func.count()).select_from(AnalysisReportModel)) == 1
 
 
 @pytest.mark.asyncio

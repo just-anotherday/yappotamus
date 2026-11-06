@@ -51,7 +51,9 @@ from backend.routers import auth as auth_router
 from backend.routers import intelligence as intelligence_router
 from backend.routers import maintenance_intelligence as maintenance_intelligence_router
 from backend.routers import internal_jobs as internal_jobs_router
+from backend.routers import research as research_router
 from backend.routers import report_publications as report_publications_router
+from backend.routers import daily_updates as daily_updates_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -150,7 +152,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             async def fetch_tickers():
                 async with async_session_factory() as session:
-                    return await get_all_tickers(session)
+                    from backend.services.watchlist_service import get_news_tickers
+                    return await get_news_tickers(session)
 
             start_scheduler(async_session_factory, fetch_tickers, app.state.connection_manager)
             logger.info("[Startup] Local news ingestion scheduler started (every 15 min).")
@@ -198,6 +201,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from backend.services.report_publishing import publishing_loop, publishing_target
     if publishing_target():
         app.state._report_publishing_task = asyncio.create_task(publishing_loop())
+    from backend.services.daily_updates import daily_updates_loop
+    app.state._daily_updates_task = asyncio.create_task(daily_updates_loop())
 
     # ---- Memory diagnostic at startup completion ----
     if settings.MEMORY_DIAGNOSTICS_ENABLED:
@@ -234,7 +239,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("[Shutdown] Failed to stop AI Worker: %s", e)
 
-    for task_name in ("_post_market_task", "_market_report_task", "_report_publishing_task"):
+    for task_name in ("_post_market_task", "_market_report_task", "_report_publishing_task", "_daily_updates_task"):
         task = getattr(app.state, task_name, None)
         if task:
             task.cancel()
@@ -496,7 +501,9 @@ def create_app() -> FastAPI:
     app.include_router(websocket_router.router)
     app.include_router(analysis_router.router, dependencies=_auth_dep)
     app.include_router(analysis_reports_router.router, dependencies=_auth_dep)
+    app.include_router(research_router.router, dependencies=_auth_dep)
     app.include_router(report_publications_router.router)
+    app.include_router(daily_updates_router.router)
     app.include_router(markets_router.router, prefix="/api/markets", dependencies=_auth_dep)
     app.include_router(intelligence_router.router, dependencies=_auth_dep)
     app.include_router(maintenance_intelligence_router.router)

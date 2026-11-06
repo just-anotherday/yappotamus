@@ -7,6 +7,7 @@ import { apiFetch } from '@/lib/apiFetch';
 import { requireOk } from '@/lib/apiError';
 import type { ReportSummary, ReportPaginationResponse } from '@/types/stock';
 import ReportCoverageDashboard from '@/components/ReportCoverageDashboard';
+import ReportRunStatus from '@/components/ReportRunStatus';
 import {
   formatArticlesCited,
   formatArticlesSupplied,
@@ -42,6 +43,12 @@ export default function ReportsPage() {
   const [debouncedFilter, setDebouncedFilter] = useState('');
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [searchText, setSearchText] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sentimentFilter, setSentimentFilter] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  useEffect(() => { const timer = setTimeout(() => { setSearchQuery(searchText.trim()); setPage(1); }, 350); return () => clearTimeout(timer); }, [searchText]);
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [reportCompanies, setReportCompanies] = useState<ReportCompanyOption[]>([]);
   const [companyFilterError, setCompanyFilterError] = useState(false);
@@ -99,6 +106,10 @@ export default function ReportsPage() {
       params.set('limit', String(lim));
       params.set('sort', st);
       if (tf) params.set('ticker', tf.toUpperCase());
+      if (searchQuery) params.set('q', searchQuery);
+      if (sentimentFilter) params.set('sentiment', sentimentFilter);
+      if (fromDate) params.set('from', fromDate);
+      if (toDate) params.set('to', toDate);
 
       const res = await apiFetch(`${API_BASE}/api/analysis/reports/?${params}`, { signal: controller.signal });
       await requireOk(res, 'Failed to fetch reports');
@@ -115,7 +126,7 @@ export default function ReportsPage() {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, []);
+  }, [searchQuery, sentimentFilter, fromDate, toDate]);
 
   // ---- Debounce ticker filter: wait 400ms after last keystroke, then fetch ----
   useEffect(() => {
@@ -159,6 +170,7 @@ export default function ReportsPage() {
 
   const resetFilters = () => {
     applyCompanyFilter('');
+    setSearchText(''); setSearchQuery(''); setSentimentFilter(''); setFromDate(''); setToDate('');
     setSort('newest');
     setPage(1);
   };
@@ -174,7 +186,8 @@ export default function ReportsPage() {
     }
   };
 
-  const hasActiveFilters = tickerFilter;
+  const hasActiveFilters = tickerFilter || searchQuery || sentimentFilter || fromDate || toDate;
+  const refreshLibrary = useCallback(() => { setCoverageRevision(value => value + 1); void doFetch(page, limit, sort, debouncedFilter); void fetchReportCompanies(); }, [doFetch, page, limit, sort, debouncedFilter, fetchReportCompanies]);
 
   return (
     <div className="workspace-page reports-workspace">
@@ -185,6 +198,7 @@ export default function ReportsPage() {
           <p>Keep your research current. Bring company news and analysis together.</p>
         </div>
       </div>
+      <ReportRunStatus onFinished={refreshLibrary} />
       <ReportCoverageDashboard revision={coverageRevision} onSelectTicker={ticker => {
         applyCompanyFilter(ticker);
         document.getElementById('saved-reports')?.scrollIntoView({ behavior: 'smooth' });
@@ -293,6 +307,14 @@ export default function ReportsPage() {
           </p>
         )}
 
+        <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-divider bg-card p-3">
+          <label className="flex min-w-52 flex-1 flex-col gap-1 text-xs">Search report text<input type="search" value={searchText} maxLength={200} onChange={event=>setSearchText(event.target.value)} placeholder="Company, catalyst, or keyword…" className="rounded border border-divider bg-transparent p-2 text-sm" /></label>
+          <label className="flex flex-col gap-1 text-xs">Sentiment<select value={sentimentFilter} onChange={event=>{setSentimentFilter(event.target.value);setPage(1);}} className="rounded border border-divider bg-card p-2 text-sm"><option value="">All sentiments</option>{['Very Bullish','Bullish','Neutral','Bearish','Very Bearish'].map(value=><option key={value}>{value}</option>)}</select></label>
+          <label className="flex flex-col gap-1 text-xs">From (Eastern)<input type="date" value={fromDate} max={toDate||undefined} onChange={event=>{setFromDate(event.target.value);setPage(1);}} className="rounded border border-divider bg-transparent p-2 text-sm" /></label>
+          <label className="flex flex-col gap-1 text-xs">Through (Eastern)<input type="date" value={toDate} min={fromDate||undefined} onChange={event=>{setToDate(event.target.value);setPage(1);}} className="rounded border border-divider bg-transparent p-2 text-sm" /></label>
+          {hasActiveFilters&&<button onClick={resetFilters} className="p-2 text-sm underline">Clear all filters</button>}
+        </div>
+
         {/* Fetch Error Banner */}
         {fetchError && (
           <div style={{
@@ -316,7 +338,7 @@ export default function ReportsPage() {
           ) : reports.length === 0 ? (
             <div style={{ padding: '2rem', borderRadius: '8px', background: 'var(--section-bg)', textAlign: 'center', color: 'var(--text-muted)' }}
               className="dark:bg-slate-800 dark:text-slate-400">
-              {hasActiveFilters ? `No reports found for ${debouncedFilter || tickerFilter}. Try another company or clear the filter.` : 'No reports yet. Select “New report” above to create your first analysis.'}
+              {hasActiveFilters ? 'No reports match these filters. Try another company, keyword, sentiment, or date range.' : 'No reports yet. Select “New report” above to create your first analysis.'}
             </div>
           ) : (
             reports.map((report) => (
@@ -354,6 +376,9 @@ export default function ReportsPage() {
                   {report.overall_sentiment}
                 </span>
 
+                <div className="max-w-64 text-xs text-muted">
+                  {report.previous_report_id ? <><p>Since previous: {report.previous_sentiment} → {report.overall_sentiment}</p><p>Confidence {(report.confidence_score-(report.previous_confidence??0))>0?'+':''}{report.confidence_score-(report.previous_confidence??0)} points</p>{report.previous_created_at&&<p>{formatReportDateTime(report.previous_created_at)}</p>}</> : 'First saved report'}
+                </div>
                 {/* Confidence bar */}
                 <div style={{ flex: 1, maxWidth: '160px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '2px' }}

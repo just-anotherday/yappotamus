@@ -1,5 +1,10 @@
 export const RESEARCH_NOTE_LIMIT = 10000;
 
+export function confirmResearchNoteClose(ticker?: string): boolean {
+  const event = new CustomEvent('research-note-close', {cancelable: true, detail: {ticker, confirmed: false}});
+  return window.dispatchEvent(event);
+}
+
 export function researchNoteKey(ticker: string): string {
   return `yapvibes:research-notes:${ticker.trim().toUpperCase()}`;
 }

@@ -8,6 +8,7 @@ import Footer from "@/components/Footer";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import AuthGate from "@/components/AuthGate";
 import { NewsSyncProvider } from "@/components/NewsSync";
+import { ArticleReadingProvider } from "@/components/ArticleReading";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -40,6 +41,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col">
         <ThemeProvider>
           <AuthGate>
+            <ArticleReadingProvider>
             <NewsSyncProvider>
             <WatchlistConfigProvider>
               <AppHeader />
@@ -49,6 +51,7 @@ export default function RootLayout({
               <Footer />
             </WatchlistConfigProvider>
             </NewsSyncProvider>
+            </ArticleReadingProvider>
           </AuthGate>
         </ThemeProvider>
       </body>

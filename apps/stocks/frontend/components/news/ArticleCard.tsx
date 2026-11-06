@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { articleLink, isPublisherHost } from '@/lib/articleEvidence';
 import { timeAgo } from '@/lib/formatters';
 import type { NewsArticle } from '@/types/stock';
+import { ArticleReadingControls } from '@/components/ArticleReading';
 
 interface ArticleCardProps {
   article: NewsArticle;
@@ -134,6 +135,7 @@ export default function ArticleCard({ article }: ArticleCardProps) {
           </div>
         )}
 
+        <ArticleReadingControls articleId={article.id} />
         {/* Source + Time Footer */}
         <div className="flex items-center justify-between text-xs text-muted dark:text-slate-400 mt-3 pt-3 border-t border-divider dark:border-slate-700">
           <span className="truncate max-w-[50%]">{article.provider_name || ''}</span>

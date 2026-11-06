@@ -44,7 +44,7 @@ from backend.services.finnhub_service import (
 )
 from backend.services.ticker_extractor import ticker_extractor
 from backend.services.asset_sync import get_asset_id_by_ticker
-from backend.services.watchlist_service import get_all_tickers
+from backend.services.watchlist_service import get_news_tickers as get_all_tickers
 from backend.services.ai_worker import enqueue_job
 from backend.services.memory_diagnostics import log_memory
 from backend.config.settings import settings

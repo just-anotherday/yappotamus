@@ -89,6 +89,7 @@ export const fetchDbNews = async (
   offset: number = 0,
   startDate?: string | null,
   endDate?: string | null,
+  view: string = 'all',
 ): Promise<NewsPaginatedResponse> => {
   const params = new URLSearchParams();
   params.set('limit', String(limit));
@@ -97,7 +98,8 @@ export const fetchDbNews = async (
   if (startDate) params.set('start_date', startDate);
   if (endDate) params.set('end_date', endDate);
 
-  const res = await apiFetch(`${API_BASE}/news?${params.toString()}`);
+  if (view !== 'all') params.set('view', view);
+  const res = await apiFetch(`${API_BASE}${view === 'all' ? '/news' : '/api/research/news'}?${params.toString()}`);
   await requireOk(res, 'Failed to fetch news from database');
   return res.json();
 };
