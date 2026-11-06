@@ -42,6 +42,7 @@ export default function DailyUpdatesPage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState('');
+  const [removingTicker, setRemovingTicker] = useState<string | null>(null);
   const busyRef = useRef(false);
   const generation = useRef(0);
 
@@ -110,9 +111,13 @@ export default function DailyUpdatesPage() {
             <th scope="row" className="p-4 font-semibold">{item.ticker}</th>
             {(['news_enabled', 'reports_enabled'] as const).map(field => <td className="p-4" key={field}><button type="button" role="switch" aria-checked={item[field]} aria-label={`${field === 'news_enabled' ? 'Collect news' : 'Daily report'} for ${item.ticker}`} disabled={!!busy || !settings.shared_settings_ready} className={`rounded-full border px-4 py-1.5 text-xs font-medium ${item[field] ? 'border-emerald-500/50 bg-emerald-500/10' : 'opacity-60'}`} onClick={() => void change(item.ticker, `/tickers/${item.ticker}`, 'PATCH', { news_enabled: item.news_enabled, reports_enabled: item.reports_enabled, [field]: !item[field] })}>{item[field] ? 'On' : 'Off'}</button></td>)}
             <td className="p-4 text-xs"><span>{newsLabel(item.news_status)}</span>{settings.local_status[item.ticker] && <span className="mt-1 block opacity-60">Local: {newsLabel(settings.local_status[item.ticker].status)}</span>}</td>
-            <td className="p-4 text-right"><button type="button" className="text-xs underline underline-offset-4 disabled:opacity-50" disabled={!!busy || !settings.shared_settings_ready} onClick={() => {
-              if (window.confirm(`Remove ${item.ticker} from the watchlist and future daily updates? Existing articles and reports will remain.`)) void change(item.ticker, `/tickers/${item.ticker}`, 'DELETE');
-            }}>Remove<span className="sr-only"> {item.ticker}</span></button></td>
+            <td className="p-4 text-right">{removingTicker === item.ticker ? <div className="min-w-40 text-xs">
+              <p className="mb-2">Remove {item.ticker} from the watchlist and daily updates?</p>
+              <div className="flex justify-end gap-3"><button type="button" disabled={!!busy} className="underline underline-offset-4" onClick={() => setRemovingTicker(null)}>Keep ticker</button>
+                <button type="button" disabled={!!busy} className="underline underline-offset-4" aria-label={`Confirm removal of ${item.ticker}`} onClick={() => {
+                  setRemovingTicker(null); void change(item.ticker, `/tickers/${item.ticker}`, 'DELETE');
+                }}>Remove</button></div>
+            </div> : <button type="button" className="text-xs underline underline-offset-4 disabled:opacity-50" disabled={!!busy || !settings.shared_settings_ready} onClick={() => setRemovingTicker(item.ticker)}>Remove<span className="sr-only"> {item.ticker}</span></button>}</td>
           </tr>)}</tbody>
         </table>
         {!settings.tickers.length && <p className="p-5 text-sm opacity-70">No tickers selected. Add one above to start collecting news and include it in daily updates.</p>}
