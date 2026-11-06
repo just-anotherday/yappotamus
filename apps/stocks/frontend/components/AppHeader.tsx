@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useRef, useState } from 'react';
 import ThemeToggle from '@/components/ThemeToggle';
 import AppIcon from '@/components/ui/AppIcon';
 import BrandMark from '@/components/ui/BrandMark';
@@ -20,6 +21,8 @@ function HeaderContent() {
   const pathname = usePathname();
   const session = useSessionControls();
   const { isAnalyzing, analyzingTicker } = useAnalysisStatus();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
 
   return <header className="workspace-header">
     <a className="skip-link" href="#main-content">Skip to content</a>
@@ -29,17 +32,23 @@ function HeaderContent() {
         <span>yapvibes<span className="brand-period">.</span><small>MARKET COMPANION</small></span>
       </Link>
       <div className="workspace-account">
+        <button ref={menuButton} type="button" className="workspace-menu-toggle" aria-label="Main navigation" aria-controls="workspace-navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(open => !open)}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d={menuOpen ? 'M6 6l12 12M6 18L18 6' : 'M4 6h16M4 12h16M4 18h16'} /></svg>
+          <span>Menu</span>
+        </button>
         <span className="workspace-private"><AppIcon name="lock" width={13} height={13} /> Personal workspace</span>
         <span className="account-divider" />
         <ThemeToggle />
         {session && <button className="workspace-signout" type="button" onClick={session.signOut} disabled={session.busy} aria-label="Sign out of your workspace"><AppIcon name="logout" width={17} height={17} /><span>{session.busy ? 'Signing out…' : 'Sign out'}</span></button>}
       </div>
     </div>
-    <nav aria-label="Main navigation" className="workspace-nav">
+    <nav id="workspace-navigation" aria-label="Main navigation" className={`workspace-nav${menuOpen ? ' is-open' : ''}`} onKeyDown={event => {
+      if (event.key === 'Escape') { setMenuOpen(false); menuButton.current?.focus(); }
+    }}>
       {navigation.map(item => {
         const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
         const researchActive = item.icon === 'reports' && pathname.startsWith('/intelligence');
-        return <Link key={item.href} href={item.href} aria-current={active || researchActive ? 'page' : undefined} className={`workspace-nav-link${active || researchActive ? ' is-active' : ''}`}><AppIcon name={item.icon} width={17} height={17} />{item.label}</Link>;
+        return <Link key={item.href} href={item.href} onClick={() => setMenuOpen(false)} aria-current={active || researchActive ? 'page' : undefined} className={`workspace-nav-link${active || researchActive ? ' is-active' : ''}`}><AppIcon name={item.icon} width={17} height={17} />{item.label}</Link>;
       })}
       <span className="workspace-nav-note">Your space to see the bigger picture</span>
     </nav>
