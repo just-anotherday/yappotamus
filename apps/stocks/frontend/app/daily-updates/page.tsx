@@ -40,6 +40,7 @@ export default function DailyUpdatesPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [ticker, setTicker] = useState('');
   const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState('');
   const [removingTicker, setRemovingTicker] = useState<string | null>(null);
@@ -66,7 +67,7 @@ export default function DailyUpdatesPage() {
     if (busyRef.current) return;
     busyRef.current = true;
     const version = ++generation.current;
-    setBusy(key); setError(''); setMessage('');
+    setBusy(key); setError(''); setActionError(''); setMessage('');
     try {
       const next = await requestSettings(path, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
       if (version !== generation.current) return;
@@ -74,7 +75,7 @@ export default function DailyUpdatesPage() {
       setMessage(next.sync_pending ? 'Saved on the live site. Local synchronization is pending.' : 'Settings saved. The local automation will acknowledge the change below.');
       if (key === 'add') setTicker('');
     } catch (err) {
-      if (version === generation.current) setError(err instanceof Error ? err.message : 'Could not save settings');
+      if (version === generation.current) setActionError(err instanceof Error ? err.message : 'Could not save settings');
     } finally {
       busyRef.current = false;
       if (version === generation.current) setBusy('');
@@ -88,7 +89,7 @@ export default function DailyUpdatesPage() {
         <p className="mt-3 max-w-2xl text-sm opacity-75">One ticker list for the live site and your local automation. Choose which companies receive news, daily reports, or both.</p></div>
       <button type="button" className="button-secondary" disabled={!!busy} onClick={() => void load()}>Refresh status</button>
     </div>
-    {error && <p role="alert" className="mb-4 rounded-lg border border-red-500/40 p-3 text-sm">{error}</p>}
+    {(actionError || error) && <p role="alert" className="mb-4 rounded-lg border border-red-500/40 p-3 text-sm">{actionError || error}</p>}
     {message && <p role="status" className="mb-4 rounded-lg border border-emerald-500/40 p-3 text-sm">{message}</p>}
     {!settings ? <p role="status">{error ? 'Settings unavailable. Refresh to try again.' : 'Loading daily update settings…'}</p> : <>
       {!settings.shared_settings_ready && <p role="status" className="mb-4 rounded-xl border p-4 text-sm">Shared controls are waiting for the live deployment and local synchronization to be enabled. The list below currently reflects this computer; editing will be available once connected.</p>}
