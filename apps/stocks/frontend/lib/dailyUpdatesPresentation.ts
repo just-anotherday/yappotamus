@@ -4,6 +4,18 @@ export interface DailyUpdateSync {
   last_seen_at: string | null;
 }
 
+export type DailyTickerFilter = 'all' | 'news' | 'reports' | 'paused';
+
+export function filterDailyTickers<T extends { ticker: string; news_enabled: boolean; reports_enabled: boolean }>(
+  tickers: readonly T[], search: string, filter: DailyTickerFilter,
+): T[] {
+  const query = search.trim().toUpperCase();
+  return tickers.filter(item => item.ticker.toUpperCase().includes(query)
+    && (filter === 'news' ? item.news_enabled
+      : filter === 'reports' ? item.reports_enabled
+      : filter === 'paused' ? !item.news_enabled && !item.reports_enabled : true));
+}
+
 export function dailySyncStatus(state: DailyUpdateSync, now = Date.now()) {
   const lastSeen = state.last_seen_at ? Date.parse(state.last_seen_at) : NaN;
   const online = Number.isFinite(lastSeen) && now - lastSeen < 120_000;
